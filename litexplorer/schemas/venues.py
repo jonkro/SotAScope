@@ -38,6 +38,8 @@ class VenueCreate(BaseModel):
     name: str
     dblp_id: str | None = None
     openalex_id: str | None = None
+    issn: str | None = None
+    publisher: str | None = None
     venue_type: str | None = None
 
 
@@ -45,6 +47,8 @@ class VenueUpdate(BaseModel):
     name: str | None = None
     dblp_id: str | None = None
     openalex_id: str | None = None
+    issn: str | None = None
+    publisher: str | None = None
     venue_type: str | None = None
 
 
@@ -53,6 +57,8 @@ class VenueOut(BaseModel):
     name: str
     dblp_id: str | None
     openalex_id: str | None
+    issn: str | None
+    publisher: str | None
     venue_type: str | None
 
     model_config = {"from_attributes": True}

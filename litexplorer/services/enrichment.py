@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from litexplorer.external.base import ExternalWork
+from litexplorer.external.crossref import CrossrefClient, parse_crossref_work
 from litexplorer.external.openalex import OpenAlexClient, parse_work
 from litexplorer.models.cache import ApiCache
 from litexplorer.models.library import (
@@ -30,11 +31,17 @@ logger = logging.getLogger(__name__)
 
 
 class EnrichmentService:
-    """Orchestrates importing and enriching works from OpenAlex."""
+    """Orchestrates importing and enriching works from OpenAlex and Crossref."""
 
-    def __init__(self, db: Session, client: OpenAlexClient):
+    def __init__(
+        self,
+        db: Session,
+        client: OpenAlexClient,
+        crossref_client: CrossrefClient | None = None,
+    ):
         self.db = db
         self.client = client
+        self.crossref_client = crossref_client
 
     # -- Public API -----------------------------------------------------------
 
@@ -54,15 +61,30 @@ class EnrichmentService:
             ext_work = parse_work(raw)
             return self._upsert_work(ext_work)
 
-        # Call API
+        # Call OpenAlex API
         raw = self.client.get_work_by_doi_raw(doi)
-        if raw is None:
+        if raw is not None:
+            self._set_cache("openalex", cache_key, json.dumps(raw), "permanent")
+            ext_work = parse_work(raw)
+            return self._upsert_work(ext_work)
+
+        # Crossref fallback
+        if self.crossref_client is None:
             return None
 
-        # Cache the raw response
-        self._set_cache("openalex", cache_key, json.dumps(raw), "permanent")
+        cr_cache_key = f"work:doi:{doi}"
+        cr_cached = self._get_cache("crossref", cr_cache_key)
+        if cr_cached is not None:
+            cr_raw = json.loads(cr_cached.response_json)
+            ext_work = parse_crossref_work(cr_raw)
+            return self._upsert_work(ext_work)
 
-        ext_work = parse_work(raw)
+        cr_raw = self.crossref_client.get_work_by_doi_raw(doi)
+        if cr_raw is None:
+            return None
+
+        self._set_cache("crossref", cr_cache_key, json.dumps(cr_raw), "permanent")
+        ext_work = parse_crossref_work(cr_raw)
         return self._upsert_work(ext_work)
 
     def fetch_backward_citations(self, work_id: int) -> list[Work]:
@@ -133,6 +155,53 @@ class EnrichmentService:
         self._set_cache("openalex", cache_key, json.dumps(raw_list), "timestamped")
 
         return self._persist_forward_citations(work, raw_list)
+
+    def enrich_from_crossref(self, work_id: int) -> Work:
+        """Enrich a work's venue metadata (ISSN, publisher) from Crossref.
+
+        Requires self.crossref_client to be set. Caches permanently.
+        Returns the updated Work.
+        Raises ValueError if work not found or has no DOI.
+        Raises RuntimeError if crossref_client is not configured.
+        """
+        if self.crossref_client is None:
+            raise RuntimeError("Crossref client not configured")
+
+        work = self.db.get(Work, work_id)
+        if work is None:
+            raise ValueError(f"Work {work_id} not found")
+        if not work.doi:
+            raise ValueError(f"Work {work_id} has no DOI — cannot enrich from Crossref")
+
+        cache_key = f"work:doi:{work.doi}"
+        cached = self._get_cache("crossref", cache_key)
+
+        if cached is not None:
+            cr_raw = json.loads(cached.response_json)
+        else:
+            cr_raw = self.crossref_client.get_work_by_doi_raw(work.doi)
+            if cr_raw is None:
+                raise ValueError(f"DOI not found in Crossref: {work.doi}")
+            self._set_cache("crossref", cache_key, json.dumps(cr_raw), "permanent")
+
+        ext_work = parse_crossref_work(cr_raw)
+
+        # Update venue with ISSN/publisher if the venue has them
+        if ext_work.venue and work.venue_id:
+            venue = self.db.get(Venue, work.venue_id)
+            if venue:
+                if venue.issn is None and ext_work.venue.issn:
+                    venue.issn = ext_work.venue.issn
+                if venue.publisher is None and ext_work.venue.publisher:
+                    venue.publisher = ext_work.venue.publisher
+        elif ext_work.venue and not work.venue_id:
+            # Work has no venue yet — resolve one from Crossref data
+            venue = self._resolve_venue(ext_work)
+            if venue:
+                work.venue_id = venue.id
+
+        self.db.commit()
+        return work
 
     # -- Internal helpers -----------------------------------------------------
 
@@ -260,11 +329,24 @@ class EnrichmentService:
         return work
 
     def _resolve_venue(self, ext: ExternalWork) -> Venue | None:
-        """Find or create a Venue, handling alias auto-creation."""
+        """Find or create a Venue, handling alias auto-creation and ISSN matching."""
         if not ext.venue:
             return None
 
-        # Try by openalex_id first
+        # Try by ISSN first (stable identifier from Crossref)
+        if ext.venue.issn:
+            venue = self.db.execute(
+                select(Venue).where(Venue.issn == ext.venue.issn)
+            ).scalar_one_or_none()
+            if venue:
+                # Auto-create alias if the Crossref name differs from canonical
+                if venue.name != ext.venue.name:
+                    self._ensure_venue_alias(venue, ext.venue.name)
+                if venue.publisher is None and ext.venue.publisher:
+                    venue.publisher = ext.venue.publisher
+                return venue
+
+        # Try by openalex_id
         if ext.venue.external_id:
             venue = self.db.execute(
                 select(Venue).where(Venue.openalex_id == ext.venue.external_id)
@@ -296,6 +378,8 @@ class EnrichmentService:
         venue = Venue(
             name=ext.venue.name,
             openalex_id=ext.venue.external_id,
+            issn=ext.venue.issn,
+            publisher=ext.venue.publisher,
             venue_type=ext.venue.venue_type,
         )
         self.db.add(venue)

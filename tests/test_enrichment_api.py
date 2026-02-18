@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from litexplorer.api.deps import get_db
+from litexplorer.external.crossref import CrossrefClient
 from litexplorer.external.openalex import OpenAlexClient
 from litexplorer.models.base import Base
 from litexplorer.models.library import Work
@@ -50,8 +51,15 @@ def mock_oa_client():
 
 
 @pytest.fixture()
-def client(db_session, mock_oa_client):
-    """TestClient with mocked OpenAlex client and API key configured."""
+def mock_cr_client():
+    mock = MagicMock(spec=CrossrefClient)
+    mock.get_work_by_doi_raw.return_value = None
+    return mock
+
+
+@pytest.fixture()
+def client(db_session, mock_oa_client, mock_cr_client):
+    """TestClient with mocked OpenAlex + Crossref clients."""
     from litexplorer.app import app
 
     def _override_get_db():
@@ -62,11 +70,10 @@ def client(db_session, mock_oa_client):
 
     app.dependency_overrides[get_db] = _override_get_db
 
-    with patch("litexplorer.api.enrichment.settings") as mock_settings, \
-         patch("litexplorer.api.enrichment._get_client") as mock_get_client:
-        mock_settings.openalex_api_key = "test-key"
-        mock_settings.openalex_base_url = "https://api.openalex.org"
+    with patch("litexplorer.api.enrichment._get_client") as mock_get_client, \
+         patch("litexplorer.api.enrichment._get_crossref_client") as mock_get_cr:
         mock_get_client.return_value = mock_oa_client
+        mock_get_cr.return_value = mock_cr_client
         with TestClient(app, raise_server_exceptions=False) as c:
             yield c
 

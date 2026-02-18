@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 
 from litexplorer.api.deps import get_db
 from litexplorer.config import settings
+from litexplorer.external.crossref import CrossrefClient
 from litexplorer.external.openalex import OpenAlexClient
 from litexplorer.schemas.enrichment import (
     CitationResult,
+    CrossrefEnrichResult,
     EnrichDOIBatchRequest,
     EnrichDOIBatchResult,
     EnrichDOIRequest,
@@ -23,6 +25,14 @@ from litexplorer.services.enrichment import EnrichmentService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/enrich", tags=["enrichment"])
+
+
+def _get_crossref_client() -> CrossrefClient:
+    """Create a Crossref client (no API key required)."""
+    return CrossrefClient(
+        base_url=settings.crossref_base_url,
+        mailto=settings.crossref_mailto,
+    )
 
 
 def _get_client() -> OpenAlexClient:
@@ -40,16 +50,18 @@ def _get_client() -> OpenAlexClient:
 
 @router.post("/doi", response_model=EnrichDOIResult)
 def enrich_by_doi(body: EnrichDOIRequest, db: Session = Depends(get_db)):
-    """Import a single work by DOI from OpenAlex."""
+    """Import a single work by DOI from OpenAlex (with Crossref fallback)."""
     client = _get_client()
+    cr_client = _get_crossref_client()
     try:
-        svc = EnrichmentService(db=db, client=client)
+        svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
         work = svc.import_by_doi(body.doi)
     finally:
         client.close()
+        cr_client.close()
 
     if work is None:
-        raise HTTPException(status_code=404, detail=f"DOI not found in OpenAlex: {body.doi}")
+        raise HTTPException(status_code=404, detail=f"DOI not found: {body.doi}")
 
     return EnrichDOIResult(work=WorkOut.model_validate(work))
 
@@ -58,8 +70,9 @@ def enrich_by_doi(body: EnrichDOIRequest, db: Session = Depends(get_db)):
 def enrich_by_doi_batch(body: EnrichDOIBatchRequest, db: Session = Depends(get_db)):
     """Import multiple works by DOI. Partial failures are reported, not raised."""
     client = _get_client()
+    cr_client = _get_crossref_client()
     try:
-        svc = EnrichmentService(db=db, client=client)
+        svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
         results: list[EnrichDOIResult] = []
         errors: list[dict] = []
 
@@ -67,7 +80,7 @@ def enrich_by_doi_batch(body: EnrichDOIBatchRequest, db: Session = Depends(get_d
             try:
                 work = svc.import_by_doi(doi)
                 if work is None:
-                    errors.append({"doi": doi, "error": "Not found in OpenAlex"})
+                    errors.append({"doi": doi, "error": "Not found"})
                 else:
                     results.append(EnrichDOIResult(work=WorkOut.model_validate(work)))
             except Exception as e:
@@ -75,6 +88,7 @@ def enrich_by_doi_batch(body: EnrichDOIBatchRequest, db: Session = Depends(get_d
                 errors.append({"doi": doi, "error": str(e)})
     finally:
         client.close()
+        cr_client.close()
 
     return EnrichDOIBatchResult(results=results, errors=errors)
 
@@ -118,4 +132,34 @@ def fetch_forward_citations(
     return CitationResult(
         works=[WorkOut.model_validate(w) for w in works],
         count=len(works),
+    )
+
+
+@router.post("/works/{work_id}/crossref", response_model=CrossrefEnrichResult)
+def enrich_from_crossref(work_id: int, db: Session = Depends(get_db)):
+    """Enrich a work's venue metadata (ISSN, publisher) from Crossref."""
+    cr_client = _get_crossref_client()
+    oa_client = _get_client()
+    try:
+        svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+        try:
+            work = svc.enrich_from_crossref(work_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+    finally:
+        cr_client.close()
+        oa_client.close()
+
+    venue_issn = None
+    venue_publisher = None
+    if work.venue:
+        venue_issn = work.venue.issn
+        venue_publisher = work.venue.publisher
+
+    return CrossrefEnrichResult(
+        work=WorkOut.model_validate(work),
+        venue_issn=venue_issn,
+        venue_publisher=venue_publisher,
     )

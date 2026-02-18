@@ -22,6 +22,8 @@ class ExternalVenue:
     name: str
     external_id: str | None = None  # e.g. OpenAlex source ID
     venue_type: str | None = None  # 'conference' | 'journal'
+    issn: str | None = None  # e.g. from Crossref
+    publisher: str | None = None
 
 
 @dataclass(frozen=True)

@@ -133,6 +133,8 @@ class Venue(Base):
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     dblp_id: Mapped[str | None] = mapped_column(String(128), unique=True, index=True)
     openalex_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    issn: Mapped[str | None] = mapped_column(String(32), index=True)
+    publisher: Mapped[str | None] = mapped_column(String(512))
     venue_type: Mapped[str | None] = mapped_column(String(32))  # 'conference' | 'journal'
 
     works: Mapped[list["Work"]] = relationship(back_populates="venue")

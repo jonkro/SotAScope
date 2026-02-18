@@ -31,3 +31,9 @@ class CitationResult(BaseModel):
     count: int
     cached: bool = False
     fetched_at: datetime | None = None
+
+
+class CrossrefEnrichResult(BaseModel):
+    work: WorkOut
+    venue_issn: str | None = None
+    venue_publisher: str | None = None

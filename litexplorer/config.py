@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     openalex_api_key: str | None = None
     openalex_base_url: str = "https://api.openalex.org"
 
+    # Crossref API settings (no key required; mailto gets polite pool)
+    crossref_base_url: str = "https://api.crossref.org"
+    crossref_mailto: str | None = None
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "litexplorer.db"
