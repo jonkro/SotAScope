@@ -26,6 +26,9 @@ class Project(Base):
     topic_lists: Mapped[list["TopicList"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    ignored_work_associations: Mapped[list["ProjectIgnoredWork"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Project id={self.id} name={self.name!r}>"
@@ -67,4 +70,18 @@ class TopicListWork(Base):
     added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     topic_list: Mapped["TopicList"] = relationship(back_populates="work_associations")
+    work: Mapped["Work"] = relationship()
+
+
+class ProjectIgnoredWork(Base):
+    """Works marked as uninteresting for a project (excluded from timeline)."""
+
+    __tablename__ = "project_ignored_works"
+    __table_args__ = (UniqueConstraint("project_id", "work_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    work_id: Mapped[int] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
+
+    project: Mapped["Project"] = relationship(back_populates="ignored_work_associations")
     work: Mapped["Work"] = relationship()

@@ -136,12 +136,13 @@ class Venue(Base):
     issn: Mapped[str | None] = mapped_column(String(32), index=True)
     publisher: Mapped[str | None] = mapped_column(String(512))
     venue_type: Mapped[str | None] = mapped_column(String(32))  # 'conference' | 'journal'
+    tier: Mapped[int] = mapped_column(Integer, default=2)  # 1 = top, 2 = regular, 3 = ignore
 
     works: Mapped[list["Work"]] = relationship(back_populates="venue")
     aliases: Mapped[list["VenueAlias"]] = relationship(
         back_populates="venue", cascade="all, delete-orphan"
     )
-    tiers: Mapped[list["VenueTier"]] = relationship(
+    fields: Mapped[list["VenueField"]] = relationship(
         back_populates="venue", cascade="all, delete-orphan"
     )
 
@@ -174,25 +175,24 @@ class Field(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
 
-    tiers: Mapped[list["VenueTier"]] = relationship(back_populates="field")
+    venues: Mapped[list["VenueField"]] = relationship(back_populates="field")
 
     def __repr__(self) -> str:
         return f"<Field id={self.id} name={self.name!r}>"
 
 
-class VenueTier(Base):
-    """Maps a venue to a tier within a research field."""
+class VenueField(Base):
+    """Association between a venue and a research field (many-to-many)."""
 
-    __tablename__ = "venue_tiers"
+    __tablename__ = "venue_fields"
     __table_args__ = (UniqueConstraint("venue_id", "field_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     venue_id: Mapped[int] = mapped_column(ForeignKey("venues.id", ondelete="CASCADE"))
     field_id: Mapped[int] = mapped_column(ForeignKey("fields.id", ondelete="CASCADE"))
-    tier: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 = top, 2 = known
 
-    venue: Mapped["Venue"] = relationship(back_populates="tiers")
-    field: Mapped["Field"] = relationship(back_populates="tiers")
+    venue: Mapped["Venue"] = relationship(back_populates="fields")
+    field: Mapped["Field"] = relationship(back_populates="venues")
 
 
 # ---------------------------------------------------------------------------

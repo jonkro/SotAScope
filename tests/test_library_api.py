@@ -83,38 +83,51 @@ def test_venue_aliases(client):
 
 
 # ---------------------------------------------------------------------------
-# Venue tiers
+# Venue tier (on venue itself)
 # ---------------------------------------------------------------------------
 
-def test_venue_tier_upsert(client):
+def test_venue_tier_default_and_update(client):
     v = client.post("/api/venues", json={"name": "SIGCOMM"}).json()
-    f = client.post("/api/fields", json={"name": "networks"}).json()
+    assert v["tier"] == 2  # default is Regular
 
-    # Create tier
-    r = client.put("/api/venue-tiers", json={
-        "venue_id": v["id"], "field_id": f["id"], "tier": 1,
-    })
+    # Update tier to Top
+    r = client.patch(f"/api/venues/{v['id']}", json={"tier": 1})
     assert r.status_code == 200
-    tier_id = r.json()["id"]
     assert r.json()["tier"] == 1
-    assert r.json()["venue_name"] == "SIGCOMM"
-    assert r.json()["field_name"] == "networks"
 
-    # Upsert (update) same pair
-    r = client.put("/api/venue-tiers", json={
-        "venue_id": v["id"], "field_id": f["id"], "tier": 2,
-    })
-    assert r.status_code == 200
-    assert r.json()["id"] == tier_id  # same row
-    assert r.json()["tier"] == 2
+    # Verify via GET
+    r = client.get(f"/api/venues/{v['id']}")
+    assert r.json()["tier"] == 1
 
-    # List filtered
-    r = client.get("/api/venue-tiers", params={"field_id": f["id"]})
-    assert len(r.json()) == 1
 
-    # Delete
-    r = client.delete(f"/api/venue-tiers/{tier_id}")
+# ---------------------------------------------------------------------------
+# Venue field associations
+# ---------------------------------------------------------------------------
+
+def test_venue_field_associations(client):
+    v = client.post("/api/venues", json={"name": "NeurIPS"}).json()
+    f = client.post("/api/fields", json={"name": "ai_ml"}).json()
+
+    # Add field to venue
+    r = client.post(f"/api/venues/{v['id']}/fields", json={"field_id": f["id"]})
+    assert r.status_code == 201
+    assert r.json()["field_id"] == f["id"]
+    assert r.json()["field_name"] == "ai_ml"
+
+    # Duplicate returns 409
+    r = client.post(f"/api/venues/{v['id']}/fields", json={"field_id": f["id"]})
+    assert r.status_code == 409
+
+    # Visible in venue detail
+    r = client.get(f"/api/venues/{v['id']}")
+    assert len(r.json()["fields"]) == 1
+
+    # Remove field
+    r = client.delete(f"/api/venues/{v['id']}/fields/{f['id']}")
     assert r.status_code == 204
+
+    r = client.get(f"/api/venues/{v['id']}")
+    assert len(r.json()["fields"]) == 0
 
 
 # ---------------------------------------------------------------------------

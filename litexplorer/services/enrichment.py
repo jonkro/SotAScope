@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -28,6 +29,36 @@ from litexplorer.models.library import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Regex patterns for venue name normalization
+_ORDINAL_RE = re.compile(r'\b\d{1,3}(?:st|nd|rd|th)\b', re.IGNORECASE)
+_YEAR_RE = re.compile(r'\b(?:19|20)\d{2}\b')
+_PROCEEDINGS_PREFIX_RE = re.compile(
+    r'^proceedings\s+of\s+the\s+|^proceedings\s+of\s+|^proceedings\s+on\s+|^proceedings\s+',
+    re.IGNORECASE,
+)
+
+
+def normalize_venue_name(name: str) -> str:
+    """Normalize a venue name by removing proceedings prefixes, calendar years,
+    and ordinal edition numbers so that the same conference across years maps
+    to a single canonical venue.
+
+    Examples:
+        "Proceedings 2023 Network and Distributed System Security Symposium"
+        → "Network and Distributed System Security Symposium"
+
+        "Proceedings of the 17th International Conference on Availability, Reliability and Security"
+        → "International Conference on Availability, Reliability and Security"
+    """
+    s = _PROCEEDINGS_PREFIX_RE.sub('', name)
+    s = _YEAR_RE.sub('', s)
+    s = _ORDINAL_RE.sub('', s)
+    # Collapse multiple spaces and strip
+    s = re.sub(r'\s{2,}', ' ', s).strip()
+    # Remove leading/trailing punctuation artifacts (e.g. leftover commas)
+    s = s.strip(' ,.-')
+    return s
 
 
 class EnrichmentService:
@@ -219,21 +250,46 @@ class EnrichmentService:
         return results
 
     def _get_referenced_work_ids(self, work: Work) -> list[str]:
-        """Get the referenced_work_ids for a work from its cached API response."""
-        # Try to get from the cached work data
-        for doi_key in (work.doi, ):
-            if doi_key:
-                cache_key = f"work:doi:{doi_key}"
-                cached = self._get_cache("openalex", cache_key)
-                if cached:
-                    raw = json.loads(cached.response_json)
-                    ref_urls = raw.get("referenced_works") or []
-                    return [
-                        url.removeprefix("https://openalex.org/")
-                        for url in ref_urls
-                        if url
-                    ]
+        """Get the referenced_work_ids for a work from its cached API response.
+
+        Tries multiple cache keys (DOI, then OpenAlex ID). If no cache is
+        found and the work has an OpenAlex ID, fetches the work from the API
+        directly and caches the result.
+        """
+        # Try cached work data by DOI
+        if work.doi:
+            cache_key = f"work:doi:{work.doi}"
+            cached = self._get_cache("openalex", cache_key)
+            if cached:
+                return self._extract_ref_ids(json.loads(cached.response_json))
+
+        # Try cached work data by OpenAlex ID
+        if work.openalex_id:
+            cache_key = f"work:openalex:{work.openalex_id}"
+            cached = self._get_cache("openalex", cache_key)
+            if cached:
+                return self._extract_ref_ids(json.loads(cached.response_json))
+
+            # No cache found — fetch from API by OpenAlex ID
+            raw = self.client.get_work_by_id_raw(work.openalex_id)
+            if raw:
+                self._set_cache("openalex", cache_key, json.dumps(raw), "permanent")
+                # Also update the work with any new metadata from the fresh fetch
+                ext_work = parse_work(raw)
+                self._update_work(work, ext_work)
+                return self._extract_ref_ids(raw)
+
         return []
+
+    @staticmethod
+    def _extract_ref_ids(raw: dict) -> list[str]:
+        """Extract OpenAlex IDs from the referenced_works field."""
+        ref_urls = raw.get("referenced_works") or []
+        return [
+            url.removeprefix("https://openalex.org/")
+            for url in ref_urls
+            if url
+        ]
 
     def _upsert_work(self, ext: ExternalWork) -> Work:
         """Find or create a Work from an ExternalWork. Update-without-overwrite."""
@@ -329,9 +385,17 @@ class EnrichmentService:
         return work
 
     def _resolve_venue(self, ext: ExternalWork) -> Venue | None:
-        """Find or create a Venue, handling alias auto-creation and ISSN matching."""
+        """Find or create a Venue, handling alias auto-creation and ISSN matching.
+
+        Venue names are normalized (strip "Proceedings..." prefixes, calendar
+        years, ordinal edition numbers) so the same conference across years
+        maps to a single canonical venue.
+        """
         if not ext.venue:
             return None
+
+        raw_name = ext.venue.name
+        canonical_name = normalize_venue_name(raw_name)
 
         # Try by ISSN first (stable identifier from Crossref)
         if ext.venue.issn:
@@ -339,9 +403,8 @@ class EnrichmentService:
                 select(Venue).where(Venue.issn == ext.venue.issn)
             ).scalar_one_or_none()
             if venue:
-                # Auto-create alias if the Crossref name differs from canonical
-                if venue.name != ext.venue.name:
-                    self._ensure_venue_alias(venue, ext.venue.name)
+                if venue.name != raw_name:
+                    self._ensure_venue_alias(venue, raw_name)
                 if venue.publisher is None and ext.venue.publisher:
                     venue.publisher = ext.venue.publisher
                 return venue
@@ -352,31 +415,48 @@ class EnrichmentService:
                 select(Venue).where(Venue.openalex_id == ext.venue.external_id)
             ).scalar_one_or_none()
             if venue:
-                # Auto-create alias if the name differs
-                if venue.name != ext.venue.name:
-                    self._ensure_venue_alias(venue, ext.venue.name)
+                if venue.name != raw_name:
+                    self._ensure_venue_alias(venue, raw_name)
                 return venue
 
-        # Try by exact name
+        # Try by exact raw name
         venue = self.db.execute(
-            select(Venue).where(Venue.name == ext.venue.name)
+            select(Venue).where(Venue.name == raw_name)
         ).scalar_one_or_none()
         if venue:
-            # Fill openalex_id if missing
             if venue.openalex_id is None and ext.venue.external_id:
                 venue.openalex_id = ext.venue.external_id
             return venue
 
-        # Check aliases
+        # Try by normalized canonical name
+        if canonical_name != raw_name:
+            venue = self.db.execute(
+                select(Venue).where(Venue.name == canonical_name)
+            ).scalar_one_or_none()
+            if venue:
+                self._ensure_venue_alias(venue, raw_name)
+                if venue.openalex_id is None and ext.venue.external_id:
+                    venue.openalex_id = ext.venue.external_id
+                return venue
+
+        # Check aliases (try both raw and normalized)
         alias = self.db.execute(
-            select(VenueAlias).where(VenueAlias.alias == ext.venue.name)
+            select(VenueAlias).where(VenueAlias.alias == raw_name)
         ).scalar_one_or_none()
         if alias:
             return alias.venue
 
-        # Create new venue
+        if canonical_name != raw_name:
+            alias = self.db.execute(
+                select(VenueAlias).where(VenueAlias.alias == canonical_name)
+            ).scalar_one_or_none()
+            if alias:
+                self._ensure_venue_alias(alias.venue, raw_name)
+                return alias.venue
+
+        # Create new venue with normalized name; store raw as alias if different
         venue = Venue(
-            name=ext.venue.name,
+            name=canonical_name,
             openalex_id=ext.venue.external_id,
             issn=ext.venue.issn,
             publisher=ext.venue.publisher,
@@ -384,6 +464,8 @@ class EnrichmentService:
         )
         self.db.add(venue)
         self.db.flush()
+        if canonical_name != raw_name:
+            self._ensure_venue_alias(venue, raw_name)
         return venue
 
     def _ensure_venue_alias(self, venue: Venue, alias_name: str) -> None:

@@ -1,18 +1,18 @@
-"""CRUD routes for venues and their aliases."""
+"""CRUD routes for venues, their aliases, and field associations."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
-from litexplorer.models.library import Venue, VenueAlias, VenueTier
+from litexplorer.models.library import Field, Venue, VenueAlias, VenueField
 from litexplorer.schemas.venues import (
     VenueAliasCreate,
     VenueAliasOut,
     VenueCreate,
     VenueDetail,
+    VenueFieldNested,
     VenueOut,
-    VenueTierNested,
     VenueUpdate,
 )
 
@@ -30,14 +30,13 @@ def _venue_detail(venue: Venue) -> VenueDetail:
     return VenueDetail(
         **{c.key: getattr(venue, c.key) for c in Venue.__table__.columns},
         aliases=[VenueAliasOut.model_validate(a) for a in venue.aliases],
-        tiers=[
-            VenueTierNested(
-                id=t.id,
-                field_id=t.field_id,
-                field_name=t.field.name if t.field else None,
-                tier=t.tier,
+        fields=[
+            VenueFieldNested(
+                id=vf.id,
+                field_id=vf.field_id,
+                field_name=vf.field.name if vf.field else None,
             )
-            for t in venue.tiers
+            for vf in venue.fields
         ],
     )
 
@@ -71,7 +70,7 @@ def get_venue(venue_id: int, db: Session = Depends(get_db)):
         .where(Venue.id == venue_id)
         .options(
             joinedload(Venue.aliases),
-            joinedload(Venue.tiers).joinedload(VenueTier.field),
+            joinedload(Venue.fields).joinedload(VenueField.field),
         )
     ).unique().one_or_none()
     if not venue:
@@ -120,4 +119,46 @@ def remove_alias(venue_id: int, alias_id: int, db: Session = Depends(get_db)):
     if not alias:
         raise HTTPException(status_code=404, detail="Alias not found")
     db.delete(alias)
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Field associations
+# ---------------------------------------------------------------------------
+
+@router.post("/{venue_id}/fields", response_model=VenueFieldNested, status_code=201)
+def add_field(venue_id: int, body: dict, db: Session = Depends(get_db)):
+    """Associate a venue with a field. Body: {"field_id": int}"""
+    venue = _get_venue(db, venue_id)
+    field_id = body.get("field_id")
+    if not field_id or not db.get(Field, field_id):
+        raise HTTPException(status_code=422, detail="Field not found")
+    existing = db.scalars(
+        select(VenueField).where(
+            VenueField.venue_id == venue.id, VenueField.field_id == field_id
+        )
+    ).one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Field already associated")
+    vf = VenueField(venue_id=venue.id, field_id=field_id)
+    db.add(vf)
+    db.commit()
+    db.refresh(vf)
+    return VenueFieldNested(
+        id=vf.id,
+        field_id=vf.field_id,
+        field_name=vf.field.name if vf.field else None,
+    )
+
+
+@router.delete("/{venue_id}/fields/{field_id}", status_code=204)
+def remove_field(venue_id: int, field_id: int, db: Session = Depends(get_db)):
+    vf = db.scalars(
+        select(VenueField).where(
+            VenueField.venue_id == venue_id, VenueField.field_id == field_id
+        )
+    ).one_or_none()
+    if not vf:
+        raise HTTPException(status_code=404, detail="Field association not found")
+    db.delete(vf)
     db.commit()

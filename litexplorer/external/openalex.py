@@ -148,10 +148,11 @@ class OpenAlexClient(ExternalLiteratureClient):
     """Synchronous OpenAlex API client using httpx."""
 
     def __init__(self, base_url: str = "https://api.openalex.org", api_key: str | None = None):
-        headers = {"User-Agent": "LitExplorer/0.1 (mailto:litexplorer@local)"}
+        headers = {"User-Agent": f"LitExplorer/0.1 (mailto:{api_key or 'litexplorer@local'})"}
+        params = {}
         if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self._http = httpx.Client(base_url=base_url, headers=headers, timeout=30.0)
+            params["mailto"] = api_key
+        self._http = httpx.Client(base_url=base_url, headers=headers, params=params, timeout=30.0)
 
     def close(self):
         self._http.close()
@@ -169,6 +170,14 @@ class OpenAlexClient(ExternalLiteratureClient):
     def get_work_by_doi_raw(self, doi: str) -> dict | None:
         """Fetch raw JSON for a single work by DOI. Returns None if not found."""
         resp = self._http.get(f"/works/doi:{doi}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_work_by_id_raw(self, openalex_id: str) -> dict | None:
+        """Fetch raw JSON for a single work by its OpenAlex ID. Returns None if not found."""
+        resp = self._http.get(f"/works/{openalex_id}")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()

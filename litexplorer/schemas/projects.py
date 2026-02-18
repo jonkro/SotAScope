@@ -23,6 +23,22 @@ class TopicListWorkOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Project ignored works
+# ---------------------------------------------------------------------------
+
+class ProjectIgnoredWorkAdd(BaseModel):
+    work_id: int
+
+
+class ProjectIgnoredWorkOut(BaseModel):
+    id: int
+    work_id: int
+    work: WorkOut
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
 # Topic lists
 # ---------------------------------------------------------------------------
 
@@ -79,3 +95,4 @@ class ProjectOut(BaseModel):
 
 class ProjectDetail(ProjectOut):
     topic_lists: list[TopicListOut] = []
+    ignored_works: list[ProjectIgnoredWorkOut] = []

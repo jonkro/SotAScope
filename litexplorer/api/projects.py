@@ -6,10 +6,12 @@ from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
 from litexplorer.models.library import Work
-from litexplorer.models.project import Project, TopicList, TopicListWork
+from litexplorer.models.project import Project, ProjectIgnoredWork, TopicList, TopicListWork
 from litexplorer.schemas.projects import (
     ProjectCreate,
     ProjectDetail,
+    ProjectIgnoredWorkAdd,
+    ProjectIgnoredWorkOut,
     ProjectOut,
     ProjectUpdate,
     TopicListCreate,
@@ -79,16 +81,29 @@ def list_projects(
     return db.scalars(stmt.offset(offset).limit(limit)).all()
 
 
+def _project_detail(project: Project) -> ProjectDetail:
+    """Build a ProjectDetail response from a Project ORM instance."""
+    return ProjectDetail(
+        **{c.key: getattr(project, c.key) for c in Project.__table__.columns},
+        topic_lists=[TopicListOut.model_validate(tl) for tl in project.topic_lists],
+        ignored_works=[
+            ProjectIgnoredWorkOut(
+                id=assoc.id,
+                work_id=assoc.work_id,
+                work=WorkOut.model_validate(assoc.work),
+            )
+            for assoc in project.ignored_work_associations
+        ],
+    )
+
+
 @router.post("", response_model=ProjectDetail, status_code=201)
 def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
     project = Project(**body.model_dump())
     db.add(project)
     db.commit()
     db.refresh(project)
-    return ProjectDetail(
-        **{c.key: getattr(project, c.key) for c in Project.__table__.columns},
-        topic_lists=[],
-    )
+    return _project_detail(project)
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
@@ -96,14 +111,14 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     project = db.scalars(
         select(Project)
         .where(Project.id == project_id)
-        .options(joinedload(Project.topic_lists))
+        .options(
+            joinedload(Project.topic_lists),
+            joinedload(Project.ignored_work_associations).joinedload(ProjectIgnoredWork.work),
+        )
     ).unique().one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return ProjectDetail(
-        **{c.key: getattr(project, c.key) for c in Project.__table__.columns},
-        topic_lists=[TopicListOut.model_validate(tl) for tl in project.topic_lists],
-    )
+    return _project_detail(project)
 
 
 @router.patch("/{project_id}", response_model=ProjectDetail)
@@ -113,10 +128,7 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
         setattr(project, key, value)
     db.commit()
     db.refresh(project)
-    return ProjectDetail(
-        **{c.key: getattr(project, c.key) for c in Project.__table__.columns},
-        topic_lists=[TopicListOut.model_validate(tl) for tl in project.topic_lists],
-    )
+    return _project_detail(project)
 
 
 @router.delete("/{project_id}", status_code=204)
@@ -247,5 +259,64 @@ def remove_work_from_topic_list(
     ).one_or_none()
     if not assoc:
         raise HTTPException(status_code=404, detail="Work not in this topic list")
+    db.delete(assoc)
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Ignored works (mark papers as uninteresting per project)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/{project_id}/ignored-works",
+    response_model=ProjectIgnoredWorkOut,
+    status_code=201,
+)
+def add_ignored_work(
+    project_id: int,
+    body: ProjectIgnoredWorkAdd,
+    db: Session = Depends(get_db),
+):
+    _get_project(db, project_id)
+    work = db.get(Work, body.work_id)
+    if not work:
+        raise HTTPException(status_code=422, detail="Work not found")
+
+    existing = db.scalars(
+        select(ProjectIgnoredWork).where(
+            ProjectIgnoredWork.project_id == project_id,
+            ProjectIgnoredWork.work_id == work.id,
+        )
+    ).one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Work already ignored in this project")
+
+    assoc = ProjectIgnoredWork(project_id=project_id, work_id=work.id)
+    db.add(assoc)
+    db.commit()
+    db.refresh(assoc)
+    return ProjectIgnoredWorkOut(
+        id=assoc.id,
+        work_id=assoc.work_id,
+        work=WorkOut.model_validate(work),
+    )
+
+
+@router.delete(
+    "/{project_id}/ignored-works/{work_id}",
+    status_code=204,
+)
+def remove_ignored_work(
+    project_id: int, work_id: int, db: Session = Depends(get_db)
+):
+    _get_project(db, project_id)
+    assoc = db.scalars(
+        select(ProjectIgnoredWork).where(
+            ProjectIgnoredWork.project_id == project_id,
+            ProjectIgnoredWork.work_id == work_id,
+        )
+    ).one_or_none()
+    if not assoc:
+        raise HTTPException(status_code=404, detail="Work not in ignored list")
     db.delete(assoc)
     db.commit()

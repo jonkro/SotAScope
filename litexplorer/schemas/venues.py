@@ -18,14 +18,13 @@ class VenueAliasOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Venue tiers (nested in venue detail)
+# Venue fields (nested in venue detail)
 # ---------------------------------------------------------------------------
 
-class VenueTierNested(BaseModel):
+class VenueFieldNested(BaseModel):
     id: int
     field_id: int
     field_name: str | None = None
-    tier: int
 
     model_config = {"from_attributes": True}
 
@@ -41,6 +40,7 @@ class VenueCreate(BaseModel):
     issn: str | None = None
     publisher: str | None = None
     venue_type: str | None = None
+    tier: int = 2
 
 
 class VenueUpdate(BaseModel):
@@ -50,6 +50,7 @@ class VenueUpdate(BaseModel):
     issn: str | None = None
     publisher: str | None = None
     venue_type: str | None = None
+    tier: int | None = None
 
 
 class VenueOut(BaseModel):
@@ -60,10 +61,11 @@ class VenueOut(BaseModel):
     issn: str | None
     publisher: str | None
     venue_type: str | None
+    tier: int
 
     model_config = {"from_attributes": True}
 
 
 class VenueDetail(VenueOut):
     aliases: list[VenueAliasOut] = []
-    tiers: list[VenueTierNested] = []
+    fields: list[VenueFieldNested] = []

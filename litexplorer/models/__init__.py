@@ -8,12 +8,12 @@ from litexplorer.models.library import (
     Field,
     Venue,
     VenueAlias,
-    VenueTier,
+    VenueField,
     Work,
     WorkAuthor,
     WorkLocation,
 )
-from litexplorer.models.project import Project, TopicList, TopicListWork
+from litexplorer.models.project import Project, ProjectIgnoredWork, TopicList, TopicListWork
 
 __all__ = [
     "Base",
@@ -23,11 +23,12 @@ __all__ = [
     "Field",
     "Venue",
     "VenueAlias",
-    "VenueTier",
+    "VenueField",
     "Work",
     "WorkAuthor",
     "WorkLocation",
     "Project",
+    "ProjectIgnoredWork",
     "TopicList",
     "TopicListWork",
 ]
