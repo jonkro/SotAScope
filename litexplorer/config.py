@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     # Override via LITEXPLORER_DATA_DIR env var.
     data_dir: Path = Path.home() / ".litexplorer"
 
+    # OpenAlex API settings
+    openalex_api_key: str | None = None
+    openalex_base_url: str = "https://api.openalex.org"
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "litexplorer.db"
