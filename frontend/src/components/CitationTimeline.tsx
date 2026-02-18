@@ -49,6 +49,9 @@ export default function CitationTimeline({
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 400 });
 
+  // For click-to-cycle through overlapping dots
+  const cycleStateRef = useRef<{ ids: number[]; index: number }>({ ids: [], index: -1 });
+
   const currentYear = new Date().getFullYear();
   const filterParams: FilterParams = {
     threshold: 0, decayStartYears, showBackward: true, showForward: true, currentYear,
@@ -74,25 +77,25 @@ export default function CitationTimeline({
     if (s.publication_year == null) continue;
     if (startYear != null && s.publication_year < startYear) continue;
     const colors = s.topic_list_ids.map((id) => tlColorMap.get(id) ?? '#6b7280');
-    const score = computeImportanceScore(s.citation_count ?? 0, s.publication_year, filterParams);
+    const rawScore = computeImportanceScore(s.citation_count ?? 0, s.publication_year, filterParams);
     dots.push({
       id: s.id, title: s.title, year: s.publication_year, type: 'seed',
       colors, topicListIds: s.topic_list_ids, connectedSeedIds: [],
       venueId: s.venue_id, citationCount: s.citation_count,
-      score, seedCitations: seedCitedByCount.get(s.id) ?? 0,
+      score: Math.log(1 + rawScore), seedCitations: seedCitedByCount.get(s.id) ?? 0,
     });
   }
 
   for (const n of neighbors) {
     if (n.publication_year == null) continue;
     if (startYear != null && n.publication_year < startYear) continue;
-    const score = computeImportanceScore(n.citation_count ?? 0, n.publication_year, filterParams);
+    const rawScore = computeImportanceScore(n.citation_count ?? 0, n.publication_year, filterParams);
     const citedBySeeds = n.direction === 'backward' ? n.connected_seed_ids.length : 0;
     dots.push({
       id: n.id, title: n.title, year: n.publication_year, type: n.direction,
       colors: ['#9ca3af'], topicListIds: [], connectedSeedIds: n.connected_seed_ids,
       venueId: n.venue_id, citationCount: n.citation_count,
-      score, seedCitations: citedBySeeds,
+      score: Math.log(1 + rawScore), seedCitations: citedBySeeds,
     });
   }
 
@@ -133,22 +136,10 @@ export default function CitationTimeline({
     const maxYear = d3.max(years)! + 1;
     const xScale = d3.scaleLinear().domain([minYear, maxYear]).range([0, innerW]);
 
-    // --- Y scale: importance score (higher = top) ---
-    const scores = dots.map((d) => d.score).sort((a, b) => a - b);
-    const minScore = scores[0] ?? 0;
-    let maxScore = scores[scores.length - 1] ?? 1;
-
-    // Cap outliers: 1.5 * IQR above Q3
-    if (scores.length >= 4) {
-      const q1 = scores[Math.floor(scores.length * 0.25)];
-      const q3 = scores[Math.floor(scores.length * 0.75)];
-      const iqr = q3 - q1;
-      const upperFence = q3 + 1.5 * iqr;
-      if (upperFence > 0 && upperFence < maxScore) {
-        maxScore = upperFence;
-      }
-    }
-
+    // --- Y scale: importance score with log(1+x) transform (higher = top) ---
+    const scores = dots.map((d) => d.score);
+    const minScore = d3.min(scores) ?? 0;
+    let maxScore = d3.max(scores) ?? 1;
     if (maxScore <= minScore) maxScore = minScore + 1;
     const yPadding = (maxScore - minScore) * 0.08;
     const yScale = d3.scaleLinear()
@@ -209,6 +200,45 @@ export default function CitationTimeline({
         });
       });
     }
+
+    // --- Click-to-cycle handler for overlapping dots ---
+    const HIT_RADIUS = 8; // px radius to find overlapping dots
+    const handleDotClick = (clickedId: number) => {
+      const clickedPos = dotPositions.get(clickedId);
+      if (!clickedPos) { onSelectWork(clickedId); return; }
+
+      // Find all dots within HIT_RADIUS of the clicked dot's position
+      const nearby: number[] = [];
+      for (const d of dots) {
+        const pos = dotPositions.get(d.id);
+        if (!pos) continue;
+        const dx = pos.x - clickedPos.x;
+        const dy = pos.y - clickedPos.y;
+        if (Math.sqrt(dx * dx + dy * dy) <= HIT_RADIUS) {
+          nearby.push(d.id);
+        }
+      }
+
+      if (nearby.length <= 1) {
+        cycleStateRef.current = { ids: [], index: -1 };
+        onSelectWork(clickedId);
+        return;
+      }
+
+      const prev = cycleStateRef.current;
+      // Check if we're clicking the same cluster as before
+      const sameCluster = prev.ids.length === nearby.length &&
+        prev.ids.every((id) => nearby.includes(id));
+
+      if (sameCluster) {
+        const nextIndex = (prev.index + 1) % nearby.length;
+        cycleStateRef.current = { ids: nearby, index: nextIndex };
+        onSelectWork(nearby[nextIndex]);
+      } else {
+        cycleStateRef.current = { ids: nearby, index: 0 };
+        onSelectWork(nearby[0]);
+      }
+    };
 
     // --- Selected dot connections ---
     const selectedConnections = new Set<number>();
@@ -295,7 +325,7 @@ export default function CitationTimeline({
               .attr('fill', a.data)
               .attr('opacity', dimmed ? 0.2 : 1)
               .attr('cursor', 'pointer')
-              .on('click', () => onSelectWork(d.id))
+              .on('click', () => handleDotClick(d.id))
               .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
               .on('mouseleave', () => hideTooltip(tooltip));
           }
@@ -316,7 +346,7 @@ export default function CitationTimeline({
             .attr('stroke', isSelected ? '#6366f1' : 'none')
             .attr('stroke-width', isSelected ? 2 : 0)
             .attr('cursor', 'pointer')
-            .on('click', () => onSelectWork(d.id))
+            .on('click', () => handleDotClick(d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         }
@@ -336,7 +366,7 @@ export default function CitationTimeline({
             .attr('stroke', isSelected ? '#6366f1' : 'none')
             .attr('stroke-width', isSelected ? 2 : 0)
             .attr('cursor', 'pointer')
-            .on('click', () => onSelectWork(d.id))
+            .on('click', () => handleDotClick(d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         } else {
@@ -348,7 +378,7 @@ export default function CitationTimeline({
             .attr('stroke', isSelected ? '#6366f1' : 'none')
             .attr('stroke-width', isSelected ? 2 : 0)
             .attr('cursor', 'pointer')
-            .on('click', () => onSelectWork(d.id))
+            .on('click', () => handleDotClick(d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         }
