@@ -1,0 +1,5 @@
+name: litexplorer
+channels:
+  - defaults
+dependencies:
+  - python=3.11

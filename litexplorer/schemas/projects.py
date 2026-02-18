@@ -1,0 +1,81 @@
+from datetime import datetime
+
+from pydantic import BaseModel
+
+from litexplorer.schemas.works import WorkOut
+
+
+# ---------------------------------------------------------------------------
+# Topic list works
+# ---------------------------------------------------------------------------
+
+class TopicListWorkAdd(BaseModel):
+    work_id: int
+
+
+class TopicListWorkOut(BaseModel):
+    id: int
+    work_id: int
+    added_at: datetime
+    work: WorkOut
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Topic lists
+# ---------------------------------------------------------------------------
+
+class TopicListCreate(BaseModel):
+    name: str
+    color: str  # hex, e.g. '#3b82f6'
+
+
+class TopicListUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+
+
+class TopicListOut(BaseModel):
+    id: int
+    project_id: int
+    name: str
+    color: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TopicListDetail(TopicListOut):
+    works: list[TopicListWorkOut] = []
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: str | None = None
+    owner: str | None = None
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    owner: str | None = None
+
+
+class ProjectOut(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    owner: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectDetail(ProjectOut):
+    topic_lists: list[TopicListOut] = []
