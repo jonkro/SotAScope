@@ -1,13 +1,15 @@
 """CRUD routes for works, locations, authors, citations, and BibTeX import."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy import delete as sa_delete, exists, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
 from litexplorer.models.library import (
     Author,
     Citation,
+    Venue,
+    VenueAlias,
     Work,
     WorkAuthor,
     WorkLocation,
@@ -140,20 +142,80 @@ def detect_duplicates(db: Session = Depends(get_db)):
 def list_works(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    q: str | None = Query(None, description="Search title"),
+    q: str | None = Query(None, description="Search title, authors, or venue"),
     venue_id: int | None = Query(None),
     year: int | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Work).order_by(Work.id)
+    # Correlated subqueries for display fields
+    first_author_sq = (
+        select(Author.name)
+        .join(WorkAuthor, WorkAuthor.author_id == Author.id)
+        .where(WorkAuthor.work_id == Work.id)
+        .order_by(WorkAuthor.position)
+        .limit(1)
+        .correlate(Work)
+        .scalar_subquery()
+        .label("first_author_name")
+    )
+    author_count_sq = (
+        select(func.count())
+        .select_from(WorkAuthor)
+        .where(WorkAuthor.work_id == Work.id)
+        .correlate(Work)
+        .scalar_subquery()
+        .label("author_count")
+    )
+    preferred_alias_sq = (
+        select(VenueAlias.alias)
+        .where(VenueAlias.venue_id == Work.venue_id)
+        .order_by(VenueAlias.sort_order)
+        .limit(1)
+        .correlate(Work)
+        .scalar_subquery()
+    )
+    venue_display_sq = func.coalesce(preferred_alias_sq, Venue.name).label("venue_display_name")
+
+    stmt = (
+        select(Work, first_author_sq, author_count_sq, venue_display_sq, Venue.tier.label("venue_tier"))
+        .outerjoin(Venue, Work.venue_id == Venue.id)
+        .order_by(Work.id)
+    )
     if q:
-        stmt = stmt.where(Work.title.ilike(f"%{q}%"))
+        pattern = f"%{q}%"
+        author_match = exists(
+            select(1)
+            .select_from(WorkAuthor)
+            .join(Author, WorkAuthor.author_id == Author.id)
+            .where(WorkAuthor.work_id == Work.id, Author.name.ilike(pattern))
+        )
+        alias_match = exists(
+            select(1)
+            .select_from(VenueAlias)
+            .where(VenueAlias.venue_id == Work.venue_id, VenueAlias.alias.ilike(pattern))
+        )
+        stmt = stmt.where(or_(
+            Work.title.ilike(pattern),
+            author_match,
+            Venue.name.ilike(pattern),
+            alias_match,
+        ))
     if venue_id is not None:
         stmt = stmt.where(Work.venue_id == venue_id)
     if year is not None:
         stmt = stmt.where(Work.publication_year == year)
     stmt = stmt.offset(offset).limit(limit)
-    return db.scalars(stmt).all()
+
+    rows = db.execute(stmt).all()
+    results = []
+    for work, first_author, a_count, v_display, v_tier in rows:
+        d = {c.key: getattr(work, c.key) for c in Work.__table__.columns}
+        d["first_author_name"] = first_author
+        d["author_count"] = a_count or 0
+        d["venue_display_name"] = v_display
+        d["venue_tier"] = v_tier
+        results.append(WorkOut(**d))
+    return results
 
 
 @router.post("", response_model=WorkDetail, status_code=201)

@@ -13,6 +13,7 @@ class VenueAliasOut(BaseModel):
     id: int
     venue_id: int
     alias: str
+    sort_order: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -62,6 +63,8 @@ class VenueOut(BaseModel):
     publisher: str | None
     venue_type: str | None
     tier: int
+    field_display: str | None = None
+    work_count: int = 0
 
     model_config = {"from_attributes": True}
 

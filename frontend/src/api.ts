@@ -180,6 +180,13 @@ export function deleteVenueAlias(venueId: number, aliasId: number) {
   return apiFetch<void>(`/api/venues/${venueId}/aliases/${aliasId}`, { method: 'DELETE' });
 }
 
+export function reorderVenueAliases(venueId: number, aliasIds: number[]) {
+  return apiFetch<VenueAliasOut[]>(`/api/venues/${venueId}/aliases/reorder`, {
+    method: 'POST',
+    body: JSON.stringify({ alias_ids: aliasIds }),
+  });
+}
+
 // ---- Fields ----
 
 export function fetchFields() {

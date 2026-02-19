@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import SearchInput from '../components/SearchInput';
 import Pagination from '../components/Pagination';
@@ -12,28 +13,41 @@ import { useWorks } from '../hooks/useWorks';
 const PAGE_SIZE = 30;
 
 export default function LibraryPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
   const [selectedWorkId, setSelectedWorkId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [sanitizeOpen, setSanitizeOpen] = useState(false);
 
+  const venueIdParam = searchParams.get('venue_id');
+  const venueIdFilter = venueIdParam ? Number(venueIdParam) : undefined;
+
   const handleSearch = useCallback((v: string) => {
     setSearch(v);
     setOffset(0);
   }, []);
 
+  const clearVenueFilter = useCallback(() => {
+    setSearchParams({}, { replace: true });
+    setOffset(0);
+  }, [setSearchParams]);
+
   const { data: works, isLoading } = useWorks({
     offset,
     limit: PAGE_SIZE,
     q: search || undefined,
+    venue_id: venueIdFilter,
   });
+
+  // Derive venue name from first result (all share the same venue when filtered)
+  const venueFilterName = venueIdFilter && works?.length ? works[0].venue_display_name : null;
 
   return (
     <div className="flex h-screen">
       <div className="flex-1 flex flex-col min-w-0">
         <PageHeader title="Library">
-          <SearchInput value={search} onChange={handleSearch} placeholder="Search works..." />
+          <SearchInput value={search} onChange={handleSearch} placeholder="Search title, authors, or venue..." />
           <button
             onClick={() => setSanitizeOpen(true)}
             className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
@@ -47,6 +61,20 @@ export default function LibraryPage() {
             Import
           </button>
         </PageHeader>
+
+        {venueIdFilter && (
+          <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
+            <span className="text-xs text-blue-700">
+              Filtered by venue: <strong>{venueFilterName ?? `#${venueIdFilter}`}</strong>
+            </span>
+            <button
+              onClick={clearVenueFilter}
+              className="text-xs text-blue-600 hover:text-blue-800 underline"
+            >
+              Clear filter
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (

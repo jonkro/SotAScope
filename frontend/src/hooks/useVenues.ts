@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchVenues, fetchVenue, updateVenue, addVenueAlias, deleteVenueAlias } from '../api';
+import { fetchVenues, fetchVenue, updateVenue, addVenueAlias, deleteVenueAlias, reorderVenueAliases } from '../api';
 
 export function useVenues(params?: { offset?: number; limit?: number; q?: string }) {
   return useQuery({
@@ -21,7 +21,10 @@ export function useUpdateVenue() {
   return useMutation({
     mutationFn: ({ venueId, data }: { venueId: number; data: Record<string, unknown> }) =>
       updateVenue(venueId, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['venues'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['venues'] });
+      qc.invalidateQueries({ queryKey: ['works'] });
+    },
   });
 }
 
@@ -37,6 +40,15 @@ export function useDeleteVenueAlias() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ venueId, aliasId }: { venueId: number; aliasId: number }) => deleteVenueAlias(venueId, aliasId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['venues'] }),
+  });
+}
+
+export function useReorderVenueAliases() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ venueId, aliasIds }: { venueId: number; aliasIds: number[] }) =>
+      reorderVenueAliases(venueId, aliasIds),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['venues'] }),
   });
 }

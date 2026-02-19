@@ -128,6 +128,12 @@ class WorkOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # Display fields (populated by list_works)
+    first_author_name: str | None = None
+    author_count: int = 0
+    venue_display_name: str | None = None
+    venue_tier: int | None = None
+
     model_config = {"from_attributes": True}
 
 

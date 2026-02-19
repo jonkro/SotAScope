@@ -1,11 +1,11 @@
 """CRUD routes for venues, their aliases, and field associations."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
-from litexplorer.models.library import Field, Venue, VenueAlias, VenueField
+from litexplorer.models.library import Field, Venue, VenueAlias, VenueField, Work
 from litexplorer.schemas.venues import (
     VenueAliasCreate,
     VenueAliasOut,
@@ -26,7 +26,7 @@ def _get_venue(db: Session, venue_id: int) -> Venue:
     return venue
 
 
-def _venue_detail(venue: Venue) -> VenueDetail:
+def _venue_detail(venue: Venue, work_count: int = 0) -> VenueDetail:
     return VenueDetail(
         **{c.key: getattr(venue, c.key) for c in Venue.__table__.columns},
         aliases=[VenueAliasOut.model_validate(a) for a in venue.aliases],
@@ -38,6 +38,7 @@ def _venue_detail(venue: Venue) -> VenueDetail:
             )
             for vf in venue.fields
         ],
+        work_count=work_count,
     )
 
 
@@ -48,10 +49,35 @@ def list_venues(
     q: str | None = Query(None, description="Search venue name"),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Venue).order_by(Venue.name)
+    work_count_sq = (
+        select(func.count())
+        .select_from(Work)
+        .where(Work.venue_id == Venue.id)
+        .correlate(Venue)
+        .scalar_subquery()
+        .label("work_count")
+    )
+    stmt = (
+        select(Venue, work_count_sq)
+        .options(joinedload(Venue.fields).joinedload(VenueField.field))
+        .order_by(Venue.name)
+    )
     if q:
         stmt = stmt.where(Venue.name.ilike(f"%{q}%"))
-    return db.scalars(stmt.offset(offset).limit(limit)).all()
+    rows = db.execute(stmt.offset(offset).limit(limit)).unique().all()
+    results = []
+    for v, wc in rows:
+        d = {c.key: getattr(v, c.key) for c in Venue.__table__.columns}
+        names = [vf.field.name for vf in v.fields if vf.field]
+        if len(names) == 0:
+            d["field_display"] = None
+        elif len(names) == 1:
+            d["field_display"] = names[0]
+        else:
+            d["field_display"] = "multi"
+        d["work_count"] = wc or 0
+        results.append(VenueOut(**d))
+    return results
 
 
 @router.post("", response_model=VenueDetail, status_code=201)
@@ -75,13 +101,31 @@ def get_venue(venue_id: int, db: Session = Depends(get_db)):
     ).unique().one_or_none()
     if not venue:
         raise HTTPException(status_code=404, detail="Venue not found")
-    return _venue_detail(venue)
+    wc = db.scalar(select(func.count()).select_from(Work).where(Work.venue_id == venue_id)) or 0
+    return _venue_detail(venue, work_count=wc)
 
 
 @router.patch("/{venue_id}", response_model=VenueDetail)
 def update_venue(venue_id: int, body: VenueUpdate, db: Session = Depends(get_db)):
     venue = _get_venue(db, venue_id)
-    for key, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+
+    # When renaming, preserve old name as alias for search continuity
+    if "name" in updates and updates["name"] and updates["name"] != venue.name:
+        old_name = venue.name
+        existing = db.scalars(
+            select(VenueAlias).where(
+                VenueAlias.venue_id == venue.id, VenueAlias.alias == old_name
+            )
+        ).one_or_none()
+        if not existing:
+            # Place at end of sort order
+            max_order = db.scalar(
+                select(func.max(VenueAlias.sort_order)).where(VenueAlias.venue_id == venue.id)
+            ) or -1
+            db.add(VenueAlias(venue_id=venue.id, alias=old_name, sort_order=max_order + 1))
+
+    for key, value in updates.items():
         setattr(venue, key, value)
     db.commit()
     db.refresh(venue)
@@ -107,6 +151,32 @@ def add_alias(venue_id: int, body: VenueAliasCreate, db: Session = Depends(get_d
     db.commit()
     db.refresh(alias)
     return alias
+
+
+@router.post("/{venue_id}/aliases/reorder", response_model=list[VenueAliasOut])
+def reorder_aliases(venue_id: int, body: dict, db: Session = Depends(get_db)):
+    """Reorder aliases for a venue. Body: {"alias_ids": [id1, id2, ...]}"""
+    _get_venue(db, venue_id)
+    alias_ids = body.get("alias_ids", [])
+    if not alias_ids:
+        raise HTTPException(status_code=422, detail="alias_ids is required")
+    aliases = db.scalars(
+        select(VenueAlias).where(
+            VenueAlias.venue_id == venue_id, VenueAlias.id.in_(alias_ids)
+        )
+    ).all()
+    alias_map = {a.id: a for a in aliases}
+    for idx, aid in enumerate(alias_ids):
+        if aid in alias_map:
+            alias_map[aid].sort_order = idx
+    db.commit()
+    # Return updated aliases in new order
+    updated = db.scalars(
+        select(VenueAlias)
+        .where(VenueAlias.venue_id == venue_id)
+        .order_by(VenueAlias.sort_order)
+    ).all()
+    return [VenueAliasOut.model_validate(a) for a in updated]
 
 
 @router.delete("/{venue_id}/aliases/{alias_id}", status_code=204)

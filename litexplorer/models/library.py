@@ -143,7 +143,8 @@ class Venue(Base):
 
     works: Mapped[list["Work"]] = relationship(back_populates="venue")
     aliases: Mapped[list["VenueAlias"]] = relationship(
-        back_populates="venue", cascade="all, delete-orphan"
+        back_populates="venue", cascade="all, delete-orphan",
+        order_by="VenueAlias.sort_order",
     )
     fields: Mapped[list["VenueField"]] = relationship(
         back_populates="venue", cascade="all, delete-orphan"
@@ -162,6 +163,7 @@ class VenueAlias(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     venue_id: Mapped[int] = mapped_column(ForeignKey("venues.id", ondelete="CASCADE"))
     alias: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
     venue: Mapped["Venue"] = relationship(back_populates="aliases")
 

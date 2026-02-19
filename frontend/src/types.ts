@@ -17,6 +17,10 @@ export interface WorkOut {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  first_author_name: string | null;
+  author_count: number;
+  venue_display_name: string | null;
+  venue_tier: number | null;
 }
 
 export interface WorkLocationOut {
@@ -78,12 +82,15 @@ export interface VenueOut {
   publisher: string | null;
   venue_type: string | null;
   tier: number;
+  field_display: string | null;
+  work_count: number;
 }
 
 export interface VenueAliasOut {
   id: number;
   venue_id: number;
   alias: string;
+  sort_order: number;
 }
 
 export interface VenueFieldNested {

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useResolveDOI } from '../hooks/useEnrichment';
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut } from '../types';
@@ -64,6 +65,7 @@ export default function WorkDetailPanel({
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleteMutation = useDeleteWork();
+  const navigate = useNavigate();
 
   if (isLoading || !work) {
     return (
@@ -102,7 +104,16 @@ export default function WorkDetailPanel({
           {work.venue_name && (
             <>
               <span className="text-gray-500">Venue</span>
-              <span className="text-gray-800">{work.venue_name}</span>
+              {work.venue_id ? (
+                <button
+                  onClick={() => navigate(`/venues?venue_id=${work.venue_id}`)}
+                  className="text-blue-600 hover:underline text-left"
+                >
+                  {work.venue_name}
+                </button>
+              ) : (
+                <span className="text-gray-800">{work.venue_name}</span>
+              )}
             </>
           )}
           {work.doi && (

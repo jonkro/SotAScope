@@ -34,6 +34,12 @@ def _migrate_schema() -> None:
         if "doi_auto_resolved" not in columns:
             db.execute(text("ALTER TABLE works ADD COLUMN doi_auto_resolved BOOLEAN"))
             db.commit()
+
+        alias_cols = {c["name"] for c in inspector.get_columns("venue_aliases")}
+        if "sort_order" not in alias_cols:
+            db.execute(text("ALTER TABLE venue_aliases ADD COLUMN sort_order INTEGER DEFAULT 0"))
+            db.execute(text("UPDATE venue_aliases SET sort_order = id"))
+            db.commit()
     finally:
         db.close()
 
