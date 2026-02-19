@@ -24,6 +24,7 @@ export function useFetchBackwardCitations() {
     mutationFn: fetchBackwardCitationsEnrich,
     onSuccess: (_data, workId) => {
       qc.invalidateQueries({ queryKey: ['works', workId, 'citations'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 }
@@ -35,6 +36,7 @@ export function useFetchForwardCitations() {
       fetchForwardCitationsEnrich(workId, forceRefresh),
     onSuccess: (_data, { workId }) => {
       qc.invalidateQueries({ queryKey: ['works', workId, 'citations'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 }
@@ -45,6 +47,7 @@ export function useEnrichFromCrossref() {
     mutationFn: enrichFromCrossref,
     onSuccess: (_data, workId) => {
       qc.invalidateQueries({ queryKey: ['works', workId] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });
 }
