@@ -37,6 +37,7 @@ export default function WorkDetailPanel({
   onMarkUninteresting,
   onEnrichComplete,
   timelineContext,
+  isAutoEnriching,
 }: {
   workId: number;
   onClose: () => void;
@@ -45,6 +46,7 @@ export default function WorkDetailPanel({
   onMarkUninteresting?: (workId: number) => void;
   onEnrichComplete?: () => void;
   timelineContext?: TimelineContext;
+  isAutoEnriching?: boolean;
 }) {
   const { data: work, isLoading } = useWork(workId);
   const fwd = useForwardCitations(workId);
@@ -157,14 +159,14 @@ export default function WorkDetailPanel({
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => fetchBwd.mutate(workId, { onSettled: onEnrichComplete })}
-              disabled={fetchBwd.isPending}
+              disabled={fetchBwd.isPending || isAutoEnriching}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
               {fetchBwd.isPending ? 'Fetching...' : 'Fetch References'}
             </button>
             <button
               onClick={() => fetchFwd.mutate({ workId }, { onSettled: onEnrichComplete })}
-              disabled={fetchFwd.isPending}
+              disabled={fetchFwd.isPending || isAutoEnriching}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
               {fetchFwd.isPending ? 'Fetching...' : 'Fetch Citing Papers'}
@@ -172,13 +174,16 @@ export default function WorkDetailPanel({
             {work.doi && (
               <button
                 onClick={() => crossref.mutate(workId, { onSettled: onEnrichComplete })}
-                disabled={crossref.isPending}
+                disabled={crossref.isPending || isAutoEnriching}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >
                 {crossref.isPending ? 'Enriching...' : 'Enrich from Crossref'}
               </button>
             )}
           </div>
+          {isAutoEnriching && (
+            <p className="text-xs text-blue-600 mt-1 animate-pulse">Auto-enriching references and citations...</p>
+          )}
           {fetchBwd.data && (
             <p className="text-xs text-green-600 mt-1">Fetched {fetchBwd.data.count} references</p>
           )}

@@ -46,6 +46,9 @@ export default function ProjectDetailPage() {
   const [deleteListId, setDeleteListId] = useState<number | null>(null);
   const [selectedWorkId, setSelectedWorkId] = useState<number | null>(null);
 
+  // Auto-enrichment tracking
+  const [enrichingWorkIds, setEnrichingWorkIds] = useState<Set<number>>(new Set());
+
   // Work search for adding to lists
   const [showWorkSearch, setShowWorkSearch] = useState<number | null>(null);
   const [workSearch, setWorkSearch] = useState('');
@@ -72,14 +75,23 @@ export default function ProjectDetailPage() {
   const handleAddWorkToList = useCallback((topicListId: number, workId: number) => {
     addWork.mutate({ projectId, topicListId, workId }, {
       onSuccess: async () => {
-        // Auto-enrich: fetch references, citing papers, and crossref in parallel
-        await Promise.allSettled([
-          fetchBackwardCitationsEnrich(workId).catch(() => {}),
-          fetchForwardCitationsEnrich(workId).catch(() => {}),
-          enrichFromCrossref(workId).catch(() => {}),
-        ]);
-        qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
-        qc.invalidateQueries({ queryKey: ['works', workId] });
+        setEnrichingWorkIds((prev) => new Set(prev).add(workId));
+        try {
+          // Auto-enrich: fetch references, citing papers, and crossref in parallel
+          await Promise.allSettled([
+            fetchBackwardCitationsEnrich(workId).catch(() => {}),
+            fetchForwardCitationsEnrich(workId).catch(() => {}),
+            enrichFromCrossref(workId).catch(() => {}),
+          ]);
+          qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
+          qc.invalidateQueries({ queryKey: ['works', workId] });
+        } finally {
+          setEnrichingWorkIds((prev) => {
+            const next = new Set(prev);
+            next.delete(workId);
+            return next;
+          });
+        }
       },
     });
   }, [addWork, projectId, qc]);
@@ -342,6 +354,7 @@ export default function ProjectDetailPage() {
           onMarkUninteresting={(wid) => addIgnored.mutate({ projectId, workId: wid })}
           onEnrichComplete={handleEnrichComplete}
           timelineContext={activeTab === 'timeline' ? timelineContext : undefined}
+          isAutoEnriching={enrichingWorkIds.has(selectedWorkId)}
         />
       )}
 
