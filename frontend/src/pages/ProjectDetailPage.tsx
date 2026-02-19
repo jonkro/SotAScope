@@ -8,7 +8,7 @@ import TopicListFormDialog from '../components/TopicListFormDialog';
 import WorkDetailPanel from '../components/WorkDetailPanel';
 import ConfirmDialog from '../components/ConfirmDialog';
 import CitationTimeline from '../components/CitationTimeline';
-import TimelineControls from '../components/TimelineControls';
+import TimelineControls, { type CandidateFilter } from '../components/TimelineControls';
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
 import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
@@ -39,8 +39,7 @@ export default function ProjectDetailPage() {
   const [showBackward, setShowBackward] = useState(true);
   const [showForward, setShowForward] = useState(true);
   const [startYear, setStartYear] = useState<number | null>(null);
-  const [onlySelected, setOnlySelected] = useState(false);
-  const [onlyTopVenues, setOnlyTopVenues] = useState(false);
+  const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>('all');
 
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
@@ -126,7 +125,7 @@ export default function ProjectDetailPage() {
   }, [timeline]);
 
   const filteredNeighbors: TimelineNeighborWork[] = useMemo(() => {
-    if (!timeline || onlySelected) return [];
+    if (!timeline || candidateFilter === 'none') return [];
     let result = filterNeighbors(timeline.neighbors, tier1Set, ignoredSet, {
       threshold,
       decayStartYears,
@@ -134,17 +133,11 @@ export default function ProjectDetailPage() {
       showForward,
       currentYear: new Date().getFullYear(),
     });
-    if (onlyTopVenues) {
+    if (candidateFilter === 'top-venues') {
       result = result.filter((n) => n.venue_id != null && tier1Set.has(n.venue_id));
     }
     return result;
-  }, [timeline, tier1Set, ignoredSet, threshold, decayStartYears, showBackward, showForward, onlySelected, onlyTopVenues]);
-
-  const filteredSeeds = useMemo(() => {
-    if (!timeline) return [];
-    if (!onlyTopVenues) return timeline.seeds;
-    return timeline.seeds.filter((s) => s.venue_id != null && tier1Set.has(s.venue_id));
-  }, [timeline, onlyTopVenues, tier1Set]);
+  }, [timeline, tier1Set, ignoredSet, threshold, decayStartYears, showBackward, showForward, candidateFilter]);
 
   // Timeline context for WorkDetailPanel
   const timelineContext = useMemo(() => {
@@ -249,14 +242,12 @@ export default function ProjectDetailPage() {
               maxYear={yearRange.max}
               totalNeighbors={timeline?.neighbors.length ?? 0}
               filteredNeighbors={filteredNeighbors.length}
-              onlySelected={onlySelected}
-              onOnlySelectedChange={setOnlySelected}
-              onlyTopVenues={onlyTopVenues}
-              onOnlyTopVenuesChange={setOnlyTopVenues}
+              candidateFilter={candidateFilter}
+              onCandidateFilterChange={setCandidateFilter}
             />
             <div className="flex-1 min-h-0">
               <CitationTimeline
-                seeds={filteredSeeds}
+                seeds={timeline?.seeds ?? []}
                 neighbors={filteredNeighbors}
                 topicLists={timeline?.topic_lists ?? project.topic_lists}
                 seedCitations={timeline?.seed_citations ?? []}

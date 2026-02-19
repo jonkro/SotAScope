@@ -1,3 +1,5 @@
+export type CandidateFilter = 'all' | 'top-venues' | 'none';
+
 interface TimelineControlsProps {
   threshold: number;
   onThresholdChange: (v: number) => void;
@@ -13,10 +15,8 @@ interface TimelineControlsProps {
   maxYear: number | null;
   totalNeighbors: number;
   filteredNeighbors: number;
-  onlySelected: boolean;
-  onOnlySelectedChange: (v: boolean) => void;
-  onlyTopVenues: boolean;
-  onOnlyTopVenuesChange: (v: boolean) => void;
+  candidateFilter: CandidateFilter;
+  onCandidateFilterChange: (v: CandidateFilter) => void;
 }
 
 export default function TimelineControls({
@@ -34,10 +34,8 @@ export default function TimelineControls({
   maxYear,
   totalNeighbors,
   filteredNeighbors,
-  onlySelected,
-  onOnlySelectedChange,
-  onlyTopVenues,
-  onOnlyTopVenuesChange,
+  candidateFilter,
+  onCandidateFilterChange,
 }: TimelineControlsProps) {
   return (
     <div className="flex flex-wrap items-center gap-4 px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs">
@@ -89,23 +87,19 @@ export default function TimelineControls({
         <span className="text-gray-600">Cited by</span>
       </label>
 
-      {/* View filters */}
+      {/* Candidate filter */}
       <span className="text-gray-300">|</span>
-      <label className="flex items-center gap-1">
-        <input
-          type="checkbox"
-          checked={onlySelected}
-          onChange={(e) => onOnlySelectedChange(e.target.checked)}
-        />
-        <span className="text-gray-600">Only selected</span>
-      </label>
-      <label className="flex items-center gap-1">
-        <input
-          type="checkbox"
-          checked={onlyTopVenues}
-          onChange={(e) => onOnlyTopVenuesChange(e.target.checked)}
-        />
-        <span className="text-gray-600">Only top venues</span>
+      <label className="flex items-center gap-1.5">
+        <span className="text-gray-500">Candidates</span>
+        <select
+          value={candidateFilter}
+          onChange={(e) => onCandidateFilterChange(e.target.value as CandidateFilter)}
+          className="border border-gray-300 rounded px-1.5 py-0.5 text-xs text-gray-700 bg-white"
+        >
+          <option value="all">All</option>
+          <option value="top-venues">Top venues</option>
+          <option value="none">None</option>
+        </select>
       </label>
 
       {/* Start year */}
