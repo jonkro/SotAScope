@@ -13,6 +13,10 @@ interface TimelineControlsProps {
   maxYear: number | null;
   totalNeighbors: number;
   filteredNeighbors: number;
+  onlySelected: boolean;
+  onOnlySelectedChange: (v: boolean) => void;
+  onlyTopVenues: boolean;
+  onOnlyTopVenuesChange: (v: boolean) => void;
 }
 
 export default function TimelineControls({
@@ -30,6 +34,10 @@ export default function TimelineControls({
   maxYear,
   totalNeighbors,
   filteredNeighbors,
+  onlySelected,
+  onOnlySelectedChange,
+  onlyTopVenues,
+  onOnlyTopVenuesChange,
 }: TimelineControlsProps) {
   return (
     <div className="flex flex-wrap items-center gap-4 px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs">
@@ -79,6 +87,25 @@ export default function TimelineControls({
           onChange={(e) => onShowForwardChange(e.target.checked)}
         />
         <span className="text-gray-600">Cited by</span>
+      </label>
+
+      {/* View filters */}
+      <span className="text-gray-300">|</span>
+      <label className="flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={onlySelected}
+          onChange={(e) => onOnlySelectedChange(e.target.checked)}
+        />
+        <span className="text-gray-600">Only selected</span>
+      </label>
+      <label className="flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={onlyTopVenues}
+          onChange={(e) => onOnlyTopVenuesChange(e.target.checked)}
+        />
+        <span className="text-gray-600">Only top venues</span>
       </label>
 
       {/* Start year */}

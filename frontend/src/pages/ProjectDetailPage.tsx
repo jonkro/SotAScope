@@ -39,6 +39,8 @@ export default function ProjectDetailPage() {
   const [showBackward, setShowBackward] = useState(true);
   const [showForward, setShowForward] = useState(true);
   const [startYear, setStartYear] = useState<number | null>(null);
+  const [onlySelected, setOnlySelected] = useState(false);
+  const [onlyTopVenues, setOnlyTopVenues] = useState(false);
 
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
@@ -124,15 +126,25 @@ export default function ProjectDetailPage() {
   }, [timeline]);
 
   const filteredNeighbors: TimelineNeighborWork[] = useMemo(() => {
-    if (!timeline) return [];
-    return filterNeighbors(timeline.neighbors, tier1Set, ignoredSet, {
+    if (!timeline || onlySelected) return [];
+    let result = filterNeighbors(timeline.neighbors, tier1Set, ignoredSet, {
       threshold,
       decayStartYears,
       showBackward,
       showForward,
       currentYear: new Date().getFullYear(),
     });
-  }, [timeline, tier1Set, ignoredSet, threshold, decayStartYears, showBackward, showForward]);
+    if (onlyTopVenues) {
+      result = result.filter((n) => n.venue_id != null && tier1Set.has(n.venue_id));
+    }
+    return result;
+  }, [timeline, tier1Set, ignoredSet, threshold, decayStartYears, showBackward, showForward, onlySelected, onlyTopVenues]);
+
+  const filteredSeeds = useMemo(() => {
+    if (!timeline) return [];
+    if (!onlyTopVenues) return timeline.seeds;
+    return timeline.seeds.filter((s) => s.venue_id != null && tier1Set.has(s.venue_id));
+  }, [timeline, onlyTopVenues, tier1Set]);
 
   // Timeline context for WorkDetailPanel
   const timelineContext = useMemo(() => {
@@ -237,10 +249,14 @@ export default function ProjectDetailPage() {
               maxYear={yearRange.max}
               totalNeighbors={timeline?.neighbors.length ?? 0}
               filteredNeighbors={filteredNeighbors.length}
+              onlySelected={onlySelected}
+              onOnlySelectedChange={setOnlySelected}
+              onlyTopVenues={onlyTopVenues}
+              onOnlyTopVenuesChange={setOnlyTopVenues}
             />
             <div className="flex-1 min-h-0">
               <CitationTimeline
-                seeds={timeline?.seeds ?? []}
+                seeds={filteredSeeds}
                 neighbors={filteredNeighbors}
                 topicLists={timeline?.topic_lists ?? project.topic_lists}
                 seedCitations={timeline?.seed_citations ?? []}
