@@ -17,6 +17,7 @@ import type {
   EnrichDOIBatchResult,
   CitationResult,
   CrossrefEnrichResult,
+  DOIResolutionResult,
   AuthorOut,
   WorkLocationOut,
   TimelineResponse,
@@ -124,6 +125,16 @@ export function importBibtex(bibtex: string) {
     method: 'POST',
     body: JSON.stringify({ bibtex }),
   });
+}
+
+export function mergeWorks(targetId: number, sourceId: number) {
+  return apiFetch<WorkDetail>(`/api/works/${targetId}/merge/${sourceId}`, {
+    method: 'POST',
+  });
+}
+
+export function fetchDuplicates() {
+  return apiFetch<import('./types').DuplicateGroup[]>('/api/works/duplicates');
 }
 
 // ---- Venues ----
@@ -321,5 +332,27 @@ export function fetchForwardCitationsEnrich(workId: number, forceRefresh = false
 export function enrichFromCrossref(workId: number) {
   return apiFetch<CrossrefEnrichResult>(`/api/enrich/works/${workId}/crossref`, {
     method: 'POST',
+  });
+}
+
+// ---- DOI Resolution ----
+
+export function resolveDOI(workId: number) {
+  return apiFetch<DOIResolutionResult>(`/api/enrich/works/${workId}/resolve-doi`, {
+    method: 'POST',
+  });
+}
+
+export function confirmDOI(workId: number, doi: string) {
+  return apiFetch<WorkOut>(`/api/enrich/works/${workId}/confirm-doi`, {
+    method: 'POST',
+    body: JSON.stringify({ doi }),
+  });
+}
+
+export function resolveDOIBatch(workIds: number[]) {
+  return apiFetch<DOIResolutionResult[]>('/api/enrich/works/resolve-doi/batch', {
+    method: 'POST',
+    body: JSON.stringify({ work_ids: workIds }),
   });
 }

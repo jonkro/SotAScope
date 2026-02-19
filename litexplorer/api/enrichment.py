@@ -12,8 +12,11 @@ from litexplorer.config import settings
 from litexplorer.external.crossref import CrossrefClient
 from litexplorer.external.openalex import OpenAlexClient
 from litexplorer.schemas.enrichment import (
+    BatchResolveDOIRequest,
     CitationResult,
+    ConfirmDOIRequest,
     CrossrefEnrichResult,
+    DOIResolutionResult,
     EnrichDOIBatchRequest,
     EnrichDOIBatchResult,
     EnrichDOIRequest,
@@ -163,3 +166,70 @@ def enrich_from_crossref(work_id: int, db: Session = Depends(get_db)):
         venue_issn=venue_issn,
         venue_publisher=venue_publisher,
     )
+
+
+@router.post("/works/{work_id}/resolve-doi", response_model=DOIResolutionResult)
+def resolve_doi(work_id: int, db: Session = Depends(get_db)):
+    """Attempt to resolve a DOI for a DOI-less work via Crossref fuzzy search."""
+    cr_client = _get_crossref_client()
+    oa_client = _get_client()
+    try:
+        svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+        try:
+            return svc.resolve_doi_for_work(work_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+    finally:
+        cr_client.close()
+        oa_client.close()
+
+
+@router.post("/works/{work_id}/confirm-doi", response_model=WorkOut)
+def confirm_doi(work_id: int, body: ConfirmDOIRequest, db: Session = Depends(get_db)):
+    """Confirm a DOI resolution candidate for a work.
+
+    Does NOT require OpenAlex — purely a local DB write.
+    """
+    from sqlalchemy import select as sa_select
+    from litexplorer.models.library import Work as WorkModel
+
+    work = db.get(WorkModel, work_id)
+    if not work:
+        raise HTTPException(status_code=404, detail=f"Work {work_id} not found")
+
+    doi = body.doi.lower().strip()
+    existing = db.execute(
+        sa_select(WorkModel).where(WorkModel.doi == doi, WorkModel.id != work_id)
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"DOI {doi} is already assigned to another work: \"{existing.title}\" (id={existing.id})",
+        )
+
+    work.doi = doi
+    work.doi_auto_resolved = True
+    db.commit()
+    return WorkOut.model_validate(work)
+
+
+@router.post("/works/resolve-doi/batch", response_model=list[DOIResolutionResult])
+def resolve_doi_batch(body: BatchResolveDOIRequest, db: Session = Depends(get_db)):
+    """Batch resolve DOIs for multiple works."""
+    cr_client = _get_crossref_client()
+    oa_client = _get_client()
+    try:
+        svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+        results: list[DOIResolutionResult] = []
+        for wid in body.work_ids:
+            try:
+                results.append(svc.resolve_doi_for_work(wid))
+            except (ValueError, RuntimeError) as e:
+                logger.warning("DOI resolution failed for work %d: %s", wid, e)
+                results.append(DOIResolutionResult(work_id=wid))
+    finally:
+        cr_client.close()
+        oa_client.close()
+    return results

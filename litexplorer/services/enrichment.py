@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from litexplorer.config import settings
 from litexplorer.external.base import ExternalWork
 from litexplorer.external.crossref import CrossrefClient, parse_crossref_work
 from litexplorer.external.openalex import OpenAlexClient, parse_work
@@ -27,6 +28,7 @@ from litexplorer.models.library import (
     WorkAuthor,
     WorkLocation,
 )
+from litexplorer.schemas.enrichment import DOICandidate, DOIResolutionResult
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,24 @@ def normalize_venue_name(name: str) -> str:
     # Remove leading/trailing punctuation artifacts (e.g. leftover commas)
     s = s.strip(' ,.-')
     return s
+
+
+def _extract_first_author_from_bibtex(bibtex_entry: str) -> str | None:
+    """Extract the first author name from a raw BibTeX entry string."""
+    m = re.search(r'author\s*=\s*\{([^}]+)\}', bibtex_entry, re.IGNORECASE)
+    if not m:
+        return None
+    authors_str = m.group(1).strip()
+    # Split on " and " (BibTeX convention)
+    first = authors_str.split(" and ")[0].strip()
+    if not first:
+        return None
+    # Handle "Last, First" format → return "Last"
+    if "," in first:
+        return first.split(",")[0].strip()
+    # "First Last" format → return last word
+    parts = first.split()
+    return parts[-1] if parts else None
 
 
 class EnrichmentService:
@@ -140,8 +160,9 @@ class EnrichmentService:
             # Get the work's referenced_work_ids from the original cached response
             ref_ids = self._get_referenced_work_ids(work)
             if not ref_ids:
-                # Cache empty result
+                # Cache empty result and commit so it persists
                 self._set_cache("openalex", cache_key, "[]", "permanent")
+                self.db.commit()
                 return []
 
             raw_list = self.client.get_works_by_ids_raw(ref_ids)
@@ -233,6 +254,129 @@ class EnrichmentService:
 
         self.db.commit()
         return work
+
+    def resolve_doi_for_work(self, work_id: int) -> DOIResolutionResult:
+        """Attempt to resolve a DOI for a work via Crossref fuzzy search.
+
+        Returns auto_resolved_doi if confidence is high, otherwise candidates.
+        """
+        if self.crossref_client is None:
+            raise RuntimeError("Crossref client not configured")
+
+        work = self.db.get(Work, work_id)
+        if work is None:
+            raise ValueError(f"Work {work_id} not found")
+        if work.doi:
+            return DOIResolutionResult(work_id=work_id, auto_resolved_doi=work.doi)
+
+        query = self._build_bibliographic_query(work)
+        if not query:
+            return DOIResolutionResult(work_id=work_id)
+
+        # Check cache
+        cache_key = f"doi_resolve:{query}"
+        cached = self._get_cache("crossref", cache_key)
+        if cached is not None:
+            items = json.loads(cached.response_json)
+        else:
+            items = self.crossref_client.search_works(query)
+            self._set_cache("crossref", cache_key, json.dumps(items), "permanent")
+            self.db.flush()
+
+        if not items:
+            return DOIResolutionResult(work_id=work_id)
+
+        # Build candidates
+        candidates: list[DOICandidate] = []
+        for item in items:
+            doi = item.get("DOI", "").lower()
+            if not doi:
+                continue
+            titles = item.get("title") or []
+            title = titles[0] if titles else "(untitled)"
+            authors_list: list[str] = []
+            for a in item.get("author") or []:
+                given = a.get("given", "")
+                family = a.get("family", "")
+                authors_list.append(f"{given} {family}".strip())
+            pub_year = None
+            issued = item.get("issued") or {}
+            date_parts = issued.get("date-parts") or []
+            if date_parts and date_parts[0] and date_parts[0][0]:
+                pub_year = date_parts[0][0]
+            container = item.get("container-title") or []
+            venue = container[0] if container else None
+            score = item.get("score", 0)
+            candidates.append(DOICandidate(
+                doi=doi, title=title, authors=authors_list,
+                publication_year=pub_year, venue=venue, score=score,
+            ))
+
+        if not candidates:
+            return DOIResolutionResult(work_id=work_id)
+
+        # Evaluate confidence
+        top = candidates[0]
+        second_score = candidates[1].score if len(candidates) > 1 else 0
+        ratio = top.score / second_score if second_score > 0 else float("inf")
+
+        if (
+            top.score >= settings.crossref_resolve_score_threshold
+            and ratio >= settings.crossref_resolve_ratio_threshold
+        ):
+            # Check DOI not already used
+            existing = self.db.execute(
+                select(Work).where(Work.doi == top.doi)
+            ).scalar_one_or_none()
+            if existing is None:
+                work.doi = top.doi
+                work.doi_auto_resolved = True
+                self.db.commit()
+                return DOIResolutionResult(work_id=work_id, auto_resolved_doi=top.doi)
+
+        # Return candidates for user confirmation
+        return DOIResolutionResult(work_id=work_id, candidates=candidates)
+
+    def confirm_doi_resolution(self, work_id: int, doi: str) -> Work:
+        """Confirm a DOI resolution for a work."""
+        work = self.db.get(Work, work_id)
+        if work is None:
+            raise ValueError(f"Work {work_id} not found")
+
+        doi = doi.lower().strip()
+
+        # Check uniqueness
+        existing = self.db.execute(
+            select(Work).where(Work.doi == doi, Work.id != work_id)
+        ).scalar_one_or_none()
+        if existing:
+            raise ValueError(f"DOI {doi} already assigned to work {existing.id}")
+
+        work.doi = doi
+        work.doi_auto_resolved = True
+        self.db.commit()
+        return work
+
+    @staticmethod
+    def _build_bibliographic_query(work: Work) -> str:
+        """Build a Crossref bibliographic query from work metadata."""
+        parts: list[str] = []
+        if work.title and work.title != "(untitled)":
+            parts.append(work.title)
+
+        # Try to get first author from WorkAuthor relationship
+        if work.authors:
+            first_wa = min(work.authors, key=lambda wa: wa.position)
+            parts.append(first_wa.author.name)
+        elif work.bibtex_entry:
+            author_name = _extract_first_author_from_bibtex(work.bibtex_entry)
+            if author_name:
+                parts.append(author_name)
+
+        if work.publication_year:
+            parts.append(str(work.publication_year))
+
+        return " ".join(parts)
 
     # -- Internal helpers -----------------------------------------------------
 

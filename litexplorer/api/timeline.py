@@ -116,23 +116,31 @@ def get_project_timeline(
         ).scalars().all()
         works_by_id = {w.id: w for w in work_rows}
 
-    # 5. Enrichment status for seeds
+    # 5. Enrichment status for seeds — check ApiCache for fetch records
+    #    (Citation row existence is insufficient: a work with 0 references
+    #     has no Citation rows but the fetch was still done.)
     seeds_with_bwd: set[int] = set()
     seeds_with_fwd: set[int] = set()
-    if seed_ids:
-        bwd_check = db.execute(
-            select(Citation.citing_work_id).where(
-                Citation.citing_work_id.in_(seed_ids)
-            ).distinct()
-        ).scalars().all()
-        seeds_with_bwd = set(bwd_check)
+    for sid in seed_ids:
+        w = works_by_id.get(sid)
+        if w and w.openalex_id:
+            bwd_key = f"backward_citations:{w.openalex_id}"
+            if db.execute(
+                select(ApiCache.id).where(
+                    ApiCache.source == "openalex",
+                    ApiCache.query_key == bwd_key,
+                ).limit(1)
+            ).scalar_one_or_none() is not None:
+                seeds_with_bwd.add(sid)
 
-        fwd_check = db.execute(
-            select(Citation.cited_work_id).where(
-                Citation.cited_work_id.in_(seed_ids)
-            ).distinct()
-        ).scalars().all()
-        seeds_with_fwd = set(fwd_check)
+            fwd_key = f"forward_citations:{w.openalex_id}"
+            if db.execute(
+                select(ApiCache.id).where(
+                    ApiCache.source == "openalex",
+                    ApiCache.query_key == fwd_key,
+                ).limit(1)
+            ).scalar_one_or_none() is not None:
+                seeds_with_fwd.add(sid)
 
     # Forward citations fetched_at from ApiCache
     fwd_cache_timestamps: dict[int, str | None] = {}

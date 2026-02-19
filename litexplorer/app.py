@@ -17,9 +17,25 @@ _DEFAULT_FIELDS = ["AI/ML", "Computer Networks"]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    _migrate_schema()
     _seed_default_fields()
     _normalize_existing_venue_names()
     yield
+
+
+def _migrate_schema() -> None:
+    """Run lightweight schema migrations for new columns."""
+    from sqlalchemy import inspect as sa_inspect, text
+
+    db = SessionLocal()
+    try:
+        inspector = sa_inspect(db.bind)
+        columns = {c["name"] for c in inspector.get_columns("works")}
+        if "doi_auto_resolved" not in columns:
+            db.execute(text("ALTER TABLE works ADD COLUMN doi_auto_resolved BOOLEAN"))
+            db.commit()
+    finally:
+        db.close()
 
 
 def _seed_default_fields() -> None:

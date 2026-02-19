@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     crossref_base_url: str = "https://api.crossref.org"
     crossref_mailto: str | None = None
 
+    # Crossref fuzzy DOI resolution thresholds
+    crossref_resolve_score_threshold: float = 80.0
+    crossref_resolve_ratio_threshold: float = 1.5
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "litexplorer.db"

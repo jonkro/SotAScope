@@ -47,6 +47,9 @@ class Work(Base):
 
     citation_count: Mapped[int | None] = mapped_column(Integer, default=0)
 
+    # None = DOI provided directly; True = DOI resolved via Crossref fuzzy match
+    doi_auto_resolved: Mapped[bool | None] = mapped_column(default=None)
+
     # Soft user scope for future multi-user support.
     created_by: Mapped[str | None] = mapped_column(String(128))
 

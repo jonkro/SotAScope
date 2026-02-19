@@ -1,7 +1,7 @@
 """CRUD routes for works, locations, authors, citations, and BibTeX import."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
@@ -12,12 +12,14 @@ from litexplorer.models.library import (
     WorkAuthor,
     WorkLocation,
 )
+from litexplorer.models.project import ProjectIgnoredWork, TopicListWork
 from litexplorer.schemas.works import (
     AuthorCreate,
     AuthorOut,
     BibtexImportRequest,
     BibtexImportResult,
     CitationWorkBrief,
+    DuplicateGroup,
     WorkAuthorAdd,
     WorkCreate,
     WorkDetail,
@@ -59,6 +61,80 @@ def _work_detail(work: Work) -> WorkDetail:
 # ---------------------------------------------------------------------------
 # Work CRUD
 # ---------------------------------------------------------------------------
+
+@router.get("/duplicates", response_model=list[DuplicateGroup])
+def detect_duplicates(db: Session = Depends(get_db)):
+    """Detect duplicate works by DOI, bibtex_key, or title+year."""
+    groups: list[DuplicateGroup] = []
+    seen_ids: set[frozenset[int]] = set()
+
+    def _add_group(reason: str, works: list[Work]) -> None:
+        if len(works) < 2:
+            return
+        key = frozenset(w.id for w in works)
+        if key in seen_ids:
+            return
+        seen_ids.add(key)
+        groups.append(DuplicateGroup(
+            reason=reason,
+            works=[WorkOut.model_validate(w) for w in works],
+        ))
+
+    # 1. Same DOI (case-insensitive)
+    doi_dupes = (
+        db.execute(
+            select(func.lower(Work.doi))
+            .where(Work.doi.isnot(None))
+            .group_by(func.lower(Work.doi))
+            .having(func.count() > 1)
+        )
+        .scalars()
+        .all()
+    )
+    for doi_lower in doi_dupes:
+        works = db.scalars(
+            select(Work).where(func.lower(Work.doi) == doi_lower)
+        ).all()
+        _add_group(f"Same DOI: {doi_lower}", list(works))
+
+    # 2. Same bibtex_key (case-insensitive)
+    bk_dupes = (
+        db.execute(
+            select(func.lower(Work.bibtex_key))
+            .where(Work.bibtex_key.isnot(None))
+            .group_by(func.lower(Work.bibtex_key))
+            .having(func.count() > 1)
+        )
+        .scalars()
+        .all()
+    )
+    for bk_lower in bk_dupes:
+        works = db.scalars(
+            select(Work).where(func.lower(Work.bibtex_key) == bk_lower)
+        ).all()
+        _add_group(f"Same BibTeX key: {bk_lower}", list(works))
+
+    # 3. Same title + year (case-insensitive exact match)
+    title_year_dupes = (
+        db.execute(
+            select(func.lower(Work.title), Work.publication_year)
+            .where(Work.publication_year.isnot(None))
+            .group_by(func.lower(Work.title), Work.publication_year)
+            .having(func.count() > 1)
+        )
+        .all()
+    )
+    for title_lower, year in title_year_dupes:
+        works = db.scalars(
+            select(Work).where(
+                func.lower(Work.title) == title_lower,
+                Work.publication_year == year,
+            )
+        ).all()
+        _add_group(f"Same title + year ({year})", list(works))
+
+    return groups
+
 
 @router.get("", response_model=list[WorkOut])
 def list_works(
@@ -324,6 +400,7 @@ def import_bibtex(body: BibtexImportRequest, db: Session = Depends(get_db)):
         imported=len(imported_works),
         skipped=skipped,
         works=[WorkOut.model_validate(w) for w in imported_works],
+        needs_doi_resolution=[w.id for w in imported_works if not w.doi],
     )
 
 
@@ -337,3 +414,179 @@ def _entry_to_bibtex(entry: dict) -> str:
         lines.append(f"  {k} = {{{v}}},")
     lines.append("}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Merge works
+# ---------------------------------------------------------------------------
+
+def _repoint_citations_citing(db: Session, source_id: int, target_id: int) -> None:
+    """Re-point citations where source is the citing work."""
+    rows = db.scalars(
+        select(Citation).where(Citation.citing_work_id == source_id)
+    ).all()
+    for c in rows:
+        if c.cited_work_id == target_id:
+            db.delete(c)
+            continue
+        existing = db.scalars(
+            select(Citation).where(
+                Citation.citing_work_id == target_id,
+                Citation.cited_work_id == c.cited_work_id,
+            )
+        ).one_or_none()
+        if existing:
+            db.delete(c)
+        else:
+            c.citing_work_id = target_id
+
+
+def _repoint_citations_cited(db: Session, source_id: int, target_id: int) -> None:
+    """Re-point citations where source is the cited work."""
+    rows = db.scalars(
+        select(Citation).where(Citation.cited_work_id == source_id)
+    ).all()
+    for c in rows:
+        if c.citing_work_id == target_id:
+            db.delete(c)
+            continue
+        existing = db.scalars(
+            select(Citation).where(
+                Citation.citing_work_id == c.citing_work_id,
+                Citation.cited_work_id == target_id,
+            )
+        ).one_or_none()
+        if existing:
+            db.delete(c)
+        else:
+            c.cited_work_id = target_id
+
+
+def _repoint_topic_list_works(db: Session, source_id: int, target_id: int) -> None:
+    """Move source's topic list memberships to target."""
+    rows = db.scalars(
+        select(TopicListWork).where(TopicListWork.work_id == source_id)
+    ).all()
+    for tlw in rows:
+        existing = db.scalars(
+            select(TopicListWork).where(
+                TopicListWork.topic_list_id == tlw.topic_list_id,
+                TopicListWork.work_id == target_id,
+            )
+        ).one_or_none()
+        if existing:
+            db.delete(tlw)
+        else:
+            tlw.work_id = target_id
+
+
+def _repoint_project_ignored_works(db: Session, source_id: int, target_id: int) -> None:
+    """Move source's ignored-work marks to target."""
+    rows = db.scalars(
+        select(ProjectIgnoredWork).where(ProjectIgnoredWork.work_id == source_id)
+    ).all()
+    for piw in rows:
+        existing = db.scalars(
+            select(ProjectIgnoredWork).where(
+                ProjectIgnoredWork.project_id == piw.project_id,
+                ProjectIgnoredWork.work_id == target_id,
+            )
+        ).one_or_none()
+        if existing:
+            db.delete(piw)
+        else:
+            piw.work_id = target_id
+
+
+def _merge_authors(db: Session, source: Work, target: Work) -> None:
+    """Move source's author links to target, skipping duplicates."""
+    max_pos = db.scalar(
+        select(func.max(WorkAuthor.position)).where(WorkAuthor.work_id == target.id)
+    ) or 0
+    for wa in list(source.authors):
+        existing = db.scalars(
+            select(WorkAuthor).where(
+                WorkAuthor.work_id == target.id,
+                WorkAuthor.author_id == wa.author_id,
+            )
+        ).one_or_none()
+        if existing:
+            db.delete(wa)
+        else:
+            max_pos += 1
+            wa.work_id = target.id
+            wa.position = max_pos
+
+
+def _merge_locations(db: Session, source: Work, target: Work) -> None:
+    """Move source's locations to target."""
+    for loc in list(source.locations):
+        loc.work_id = target.id
+
+
+def _fill_metadata(db: Session, source: Work, target: Work) -> None:
+    """Fill None fields on target from source. Take higher citation_count.
+
+    Unique fields are nulled on source and flushed first so that
+    SQLAlchemy doesn't emit two conflicting UPDATEs in the same batch.
+    """
+    _UNIQUE_FIELDS = ("doi", "arxiv_id", "openalex_id", "bibtex_key")
+
+    # Snapshot values before nulling source
+    saved = {f: getattr(source, f) for f in _UNIQUE_FIELDS}
+    for f in _UNIQUE_FIELDS:
+        setattr(source, f, None)
+    # Flush the nulls so the DB releases the unique slots
+    db.flush()
+
+    for field in (
+        "doi", "arxiv_id", "openalex_id", "abstract", "publication_year",
+        "venue_id", "bibtex_key", "bibtex_entry", "pdf_path",
+        "doi_auto_resolved", "created_by",
+    ):
+        src_val = saved[field] if field in saved else getattr(source, field)
+        if getattr(target, field) is None and src_val is not None:
+            setattr(target, field, src_val)
+    # Title: prefer non-"Untitled" / non-"(untitled)"
+    if target.title.lower() in ("untitled", "(untitled)") and source.title.lower() not in ("untitled", "(untitled)"):
+        target.title = source.title
+    # Take higher citation count
+    src_cc = source.citation_count or 0
+    tgt_cc = target.citation_count or 0
+    if src_cc > tgt_cc:
+        target.citation_count = source.citation_count
+
+
+@router.post("/{target_id}/merge/{source_id}", response_model=WorkDetail)
+def merge_works(target_id: int, source_id: int, db: Session = Depends(get_db)):
+    """Merge source work into target work, then delete source."""
+    if target_id == source_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a work into itself")
+
+    target = _get_work(db, target_id)
+    source = _get_work(db, source_id)
+
+    _repoint_citations_citing(db, source.id, target.id)
+    _repoint_citations_cited(db, source.id, target.id)
+    _repoint_topic_list_works(db, source.id, target.id)
+    _repoint_project_ignored_works(db, source.id, target.id)
+    _merge_authors(db, source, target)
+    _merge_locations(db, source, target)
+    _fill_metadata(db, source, target)
+
+    db.delete(source)
+    db.flush()
+
+    # Reload with eager joins for the response
+    result = db.scalars(
+        select(Work)
+        .where(Work.id == target.id)
+        .options(
+            joinedload(Work.venue),
+            joinedload(Work.locations),
+            joinedload(Work.authors).joinedload(WorkAuthor.author),
+        )
+    ).unique().one()
+
+    db.commit()
+    return _work_detail(result)

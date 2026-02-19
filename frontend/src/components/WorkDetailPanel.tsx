@@ -1,6 +1,8 @@
-import { useWork, useForwardCitations, useBackwardCitations } from '../hooks/useWorks';
-import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref } from '../hooks/useEnrichment';
-import type { CitationWorkBrief, TopicListOut } from '../types';
+import { useState } from 'react';
+import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
+import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useResolveDOI } from '../hooks/useEnrichment';
+import type { CitationWorkBrief, DOIResolutionResult, TopicListOut } from '../types';
+import DOIResolutionDialog from './DOIResolutionDialog';
 
 function CitationList({ title, items, isLoading }: { title: string; items?: CitationWorkBrief[]; isLoading: boolean }) {
   return (
@@ -36,6 +38,7 @@ export default function WorkDetailPanel({
   onAddToList,
   onMarkUninteresting,
   onEnrichComplete,
+  onDelete,
   timelineContext,
   isAutoEnriching,
 }: {
@@ -45,6 +48,7 @@ export default function WorkDetailPanel({
   onAddToList?: (topicListId: number) => void;
   onMarkUninteresting?: (workId: number) => void;
   onEnrichComplete?: () => void;
+  onDelete?: () => void;
   timelineContext?: TimelineContext;
   isAutoEnriching?: boolean;
 }) {
@@ -55,6 +59,11 @@ export default function WorkDetailPanel({
   const fetchBwd = useFetchBackwardCitations();
   const fetchFwd = useFetchForwardCitations();
   const crossref = useEnrichFromCrossref();
+  const resolveDOI = useResolveDOI();
+  const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
+  const [resolveMsg, setResolveMsg] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const deleteMutation = useDeleteWork();
 
   if (isLoading || !work) {
     return (
@@ -65,6 +74,7 @@ export default function WorkDetailPanel({
   }
 
   return (
+    <>
     <div className="w-96 border-l border-gray-200 bg-white flex flex-col h-full overflow-y-auto">
       {/* Header */}
       <div className="flex items-start justify-between p-4 border-b border-gray-200">
@@ -98,14 +108,19 @@ export default function WorkDetailPanel({
           {work.doi && (
             <>
               <span className="text-gray-500">DOI</span>
-              <a
-                href={`https://doi.org/${work.doi}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-600 hover:underline truncate"
-              >
-                {work.doi}
-              </a>
+              <span className="flex items-center gap-1">
+                <a
+                  href={`https://doi.org/${work.doi}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline truncate"
+                >
+                  {work.doi}
+                </a>
+                {work.doi_auto_resolved && (
+                  <span className="text-[10px] text-amber-600 whitespace-nowrap">(auto-resolved)</span>
+                )}
+              </span>
             </>
           )}
           {work.arxiv_id && (
@@ -180,6 +195,32 @@ export default function WorkDetailPanel({
                 {crossref.isPending ? 'Enriching...' : 'Enrich from Crossref'}
               </button>
             )}
+            {!work.doi && (
+              <button
+                onClick={() => {
+                  setResolveMsg(null);
+                  resolveDOI.mutate(workId, {
+                    onSuccess: (result) => {
+                      if (result.auto_resolved_doi) {
+                        setResolveMsg(`DOI resolved: ${result.auto_resolved_doi}`);
+                        onEnrichComplete?.();
+                      } else if (result.candidates.length > 0) {
+                        setDoiResolutionResults([result]);
+                      } else {
+                        setResolveMsg('No DOI candidates found');
+                      }
+                    },
+                    onError: (err) => {
+                      setResolveMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                    },
+                  });
+                }}
+                disabled={resolveDOI.isPending || isAutoEnriching}
+                className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                {resolveDOI.isPending ? 'Resolving...' : 'Resolve DOI'}
+              </button>
+            )}
           </div>
           {isAutoEnriching && (
             <p className="text-xs text-blue-600 mt-1 animate-pulse">Auto-enriching references and citations...</p>
@@ -189,6 +230,11 @@ export default function WorkDetailPanel({
           )}
           {fetchFwd.data && (
             <p className="text-xs text-green-600 mt-1">Fetched {fetchFwd.data.count} citing papers</p>
+          )}
+          {resolveMsg && (
+            <p className={`text-xs mt-1 ${resolveMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+              {resolveMsg}
+            </p>
           )}
         </div>
 
@@ -259,7 +305,57 @@ export default function WorkDetailPanel({
             </button>
           </div>
         )}
+
+        {/* Delete from library (library context only) */}
+        {onDelete && (
+          <div>
+            {!confirmDelete ? (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-300 rounded hover:bg-red-50"
+              >
+                Delete from Library
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-red-600">
+                  This will permanently remove this work and all its citations, topic list memberships, and other associations.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      deleteMutation.mutate(workId, {
+                        onSuccess: () => { onDelete(); onClose(); },
+                      });
+                    }}
+                    disabled={deleteMutation.isPending}
+                    className="px-3 py-1.5 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {deleteMutation.isPending ? 'Deleting...' : 'Confirm Delete'}
+                  </button>
+                  <button
+                    onClick={() => setConfirmDelete(false)}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
+
+    {doiResolutionResults && (
+      <DOIResolutionDialog
+        results={doiResolutionResults}
+        onClose={() => {
+          setDoiResolutionResults(null);
+          onEnrichComplete?.();
+        }}
+      />
+    )}
+    </>
   );
 }

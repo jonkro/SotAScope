@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchWorks, fetchWork, createWork, updateWork, deleteWork, importBibtex,
-         fetchForwardCitations, fetchBackwardCitations } from '../api';
+         fetchForwardCitations, fetchBackwardCitations, mergeWorks, fetchDuplicates } from '../api';
 
 export function useWorks(params: { offset?: number; limit?: number; q?: string; venue_id?: number; year?: number }) {
   return useQuery({
@@ -62,5 +62,25 @@ export function useImportBibtex() {
   return useMutation({
     mutationFn: importBibtex,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['works'] }),
+  });
+}
+
+export function useMergeWorks() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ targetId, sourceId }: { targetId: number; sourceId: number }) =>
+      mergeWorks(targetId, sourceId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['works'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
+export function useDuplicates(enabled: boolean) {
+  return useQuery({
+    queryKey: ['works', 'duplicates'],
+    queryFn: fetchDuplicates,
+    enabled,
   });
 }

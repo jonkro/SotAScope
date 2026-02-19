@@ -13,6 +13,7 @@ export interface WorkOut {
   bibtex_entry: string | null;
   pdf_path: string | null;
   citation_count: number | null;
+  doi_auto_resolved: boolean | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -57,6 +58,12 @@ export interface CitationWorkBrief {
 export interface BibtexImportResult {
   imported: number;
   skipped: number;
+  works: WorkOut[];
+  needs_doi_resolution: number[];
+}
+
+export interface DuplicateGroup {
+  reason: string;
   works: WorkOut[];
 }
 
@@ -204,4 +211,21 @@ export interface CrossrefEnrichResult {
   work: WorkOut;
   venue_issn: string | null;
   venue_publisher: string | null;
+}
+
+// ---- DOI Resolution ----
+
+export interface DOICandidate {
+  doi: string;
+  title: string;
+  authors: string[];
+  publication_year: number | null;
+  venue: string | null;
+  score: number;
+}
+
+export interface DOIResolutionResult {
+  work_id: number;
+  auto_resolved_doi: string | null;
+  candidates: DOICandidate[];
 }

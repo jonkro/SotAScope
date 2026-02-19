@@ -6,7 +6,7 @@ const links = [
   { to: '/venues', label: 'Venues' },
 ];
 
-export default function Sidebar({ onImportClick }: { onImportClick: () => void }) {
+export default function Sidebar() {
   return (
     <aside className="w-56 shrink-0 border-r border-gray-200 bg-gray-50 flex flex-col h-screen sticky top-0">
       <div className="px-4 py-5 font-semibold text-lg text-gray-800">LitExplorer</div>
@@ -25,14 +25,6 @@ export default function Sidebar({ onImportClick }: { onImportClick: () => void }
           </NavLink>
         ))}
       </nav>
-      <div className="p-3 border-t border-gray-200">
-        <button
-          onClick={onImportClick}
-          className="w-full px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
-        >
-          Import
-        </button>
-      </div>
     </aside>
   );
 }

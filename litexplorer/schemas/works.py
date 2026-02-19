@@ -107,6 +107,7 @@ class WorkUpdate(BaseModel):
     pdf_path: str | None = None
     citation_count: int | None = None
     created_by: str | None = None
+    doi_auto_resolved: bool | None = None
 
 
 class WorkOut(BaseModel):
@@ -122,6 +123,7 @@ class WorkOut(BaseModel):
     bibtex_entry: str | None
     pdf_path: str | None
     citation_count: int | None
+    doi_auto_resolved: bool | None
     created_by: str | None
     created_at: datetime
     updated_at: datetime
@@ -146,4 +148,14 @@ class BibtexImportRequest(BaseModel):
 class BibtexImportResult(BaseModel):
     imported: int
     skipped: int
+    works: list[WorkOut]
+    needs_doi_resolution: list[int] = []
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+
+class DuplicateGroup(BaseModel):
+    reason: str
     works: list[WorkOut]

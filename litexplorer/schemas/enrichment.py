@@ -37,3 +37,28 @@ class CrossrefEnrichResult(BaseModel):
     work: WorkOut
     venue_issn: str | None = None
     venue_publisher: str | None = None
+
+
+# -- DOI fuzzy resolution --
+
+class DOICandidate(BaseModel):
+    doi: str
+    title: str
+    authors: list[str]
+    publication_year: int | None
+    venue: str | None
+    score: float
+
+
+class DOIResolutionResult(BaseModel):
+    work_id: int
+    auto_resolved_doi: str | None = None
+    candidates: list[DOICandidate] = []
+
+
+class ConfirmDOIRequest(BaseModel):
+    doi: str
+
+
+class BatchResolveDOIRequest(BaseModel):
+    work_ids: list[int]

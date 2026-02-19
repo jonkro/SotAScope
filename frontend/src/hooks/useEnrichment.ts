@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { enrichDOI, enrichDOIBatch, fetchBackwardCitationsEnrich,
-         fetchForwardCitationsEnrich, enrichFromCrossref } from '../api';
+         fetchForwardCitationsEnrich, enrichFromCrossref,
+         resolveDOI, confirmDOI } from '../api';
 
 export function useEnrichDOI() {
   const qc = useQueryClient();
@@ -47,6 +48,23 @@ export function useEnrichFromCrossref() {
     mutationFn: enrichFromCrossref,
     onSuccess: (_data, workId) => {
       qc.invalidateQueries({ queryKey: ['works', workId] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
+export function useResolveDOI() {
+  return useMutation({
+    mutationFn: resolveDOI,
+  });
+}
+
+export function useConfirmDOI() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workId, doi }: { workId: number; doi: string }) => confirmDOI(workId, doi),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['works'] });
       qc.invalidateQueries({ queryKey: ['projects'] });
     },
   });

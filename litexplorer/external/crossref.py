@@ -131,3 +131,14 @@ class CrossrefClient:
         resp.raise_for_status()
         data = resp.json()
         return data.get("message")
+
+    def search_works(self, query: str, rows: int = 5) -> list[dict]:
+        """Fuzzy bibliographic search. Returns raw item dicts including 'score'."""
+        resp = self._http.get(
+            "/works",
+            params={"query.bibliographic": query, "rows": rows},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        message = data.get("message", {})
+        return message.get("items", [])
