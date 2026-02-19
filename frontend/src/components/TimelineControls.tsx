@@ -103,7 +103,7 @@ export default function TimelineControls({
 
       {/* Stats */}
       <span className="text-gray-400 ml-auto">
-        Showing {filteredNeighbors} of {totalNeighbors} neighbors
+        Showing {filteredNeighbors} of {totalNeighbors} candidates
       </span>
     </div>
   );

@@ -17,6 +17,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorks } from '../hooks/useWorks';
 import { useTimeline } from '../hooks/useTimeline';
+import { fetchBackwardCitationsEnrich, fetchForwardCitationsEnrich, enrichFromCrossref } from '../api';
 import { filterNeighbors } from '../lib/timelineFilter';
 import type { TimelineNeighborWork } from '../types';
 
@@ -67,6 +68,21 @@ export default function ProjectDetailPage() {
   const addWork = useAddWorkToTopicList();
   const addIgnored = useAddIgnoredWork();
   const removeIgnored = useRemoveIgnoredWork();
+
+  const handleAddWorkToList = useCallback((topicListId: number, workId: number) => {
+    addWork.mutate({ projectId, topicListId, workId }, {
+      onSuccess: async () => {
+        // Auto-enrich: fetch references, citing papers, and crossref in parallel
+        await Promise.allSettled([
+          fetchBackwardCitationsEnrich(workId).catch(() => {}),
+          fetchForwardCitationsEnrich(workId).catch(() => {}),
+          enrichFromCrossref(workId).catch(() => {}),
+        ]);
+        qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
+        qc.invalidateQueries({ queryKey: ['works', workId] });
+      },
+    });
+  }, [addWork, projectId, qc]);
 
   const handleWorkSearch = useCallback((v: string) => setWorkSearch(v), []);
 
@@ -222,6 +238,7 @@ export default function ProjectDetailPage() {
                 startYear={startYear}
                 showBackward={showBackward}
                 showForward={showForward}
+                tier1VenueIds={tier1Set}
               />
             </div>
           </div>
@@ -264,7 +281,7 @@ export default function ProjectDetailPage() {
                           <button
                             key={w.id}
                             onClick={() => {
-                              addWork.mutate({ projectId, topicListId: tl.id, workId: w.id });
+                              handleAddWorkToList(tl.id, w.id);
                             }}
                             className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-white rounded"
                           >
@@ -321,7 +338,7 @@ export default function ProjectDetailPage() {
           workId={selectedWorkId}
           onClose={() => setSelectedWorkId(null)}
           topicLists={project.topic_lists}
-          onAddToList={(tlId) => addWork.mutate({ projectId, topicListId: tlId, workId: selectedWorkId })}
+          onAddToList={(tlId) => handleAddWorkToList(tlId, selectedWorkId)}
           onMarkUninteresting={(wid) => addIgnored.mutate({ projectId, workId: wid })}
           onEnrichComplete={handleEnrichComplete}
           timelineContext={activeTab === 'timeline' ? timelineContext : undefined}

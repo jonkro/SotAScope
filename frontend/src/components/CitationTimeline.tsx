@@ -9,11 +9,12 @@ interface CitationTimelineProps {
   topicLists: TopicListOut[];
   seedCitations: SeedCitation[];
   selectedWorkId: number | null;
-  onSelectWork: (workId: number) => void;
+  onSelectWork: (workId: number | null) => void;
   decayStartYears: number;
   startYear: number | null;
   showBackward: boolean;
   showForward: boolean;
+  tier1VenueIds: Set<number>;
 }
 
 interface DotDatum {
@@ -33,6 +34,8 @@ interface DotDatum {
 const MARGIN = { top: 20, right: 30, bottom: 56, left: 30 };
 const BASE_RADIUS = 3;
 const NEIGHBOR_OPACITY = 0.45;
+const TIER1_STROKE = '#1f2937';
+const TIER1_STROKE_WIDTH = 1.5;
 
 export default function CitationTimeline({
   seeds,
@@ -45,6 +48,7 @@ export default function CitationTimeline({
   startYear,
   showBackward,
   showForward,
+  tier1VenueIds,
 }: CitationTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -152,6 +156,13 @@ export default function CitationTimeline({
 
     const g = svg.append('g').attr('transform', `translate(${MARGIN.left},${MARGIN.top})`);
 
+    // Background rect for click-to-deselect
+    g.append('rect')
+      .attr('width', innerW).attr('height', innerH)
+      .attr('fill', 'transparent')
+      .attr('cursor', 'default')
+      .on('click', () => onSelectWork(null));
+
     // X axis
     g.append('g')
       .attr('transform', `translate(0,${innerH})`)
@@ -189,17 +200,15 @@ export default function CitationTimeline({
     }
 
     const dotPositions = new Map<number, { x: number; y: number }>();
-    const xRange = maxYear - minYear;
-    const yearPixelWidth = xRange > 0 ? innerW / xRange : innerW;
     for (const [, items] of yearGroups) {
-      const sorted = [...items].sort((a, b) => b.score - a.score);
-      const jitterSpread = Math.min(yearPixelWidth * 0.35, 8);
+      const sorted = [...items].sort((a, b) => idHash(a.id) - idHash(b.id));
       sorted.forEach((d, i) => {
-        const jitter = sorted.length > 1
-          ? (i / (sorted.length - 1) - 0.5) * jitterSpread * 2
+        // Jitter in year-space: ±0.4 years so papers never cross year boundaries
+        const jitterYear = sorted.length > 1
+          ? (i / (sorted.length - 1) - 0.5) * 0.64
           : 0;
         dotPositions.set(d.id, {
-          x: xScale(d.year) + jitter,
+          x: xScale(d.year + jitterYear),
           y: Math.max(0, yScale(d.score)),
         });
       });
@@ -316,6 +325,11 @@ export default function CitationTimeline({
       const isConnected = selectedConnections.has(d.id);
       const dimmed = selectedWorkId != null && !isConnected;
       const r = rScale(d.connectivity);
+      const isTier1 = d.venueId != null && tier1VenueIds.has(d.venueId);
+
+      // Stroke priority: selection > tier-1 > none
+      const markerStroke = isSelected ? '#6366f1' : isTier1 ? TIER1_STROKE : 'none';
+      const markerStrokeW = isSelected ? 2 : isTier1 ? TIER1_STROKE_WIDTH : 0;
 
       if (d.type === 'seed') {
         if (d.colors.length > 1) {
@@ -333,6 +347,15 @@ export default function CitationTimeline({
               .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
               .on('mouseleave', () => hideTooltip(tooltip));
           }
+          // Tier-1 or selection outline for multi-color seeds
+          if (markerStroke !== 'none') {
+            seedG.append('rect')
+              .attr('x', -r).attr('y', -r)
+              .attr('width', 2 * r).attr('height', 2 * r)
+              .attr('fill', 'none')
+              .attr('stroke', markerStroke)
+              .attr('stroke-width', markerStrokeW);
+          }
           if (isSelected) {
             seedG.append('rect')
               .attr('x', -(r + 3)).attr('y', -(r + 3))
@@ -349,8 +372,8 @@ export default function CitationTimeline({
             .attr('width', r * 2).attr('height', r * 2)
             .attr('fill', color)
             .attr('opacity', dimmed ? 0.2 : 1)
-            .attr('stroke', isSelected ? '#6366f1' : 'none')
-            .attr('stroke-width', isSelected ? 2 : 0)
+            .attr('stroke', markerStroke)
+            .attr('stroke-width', markerStrokeW)
             .attr('cursor', 'pointer')
             .on('click', () => handleDotClick(d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
@@ -379,8 +402,8 @@ export default function CitationTimeline({
             .attr('transform', `rotate(45,${pos.x},${pos.y})`)
             .attr('fill', color)
             .attr('opacity', dimmed ? 0.1 : NEIGHBOR_OPACITY)
-            .attr('stroke', isSelected ? '#6366f1' : 'none')
-            .attr('stroke-width', isSelected ? 2 : 0)
+            .attr('stroke', markerStroke)
+            .attr('stroke-width', markerStrokeW)
             .attr('cursor', 'pointer')
             .on('click', () => handleDotClick(d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
@@ -391,8 +414,8 @@ export default function CitationTimeline({
             .attr('r', r)
             .attr('fill', color)
             .attr('opacity', dimmed ? 0.1 : NEIGHBOR_OPACITY)
-            .attr('stroke', isSelected ? '#6366f1' : 'none')
-            .attr('stroke-width', isSelected ? 2 : 0)
+            .attr('stroke', markerStroke)
+            .attr('stroke-width', markerStrokeW)
             .attr('cursor', 'pointer')
             .on('click', () => handleDotClick(d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
@@ -412,11 +435,12 @@ export default function CitationTimeline({
     }
 
     // --- Legend (below x-axis, never overlaps data) ---
-    const legendItems: { shape: 'square' | 'circle' | 'diamond'; color: string; label: string }[] = [];
+    const legendItems: { shape: 'square' | 'circle' | 'diamond' | 'top-venue'; color: string; label: string }[] = [];
     for (const tl of topicLists) {
       legendItems.push({ shape: 'square', color: tl.color, label: tl.name });
     }
-    legendItems.push({ shape: 'circle', color: '#9ca3af', label: 'Neighbor' });
+    legendItems.push({ shape: 'circle', color: '#9ca3af', label: 'Candidate' });
+    legendItems.push({ shape: 'top-venue', color: 'none', label: 'Top venue' });
 
     const legendG = g.append('g')
       .attr('transform', `translate(0,${innerH + 38})`);
@@ -436,13 +460,20 @@ export default function CitationTimeline({
           .attr('r', lr)
           .attr('fill', item.color)
           .attr('opacity', NEIGHBOR_OPACITY);
-      } else {
+      } else if (item.shape === 'diamond') {
         itemG.append('rect')
           .attr('x', -lr).attr('y', -lr)
           .attr('width', lr * 2).attr('height', lr * 2)
           .attr('transform', 'rotate(45)')
           .attr('fill', item.color)
           .attr('opacity', NEIGHBOR_OPACITY);
+      } else {
+        // top-venue: hollow circle with tier-1 stroke
+        itemG.append('circle')
+          .attr('r', lr)
+          .attr('fill', 'none')
+          .attr('stroke', TIER1_STROKE)
+          .attr('stroke-width', TIER1_STROKE_WIDTH);
       }
 
       const textEl = itemG.append('text')
@@ -456,7 +487,7 @@ export default function CitationTimeline({
     }
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimensions, dots.length, selectedWorkId, seeds, neighbors, seedCitations, topicLists, decayStartYears, startYear, showBackward, showForward]);
+  }, [dimensions, dots.length, selectedWorkId, seeds, neighbors, seedCitations, topicLists, decayStartYears, startYear, showBackward, showForward, tier1VenueIds]);
 
   useEffect(() => {
     render();
@@ -501,6 +532,11 @@ function hideTooltip(
   tooltip: d3.Selection<HTMLDivElement | null, unknown, null, undefined>,
 ) {
   tooltip.classed('hidden', true);
+}
+
+/** Stable hash: maps an integer ID to [0, 1) using Knuth multiplicative hash. */
+function idHash(id: number): number {
+  return ((id * 2654435761) >>> 0) / 0x100000000;
 }
 
 function escapeHtml(text: string): string {
