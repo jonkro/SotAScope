@@ -4,6 +4,7 @@ import ProjectsPage from './pages/ProjectsPage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
 import LibraryPage from './pages/LibraryPage'
 import VenuesPage from './pages/VenuesPage'
+import SettingsPage from './pages/SettingsPage'
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
         <Route path="projects/:projectId" element={<ProjectDetailPage />} />
         <Route path="library" element={<LibraryPage />} />
         <Route path="venues" element={<VenuesPage />} />
+        <Route path="settings" element={<SettingsPage />} />
       </Route>
     </Routes>
   )

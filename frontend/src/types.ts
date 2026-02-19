@@ -194,6 +194,14 @@ export interface TimelineResponse {
   seed_citations: SeedCitation[];
 }
 
+// ---- Settings ----
+
+export interface SettingOut {
+  key: string;
+  value: string;
+  description: string | null;
+}
+
 // ---- Enrichment ----
 
 export interface EnrichDOIResult {

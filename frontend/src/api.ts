@@ -21,6 +21,7 @@ import type {
   AuthorOut,
   WorkLocationOut,
   TimelineResponse,
+  SettingOut,
 } from './types';
 
 class ApiError extends Error {
@@ -305,6 +306,19 @@ export function removeIgnoredWork(projectId: number, workId: number) {
 
 export function fetchTimeline(projectId: number) {
   return apiFetch<TimelineResponse>(`/api/projects/${projectId}/timeline`);
+}
+
+// ---- Settings ----
+
+export function fetchSettings() {
+  return apiFetch<SettingOut[]>('/api/settings');
+}
+
+export function updateSetting(key: string, value: string) {
+  return apiFetch<SettingOut>(`/api/settings/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ value }),
+  });
 }
 
 // ---- Enrichment ----

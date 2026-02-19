@@ -4,6 +4,7 @@ const links = [
   { to: '/projects', label: 'Projects' },
   { to: '/library', label: 'Library' },
   { to: '/venues', label: 'Venues' },
+  { to: '/settings', label: 'Settings' },
 ];
 
 export default function Sidebar() {

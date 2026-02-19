@@ -14,6 +14,7 @@ from litexplorer.models.library import (
     WorkLocation,
 )
 from litexplorer.models.project import Project, ProjectIgnoredWork, TopicList, TopicListWork
+from litexplorer.models.settings import Setting
 
 __all__ = [
     "Base",
@@ -21,6 +22,7 @@ __all__ = [
     "Author",
     "Citation",
     "Field",
+    "Setting",
     "Venue",
     "VenueAlias",
     "VenueField",

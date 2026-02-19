@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
     init_db()
     _migrate_schema()
     _seed_default_fields()
+    _seed_default_settings()
     _normalize_existing_venue_names()
     yield
 
@@ -55,6 +56,30 @@ def _seed_default_fields() -> None:
             exists = db.scalars(select(Field).where(Field.name == name)).one_or_none()
             if not exists:
                 db.add(Field(name=name))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _seed_default_settings() -> None:
+    """Create default settings rows if they don't exist yet."""
+    from litexplorer.models.settings import Setting
+    from sqlalchemy import select
+
+    _DEFAULTS = [
+        (
+            "api_contact_email",
+            "",
+            "Email address used for polite-pool access to OpenAlex and Crossref APIs",
+        ),
+    ]
+
+    db = SessionLocal()
+    try:
+        for key, value, description in _DEFAULTS:
+            exists = db.execute(select(Setting).where(Setting.key == key)).scalar_one_or_none()
+            if not exists:
+                db.add(Setting(key=key, value=value, description=description))
         db.commit()
     finally:
         db.close()
@@ -174,6 +199,7 @@ from litexplorer.api.fields import router as fields_router  # noqa: E402
 from litexplorer.api.projects import router as projects_router  # noqa: E402
 from litexplorer.api.enrichment import router as enrichment_router  # noqa: E402
 from litexplorer.api.timeline import router as timeline_router  # noqa: E402
+from litexplorer.api.settings import router as settings_router  # noqa: E402
 
 app.include_router(works_router)
 app.include_router(authors_router)
@@ -182,6 +208,7 @@ app.include_router(fields_router)
 app.include_router(projects_router)
 app.include_router(enrichment_router)
 app.include_router(timeline_router)
+app.include_router(settings_router)
 
 # Serve built frontend (only when frontend/dist exists)
 if _frontend_dist.is_dir():

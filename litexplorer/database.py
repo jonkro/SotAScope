@@ -33,7 +33,7 @@ def get_db():
 
 def init_db():
     """Create all tables. Call once at startup."""
-    from litexplorer.models.base import Base  # noqa: F811
+    from litexplorer.models import Base  # noqa: F811 — imports all models so create_all sees them
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.pdf_dir.mkdir(parents=True, exist_ok=True)

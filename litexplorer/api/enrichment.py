@@ -30,32 +30,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/enrich", tags=["enrichment"])
 
 
-def _get_crossref_client() -> CrossrefClient:
-    """Create a Crossref client (no API key required)."""
+def _get_contact_email(db: Session) -> str | None:
+    """Read API contact email: DB setting first, then env var fallback."""
+    from litexplorer.api.settings import get_setting_value
+
+    email = get_setting_value(db, "api_contact_email")
+    if email:
+        return email
+    # Env var fallback — either variable works
+    return settings.openalex_api_key or settings.crossref_mailto or None
+
+
+def _get_crossref_client(db: Session) -> CrossrefClient:
+    """Create a Crossref client with polite-pool email if available."""
+    email = _get_contact_email(db)
+    if not email:
+        logger.warning("No API contact email configured — Crossref requests will not use polite pool")
     return CrossrefClient(
         base_url=settings.crossref_base_url,
-        mailto=settings.crossref_mailto,
+        mailto=email,
     )
 
 
-def _get_client() -> OpenAlexClient:
-    """Create an OpenAlex client, checking that the API key is configured."""
-    if not settings.openalex_api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="OpenAlex API key not configured. Set LITEXPLORER_OPENALEX_API_KEY.",
-        )
+def _get_client(db: Session) -> OpenAlexClient:
+    """Create an OpenAlex client with polite-pool email if available."""
+    email = _get_contact_email(db)
+    if not email:
+        logger.warning("No API contact email configured — OpenAlex requests will not use polite pool")
     return OpenAlexClient(
         base_url=settings.openalex_base_url,
-        api_key=settings.openalex_api_key,
+        api_key=email,
     )
 
 
 @router.post("/doi", response_model=EnrichDOIResult)
 def enrich_by_doi(body: EnrichDOIRequest, db: Session = Depends(get_db)):
     """Import a single work by DOI from OpenAlex (with Crossref fallback)."""
-    client = _get_client()
-    cr_client = _get_crossref_client()
+    client = _get_client(db)
+    cr_client = _get_crossref_client(db)
     try:
         svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
         work = svc.import_by_doi(body.doi)
@@ -72,8 +84,8 @@ def enrich_by_doi(body: EnrichDOIRequest, db: Session = Depends(get_db)):
 @router.post("/doi/batch", response_model=EnrichDOIBatchResult)
 def enrich_by_doi_batch(body: EnrichDOIBatchRequest, db: Session = Depends(get_db)):
     """Import multiple works by DOI. Partial failures are reported, not raised."""
-    client = _get_client()
-    cr_client = _get_crossref_client()
+    client = _get_client(db)
+    cr_client = _get_crossref_client(db)
     try:
         svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
         results: list[EnrichDOIResult] = []
@@ -99,7 +111,7 @@ def enrich_by_doi_batch(body: EnrichDOIBatchRequest, db: Session = Depends(get_d
 @router.post("/works/{work_id}/citations/backward", response_model=CitationResult)
 def fetch_backward_citations(work_id: int, db: Session = Depends(get_db)):
     """Fetch and persist backward citations (references) for a work."""
-    client = _get_client()
+    client = _get_client(db)
     try:
         svc = EnrichmentService(db=db, client=client)
         try:
@@ -122,7 +134,7 @@ def fetch_forward_citations(
     db: Session = Depends(get_db),
 ):
     """Fetch and persist forward citations (papers citing this work)."""
-    client = _get_client()
+    client = _get_client(db)
     try:
         svc = EnrichmentService(db=db, client=client)
         try:
@@ -141,8 +153,8 @@ def fetch_forward_citations(
 @router.post("/works/{work_id}/crossref", response_model=CrossrefEnrichResult)
 def enrich_from_crossref(work_id: int, db: Session = Depends(get_db)):
     """Enrich a work's venue metadata (ISSN, publisher) from Crossref."""
-    cr_client = _get_crossref_client()
-    oa_client = _get_client()
+    cr_client = _get_crossref_client(db)
+    oa_client = _get_client(db)
     try:
         svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
         try:
@@ -171,8 +183,8 @@ def enrich_from_crossref(work_id: int, db: Session = Depends(get_db)):
 @router.post("/works/{work_id}/resolve-doi", response_model=DOIResolutionResult)
 def resolve_doi(work_id: int, db: Session = Depends(get_db)):
     """Attempt to resolve a DOI for a DOI-less work via Crossref fuzzy search."""
-    cr_client = _get_crossref_client()
-    oa_client = _get_client()
+    cr_client = _get_crossref_client(db)
+    oa_client = _get_client(db)
     try:
         svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
         try:
@@ -218,8 +230,8 @@ def confirm_doi(work_id: int, body: ConfirmDOIRequest, db: Session = Depends(get
 @router.post("/works/resolve-doi/batch", response_model=list[DOIResolutionResult])
 def resolve_doi_batch(body: BatchResolveDOIRequest, db: Session = Depends(get_db)):
     """Batch resolve DOIs for multiple works."""
-    cr_client = _get_crossref_client()
-    oa_client = _get_client()
+    cr_client = _get_crossref_client(db)
+    oa_client = _get_client(db)
     try:
         svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
         results: list[DOIResolutionResult] = []

@@ -99,8 +99,8 @@ class TestEnrichDOI:
         resp = client.post("/api/enrich/doi", json={"doi": "10.9999/nope"})
         assert resp.status_code == 404
 
-    def test_no_api_key(self, db_session):
-        """Returns 503 when no API key is configured."""
+    def test_no_email_still_proceeds(self, db_session, mock_oa_client, mock_cr_client):
+        """Proceeds without polite pool when no email is configured (no 503)."""
         from litexplorer.app import app
 
         def _override_get_db():
@@ -111,17 +111,14 @@ class TestEnrichDOI:
 
         app.dependency_overrides[get_db] = _override_get_db
 
-        # Don't patch _get_client — let it check the real (empty) settings
-        with patch("litexplorer.api.enrichment.settings") as mock_settings:
-            mock_settings.openalex_api_key = None
-            # Need to un-patch _get_client for this test
-            with patch.dict("litexplorer.api.enrichment.__dict__", {}):
-                # Reload the actual _get_client function
-                from litexplorer.api.enrichment import _get_client
-                with patch("litexplorer.api.enrichment._get_client", _get_client):
-                    with TestClient(app, raise_server_exceptions=False) as c:
-                        resp = c.post("/api/enrich/doi", json={"doi": "10.1145/test"})
-                        assert resp.status_code == 503
+        mock_oa_client.get_work_by_doi_raw.return_value = None
+
+        with patch("litexplorer.api.enrichment._get_client", return_value=mock_oa_client), \
+             patch("litexplorer.api.enrichment._get_crossref_client", return_value=mock_cr_client):
+            with TestClient(app, raise_server_exceptions=False) as c:
+                resp = c.post("/api/enrich/doi", json={"doi": "10.1145/test"})
+                # Should get 404 (not found) rather than 503 (service unavailable)
+                assert resp.status_code == 404
 
         app.dependency_overrides.clear()
 
