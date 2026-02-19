@@ -17,6 +17,8 @@ interface TimelineControlsProps {
   filteredNeighbors: number;
   candidateFilter: CandidateFilter;
   onCandidateFilterChange: (v: CandidateFilter) => void;
+  hops: number;
+  onHopsChange: (v: number) => void;
 }
 
 export default function TimelineControls({
@@ -36,6 +38,8 @@ export default function TimelineControls({
   filteredNeighbors,
   candidateFilter,
   onCandidateFilterChange,
+  hops,
+  onHopsChange,
 }: TimelineControlsProps) {
   return (
     <div className="flex flex-wrap items-center gap-4 px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs">
@@ -100,6 +104,26 @@ export default function TimelineControls({
           <option value="top-venues">Top venues</option>
           <option value="none">None</option>
         </select>
+      </label>
+
+      {/* Hops */}
+      <label className="flex items-center gap-1.5">
+        <span className="text-gray-500">Hops</span>
+        <div className="inline-flex rounded border border-gray-300 overflow-hidden">
+          {[1, 2, 3].map((v) => (
+            <button
+              key={v}
+              onClick={() => onHopsChange(v)}
+              className={`px-2 py-0.5 text-xs ${
+                hops === v
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-700 hover:bg-gray-50'
+              }${v > 1 ? ' border-l border-gray-300' : ''}`}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
       </label>
 
       {/* Start year */}

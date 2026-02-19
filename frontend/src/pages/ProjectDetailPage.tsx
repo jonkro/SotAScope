@@ -40,6 +40,7 @@ export default function ProjectDetailPage() {
   const [showForward, setShowForward] = useState(true);
   const [startYear, setStartYear] = useState<number | null>(null);
   const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>('all');
+  const [hops, setHops] = useState(1);
 
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
@@ -244,6 +245,8 @@ export default function ProjectDetailPage() {
               filteredNeighbors={filteredNeighbors.length}
               candidateFilter={candidateFilter}
               onCandidateFilterChange={setCandidateFilter}
+              hops={hops}
+              onHopsChange={setHops}
             />
             <div className="flex-1 min-h-0">
               <CitationTimeline
@@ -258,6 +261,7 @@ export default function ProjectDetailPage() {
                 showBackward={showBackward}
                 showForward={showForward}
                 tier1VenueIds={tier1Set}
+                hops={hops}
               />
             </div>
           </div>

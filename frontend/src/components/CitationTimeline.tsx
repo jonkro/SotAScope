@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as d3 from 'd3';
 import type { TimelineSeedWork, TimelineNeighborWork, TopicListOut, SeedCitation } from '../types';
 import { computeImportanceScore, type FilterParams } from '../lib/timelineFilter';
@@ -15,6 +15,7 @@ interface CitationTimelineProps {
   showBackward: boolean;
   showForward: boolean;
   tier1VenueIds: Set<number>;
+  hops: number;
 }
 
 interface DotDatum {
@@ -49,6 +50,7 @@ export default function CitationTimeline({
   showBackward,
   showForward,
   tier1VenueIds,
+  hops,
 }: CitationTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -59,55 +61,128 @@ export default function CitationTimeline({
   const cycleStateRef = useRef<{ ids: number[]; index: number }>({ ids: [], index: -1 });
 
   const currentYear = new Date().getFullYear();
-  const filterParams: FilterParams = {
-    threshold: 0, decayStartYears, showBackward: true, showForward: true, currentYear,
-  };
 
-  // Build color lookup
-  const tlColorMap = new Map(topicLists.map((tl) => [tl.id, tl.color]));
+  // Memoize dots: combines color lookup, seed connectivity, and dot building
+  const dots = useMemo(() => {
+    const filterParams: FilterParams = {
+      threshold: 0, decayStartYears, showBackward: true, showForward: true, currentYear,
+    };
+    const tlColorMap = new Map(topicLists.map((tl) => [tl.id, tl.color]));
 
-  // --- Compute inter-seed connectivity ---
-  // For each seed, count how many other seeds it connects to via seedCitations,
-  // controlled by the showBackward/showForward checkboxes.
-  const seedConnectivity = new Map<number, number>();
-  for (const s of seeds) {
-    let connections = 0;
-    for (const sc of seedCitations) {
-      // "References" on → count seeds that cite this seed (this seed appears in their references)
-      if (showBackward && sc.cited_seed_id === s.id) connections++;
-      // "Cited by" on → count seeds that this seed cites (this seed references them)
-      if (showForward && sc.citing_seed_id === s.id) connections++;
+    const seedConnectivity = new Map<number, number>();
+    for (const s of seeds) {
+      let connections = 0;
+      for (const sc of seedCitations) {
+        if (showBackward && sc.cited_seed_id === s.id) connections++;
+        if (showForward && sc.citing_seed_id === s.id) connections++;
+      }
+      seedConnectivity.set(s.id, 1 + connections);
     }
-    seedConnectivity.set(s.id, 1 + connections);
-  }
 
-  // Convert to DotDatum array, applying startYear filter
-  const dots: DotDatum[] = [];
+    const result: DotDatum[] = [];
+    for (const s of seeds) {
+      if (s.publication_year == null) continue;
+      if (startYear != null && s.publication_year < startYear) continue;
+      const colors = s.topic_list_ids.map((id) => tlColorMap.get(id) ?? '#6b7280');
+      const rawScore = computeImportanceScore(s.citation_count ?? 0, s.publication_year, filterParams);
+      result.push({
+        id: s.id, title: s.title, year: s.publication_year, type: 'seed',
+        colors, topicListIds: s.topic_list_ids, connectedSeedIds: [],
+        venueId: s.venue_id, citationCount: s.citation_count,
+        score: Math.log(1 + rawScore), connectivity: seedConnectivity.get(s.id) ?? 1,
+      });
+    }
+    for (const n of neighbors) {
+      if (n.publication_year == null) continue;
+      if (startYear != null && n.publication_year < startYear) continue;
+      const rawScore = computeImportanceScore(n.citation_count ?? 0, n.publication_year, filterParams);
+      result.push({
+        id: n.id, title: n.title, year: n.publication_year, type: n.direction,
+        colors: ['#9ca3af'], topicListIds: [], connectedSeedIds: n.connected_seed_ids,
+        venueId: n.venue_id, citationCount: n.citation_count,
+        score: Math.log(1 + rawScore), connectivity: 1,
+      });
+    }
+    return result;
+  }, [seeds, neighbors, topicLists, seedCitations, decayStartYears, startYear, showBackward, showForward, currentYear]);
 
-  for (const s of seeds) {
-    if (s.publication_year == null) continue;
-    if (startYear != null && s.publication_year < startYear) continue;
-    const colors = s.topic_list_ids.map((id) => tlColorMap.get(id) ?? '#6b7280');
-    const rawScore = computeImportanceScore(s.citation_count ?? 0, s.publication_year, filterParams);
-    dots.push({
-      id: s.id, title: s.title, year: s.publication_year, type: 'seed',
-      colors, topicListIds: s.topic_list_ids, connectedSeedIds: [],
-      venueId: s.venue_id, citationCount: s.citation_count,
-      score: Math.log(1 + rawScore), connectivity: seedConnectivity.get(s.id) ?? 1,
-    });
-  }
+  // Build adjacency map over rendered dots (recomputed when dot set changes, not on click)
+  const adjacencyMap = useMemo(() => {
+    const dotIdSet = new Set(dots.map((d) => d.id));
+    const adj = new Map<number, Set<number>>();
+    const addEdge = (a: number, b: number) => {
+      if (!dotIdSet.has(a) || !dotIdSet.has(b)) return;
+      if (!adj.has(a)) adj.set(a, new Set());
+      if (!adj.has(b)) adj.set(b, new Set());
+      adj.get(a)!.add(b);
+      adj.get(b)!.add(a);
+    };
+    for (const sc of seedCitations) {
+      addEdge(sc.citing_seed_id, sc.cited_seed_id);
+    }
+    for (const d of dots) {
+      if (d.type !== 'seed') {
+        for (const sid of d.connectedSeedIds) {
+          addEdge(d.id, sid);
+        }
+      }
+    }
+    return adj;
+  }, [dots, seedCitations]);
 
-  for (const n of neighbors) {
-    if (n.publication_year == null) continue;
-    if (startYear != null && n.publication_year < startYear) continue;
-    const rawScore = computeImportanceScore(n.citation_count ?? 0, n.publication_year, filterParams);
-    dots.push({
-      id: n.id, title: n.title, year: n.publication_year, type: n.direction,
-      colors: ['#9ca3af'], topicListIds: [], connectedSeedIds: n.connected_seed_ids,
-      venueId: n.venue_id, citationCount: n.citation_count,
-      score: Math.log(1 + rawScore), connectivity: 1,
-    });
-  }
+  // K-hop BFS from selected node
+  const kHopResult = useMemo(() => {
+    const empty = {
+      nodeHops: new Map<number, number>(),
+      edges: [] as { from: number; to: number; hop: number }[],
+      intermediateNodes: new Set<number>(),
+    };
+    if (selectedWorkId == null || !adjacencyMap.has(selectedWorkId)) return empty;
+
+    const nodeHops = new Map<number, number>();
+    const edges: { from: number; to: number; hop: number }[] = [];
+    const visitedEdges = new Set<string>();
+    const edgeKey = (a: number, b: number) => (a < b ? `${a}-${b}` : `${b}-${a}`);
+
+    nodeHops.set(selectedWorkId, 0);
+    let frontier = [selectedWorkId];
+    for (let hop = 1; hop <= hops; hop++) {
+      const nextFrontier: number[] = [];
+      for (const nodeId of frontier) {
+        const nbrs = adjacencyMap.get(nodeId);
+        if (!nbrs) continue;
+        for (const nbr of nbrs) {
+          const key = edgeKey(nodeId, nbr);
+          if (!visitedEdges.has(key)) {
+            visitedEdges.add(key);
+            edges.push({ from: nodeId, to: nbr, hop });
+          }
+          if (!nodeHops.has(nbr)) {
+            nodeHops.set(nbr, hop);
+            nextFrontier.push(nbr);
+          }
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    // Intermediate nodes: on a path to farther nodes (hop 1..k-1 with a neighbor at higher hop)
+    const intermediateNodes = new Set<number>();
+    for (const [nodeId, hop] of nodeHops) {
+      if (hop === 0) continue;
+      const nbrs = adjacencyMap.get(nodeId);
+      if (!nbrs) continue;
+      for (const nbr of nbrs) {
+        const nbrHop = nodeHops.get(nbr);
+        if (nbrHop != null && nbrHop > hop) {
+          intermediateNodes.add(nodeId);
+          break;
+        }
+      }
+    }
+
+    return { nodeHops, edges, intermediateNodes };
+  }, [selectedWorkId, hops, adjacencyMap]);
 
   // Radius: sqrt scaling proportional to area
   const rScale = (connectivity: number) => BASE_RADIUS * Math.sqrt(connectivity);
@@ -253,64 +328,37 @@ export default function CitationTimeline({
       }
     };
 
-    // --- Selected dot connections ---
-    const selectedConnections = new Set<number>();
-    if (selectedWorkId != null) {
-      selectedConnections.add(selectedWorkId);
-      const sel = dots.find((d) => d.id === selectedWorkId);
-      if (sel) {
-        if (sel.type === 'seed') {
-          for (const n of neighbors) {
-            if (n.connected_seed_ids.includes(selectedWorkId)) {
-              selectedConnections.add(n.id);
-            }
-          }
-          for (const sc of seedCitations) {
-            if (sc.citing_seed_id === selectedWorkId) selectedConnections.add(sc.cited_seed_id);
-            if (sc.cited_seed_id === selectedWorkId) selectedConnections.add(sc.citing_seed_id);
-          }
-        } else {
-          for (const sid of sel.connectedSeedIds) {
-            selectedConnections.add(sid);
-          }
-        }
-      }
-    }
-
     // --- Draw lines ---
     const lineGroup = g.append('g').attr('class', 'citation-lines');
 
+    // Background seed-to-seed citation lines (always visible)
     for (const sc of seedCitations) {
       const from = dotPositions.get(sc.citing_seed_id);
       const to = dotPositions.get(sc.cited_seed_id);
       if (from && to) {
-        const isHighlighted = selectedWorkId != null &&
-          selectedConnections.has(sc.citing_seed_id) && selectedConnections.has(sc.cited_seed_id);
         lineGroup.append('line')
           .attr('x1', from.x).attr('y1', from.y)
           .attr('x2', to.x).attr('y2', to.y)
-          .attr('stroke', isHighlighted ? '#6366f1' : '#d1d5db')
-          .attr('stroke-width', isHighlighted ? 1.5 : 0.5)
-          .attr('stroke-dasharray', isHighlighted ? 'none' : '2,2')
-          .attr('opacity', isHighlighted ? 0.8 : 0.3);
+          .attr('stroke', '#d1d5db')
+          .attr('stroke-width', 0.5)
+          .attr('stroke-dasharray', '2,2')
+          .attr('opacity', 0.3);
       }
     }
 
-    if (selectedWorkId != null) {
-      const selPos = dotPositions.get(selectedWorkId);
-      if (selPos) {
-        for (const cid of selectedConnections) {
-          if (cid === selectedWorkId) continue;
-          const pos = dotPositions.get(cid);
-          if (pos) {
-            lineGroup.append('line')
-              .attr('x1', selPos.x).attr('y1', selPos.y)
-              .attr('x2', pos.x).attr('y2', pos.y)
-              .attr('stroke', '#6366f1')
-              .attr('stroke-width', 1)
-              .attr('opacity', 0.4);
-          }
-        }
+    // Highlighted k-hop edges (drawn on top)
+    for (const edge of kHopResult.edges) {
+      const from = dotPositions.get(edge.from);
+      const to = dotPositions.get(edge.to);
+      if (from && to) {
+        const isDirect = edge.hop === 1;
+        lineGroup.append('line')
+          .attr('x1', from.x).attr('y1', from.y)
+          .attr('x2', to.x).attr('y2', to.y)
+          .attr('stroke', '#6366f1')
+          .attr('stroke-width', isDirect ? 1.5 : 1)
+          .attr('stroke-dasharray', isDirect ? 'none' : '4,3')
+          .attr('opacity', isDirect ? 0.7 : 0.35);
       }
     }
 
@@ -322,7 +370,9 @@ export default function CitationTimeline({
       if (!pos) continue;
 
       const isSelected = d.id === selectedWorkId;
-      const isConnected = selectedConnections.has(d.id);
+      const hopDist = kHopResult.nodeHops.get(d.id);
+      const isConnected = hopDist != null;
+      const isIntermediate = kHopResult.intermediateNodes.has(d.id);
       const dimmed = selectedWorkId != null && !isConnected;
       const r = rScale(d.connectivity);
       const isTier1 = d.venueId != null && tier1VenueIds.has(d.venueId);
@@ -379,15 +429,15 @@ export default function CitationTimeline({
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         }
-        // Connected-seed highlight ring (square outline)
+        // Connected highlight ring (square outline)
         if (isConnected && !isSelected && selectedWorkId != null) {
           dotGroup.append('rect')
             .attr('x', pos.x - (r + 3)).attr('y', pos.y - (r + 3))
             .attr('width', (r + 3) * 2).attr('height', (r + 3) * 2)
             .attr('fill', 'none')
-            .attr('stroke', '#6366f1')
-            .attr('stroke-width', 1)
-            .attr('opacity', 0.5);
+            .attr('stroke', isIntermediate ? '#d97706' : '#6366f1')
+            .attr('stroke-width', isIntermediate ? 1.5 : 1)
+            .attr('opacity', (hopDist ?? 1) === 1 ? 0.5 : 0.3);
         }
       } else {
         const color = d.colors[0] ?? '#9ca3af';
@@ -427,9 +477,9 @@ export default function CitationTimeline({
             .attr('cx', pos.x).attr('cy', pos.y)
             .attr('r', r + 3)
             .attr('fill', 'none')
-            .attr('stroke', '#6366f1')
-            .attr('stroke-width', 1)
-            .attr('opacity', 0.5);
+            .attr('stroke', isIntermediate ? '#d97706' : '#6366f1')
+            .attr('stroke-width', isIntermediate ? 1.5 : 1)
+            .attr('opacity', (hopDist ?? 1) === 1 ? 0.5 : 0.3);
         }
       }
     }
@@ -487,7 +537,7 @@ export default function CitationTimeline({
     }
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimensions, dots.length, selectedWorkId, seeds, neighbors, seedCitations, topicLists, decayStartYears, startYear, showBackward, showForward, tier1VenueIds]);
+  }, [dimensions, dots, selectedWorkId, seedCitations, topicLists, tier1VenueIds, kHopResult]);
 
   useEffect(() => {
     render();
