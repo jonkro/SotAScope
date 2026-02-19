@@ -337,9 +337,13 @@ class EnrichmentService:
         self.db.add(work)
         self.db.flush()  # Get work.id
 
-        # Authors
+        # Authors (deduplicate by author_id — OpenAlex sometimes lists the same author twice)
+        seen_author_ids: set[int] = set()
         for i, ext_author in enumerate(ext.authors):
             author = self._resolve_author(ext_author)
+            if author.id in seen_author_ids:
+                continue
+            seen_author_ids.add(author.id)
             wa = WorkAuthor(work_id=work.id, author_id=author.id, position=i)
             self.db.add(wa)
 
