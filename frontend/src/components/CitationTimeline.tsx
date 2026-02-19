@@ -12,6 +12,8 @@ interface CitationTimelineProps {
   onSelectWork: (workId: number) => void;
   decayStartYears: number;
   startYear: number | null;
+  showBackward: boolean;
+  showForward: boolean;
 }
 
 interface DotDatum {
@@ -25,13 +27,11 @@ interface DotDatum {
   venueId: number | null;
   citationCount: number | null;
   score: number;
-  seedCitations: number; // how many seeds cite this work
+  connectivity: number; // inter-seed citation connectivity (1 = base)
 }
 
-const MARGIN = { top: 20, right: 30, bottom: 40, left: 30 };
+const MARGIN = { top: 20, right: 30, bottom: 56, left: 30 };
 const BASE_RADIUS = 3;
-const RADIUS_INCREMENT = 1.5;
-const MAX_RADIUS = 12;
 const NEIGHBOR_OPACITY = 0.45;
 
 export default function CitationTimeline({
@@ -43,6 +43,8 @@ export default function CitationTimeline({
   onSelectWork,
   decayStartYears,
   startYear,
+  showBackward,
+  showForward,
 }: CitationTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -60,14 +62,19 @@ export default function CitationTimeline({
   // Build color lookup
   const tlColorMap = new Map(topicLists.map((tl) => [tl.id, tl.color]));
 
-  // --- Compute "cited by seeds" count ---
-  const seedCitedByCount = new Map<number, number>();
+  // --- Compute inter-seed connectivity ---
+  // For each seed, count how many other seeds it connects to via seedCitations,
+  // controlled by the showBackward/showForward checkboxes.
+  const seedConnectivity = new Map<number, number>();
   for (const s of seeds) {
-    let count = 0;
+    let connections = 0;
     for (const sc of seedCitations) {
-      if (sc.cited_seed_id === s.id) count++;
+      // "References" on → count seeds that cite this seed (this seed appears in their references)
+      if (showBackward && sc.cited_seed_id === s.id) connections++;
+      // "Cited by" on → count seeds that this seed cites (this seed references them)
+      if (showForward && sc.citing_seed_id === s.id) connections++;
     }
-    seedCitedByCount.set(s.id, count);
+    seedConnectivity.set(s.id, 1 + connections);
   }
 
   // Convert to DotDatum array, applying startYear filter
@@ -82,7 +89,7 @@ export default function CitationTimeline({
       id: s.id, title: s.title, year: s.publication_year, type: 'seed',
       colors, topicListIds: s.topic_list_ids, connectedSeedIds: [],
       venueId: s.venue_id, citationCount: s.citation_count,
-      score: Math.log(1 + rawScore), seedCitations: seedCitedByCount.get(s.id) ?? 0,
+      score: Math.log(1 + rawScore), connectivity: seedConnectivity.get(s.id) ?? 1,
     });
   }
 
@@ -90,19 +97,16 @@ export default function CitationTimeline({
     if (n.publication_year == null) continue;
     if (startYear != null && n.publication_year < startYear) continue;
     const rawScore = computeImportanceScore(n.citation_count ?? 0, n.publication_year, filterParams);
-    const citedBySeeds = n.direction === 'backward' ? n.connected_seed_ids.length : 0;
     dots.push({
       id: n.id, title: n.title, year: n.publication_year, type: n.direction,
       colors: ['#9ca3af'], topicListIds: [], connectedSeedIds: n.connected_seed_ids,
       venueId: n.venue_id, citationCount: n.citation_count,
-      score: Math.log(1 + rawScore), seedCitations: citedBySeeds,
+      score: Math.log(1 + rawScore), connectivity: 1,
     });
   }
 
-  // Radius: base + increment per seed citation, capped
-  const rScale = (citedBySeeds: number) => {
-    return Math.min(BASE_RADIUS + citedBySeeds * RADIUS_INCREMENT, MAX_RADIUS);
-  };
+  // Radius: sqrt scaling proportional to area
+  const rScale = (connectivity: number) => BASE_RADIUS * Math.sqrt(connectivity);
 
   // Observe container size
   useEffect(() => {
@@ -311,18 +315,18 @@ export default function CitationTimeline({
       const isSelected = d.id === selectedWorkId;
       const isConnected = selectedConnections.has(d.id);
       const dimmed = selectedWorkId != null && !isConnected;
-      const r = rScale(d.seedCitations);
+      const r = rScale(d.connectivity);
 
       if (d.type === 'seed') {
         if (d.colors.length > 1) {
-          const arc = d3.arc<d3.PieArcDatum<string>>();
-          const pie = d3.pie<string>().value(1).sort(null);
-          const arcs = pie(d.colors);
+          // Multi-color seed: square with vertical color stripes
           const seedG = dotGroup.append('g').attr('transform', `translate(${pos.x},${pos.y})`);
-          for (const a of arcs) {
-            seedG.append('path')
-              .attr('d', arc.innerRadius(0).outerRadius(r)(a)!)
-              .attr('fill', a.data)
+          const stripeWidth = (2 * r) / d.colors.length;
+          for (let i = 0; i < d.colors.length; i++) {
+            seedG.append('rect')
+              .attr('x', -r + i * stripeWidth).attr('y', -r)
+              .attr('width', stripeWidth).attr('height', 2 * r)
+              .attr('fill', d.colors[i])
               .attr('opacity', dimmed ? 0.2 : 1)
               .attr('cursor', 'pointer')
               .on('click', () => handleDotClick(d.id))
@@ -330,17 +334,19 @@ export default function CitationTimeline({
               .on('mouseleave', () => hideTooltip(tooltip));
           }
           if (isSelected) {
-            seedG.append('circle')
-              .attr('r', r + 3)
+            seedG.append('rect')
+              .attr('x', -(r + 3)).attr('y', -(r + 3))
+              .attr('width', (r + 3) * 2).attr('height', (r + 3) * 2)
               .attr('fill', 'none')
               .attr('stroke', '#6366f1')
               .attr('stroke-width', 2);
           }
         } else {
+          // Single-color seed: filled square
           const color = d.colors[0] ?? '#6b7280';
-          dotGroup.append('circle')
-            .attr('cx', pos.x).attr('cy', pos.y)
-            .attr('r', r)
+          dotGroup.append('rect')
+            .attr('x', pos.x - r).attr('y', pos.y - r)
+            .attr('width', r * 2).attr('height', r * 2)
             .attr('fill', color)
             .attr('opacity', dimmed ? 0.2 : 1)
             .attr('stroke', isSelected ? '#6366f1' : 'none')
@@ -349,6 +355,16 @@ export default function CitationTimeline({
             .on('click', () => handleDotClick(d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
+        }
+        // Connected-seed highlight ring (square outline)
+        if (isConnected && !isSelected && selectedWorkId != null) {
+          dotGroup.append('rect')
+            .attr('x', pos.x - (r + 3)).attr('y', pos.y - (r + 3))
+            .attr('width', (r + 3) * 2).attr('height', (r + 3) * 2)
+            .attr('fill', 'none')
+            .attr('stroke', '#6366f1')
+            .attr('stroke-width', 1)
+            .attr('opacity', 0.5);
         }
       } else {
         const color = d.colors[0] ?? '#9ca3af';
@@ -394,8 +410,53 @@ export default function CitationTimeline({
         }
       }
     }
+
+    // --- Legend (below x-axis, never overlaps data) ---
+    const legendItems: { shape: 'square' | 'circle' | 'diamond'; color: string; label: string }[] = [];
+    for (const tl of topicLists) {
+      legendItems.push({ shape: 'square', color: tl.color, label: tl.name });
+    }
+    legendItems.push({ shape: 'circle', color: '#9ca3af', label: 'Neighbor' });
+
+    const legendG = g.append('g')
+      .attr('transform', `translate(0,${innerH + 38})`);
+
+    const lr = BASE_RADIUS;
+    let lx = 0;
+    for (const item of legendItems) {
+      const itemG = legendG.append('g').attr('transform', `translate(${lx},0)`);
+
+      if (item.shape === 'square') {
+        itemG.append('rect')
+          .attr('x', -lr).attr('y', -lr)
+          .attr('width', lr * 2).attr('height', lr * 2)
+          .attr('fill', item.color);
+      } else if (item.shape === 'circle') {
+        itemG.append('circle')
+          .attr('r', lr)
+          .attr('fill', item.color)
+          .attr('opacity', NEIGHBOR_OPACITY);
+      } else {
+        itemG.append('rect')
+          .attr('x', -lr).attr('y', -lr)
+          .attr('width', lr * 2).attr('height', lr * 2)
+          .attr('transform', 'rotate(45)')
+          .attr('fill', item.color)
+          .attr('opacity', NEIGHBOR_OPACITY);
+      }
+
+      const textEl = itemG.append('text')
+        .attr('x', lr + 5).attr('y', 0)
+        .attr('dominant-baseline', 'central')
+        .attr('class', 'fill-gray-500 text-xs')
+        .text(item.label);
+
+      const textWidth = (textEl.node() as SVGTextElement).getComputedTextLength?.() ?? item.label.length * 6;
+      lx += lr + 5 + textWidth + 16;
+    }
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimensions, dots.length, selectedWorkId, seeds, neighbors, seedCitations, topicLists, decayStartYears, startYear]);
+  }, [dimensions, dots.length, selectedWorkId, seeds, neighbors, seedCitations, topicLists, decayStartYears, startYear, showBackward, showForward]);
 
   useEffect(() => {
     render();
@@ -431,7 +492,7 @@ function showTooltip(
       `<div style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px">${escapeHtml(d.title)}</div>` +
       `<div>${d.year} &middot; ${label}` +
       (d.citationCount != null ? ` &middot; ${d.citationCount} cit.` : '') +
-      (d.seedCitations > 0 ? ` &middot; cited by ${d.seedCitations} seed${d.seedCitations > 1 ? 's' : ''}` : '') +
+      (d.connectivity > 1 ? ` &middot; ${d.connectivity} connections` : '') +
       `</div>`,
     );
 }

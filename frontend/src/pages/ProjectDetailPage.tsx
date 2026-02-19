@@ -214,6 +214,8 @@ export default function ProjectDetailPage() {
                 onSelectWork={setSelectedWorkId}
                 decayStartYears={decayStartYears}
                 startYear={startYear}
+                showBackward={showBackward}
+                showForward={showForward}
               />
             </div>
           </div>
