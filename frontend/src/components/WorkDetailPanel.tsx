@@ -35,6 +35,7 @@ export default function WorkDetailPanel({
   topicLists,
   onAddToList,
   onMarkUninteresting,
+  onEnrichComplete,
   timelineContext,
 }: {
   workId: number;
@@ -42,6 +43,7 @@ export default function WorkDetailPanel({
   topicLists?: TopicListOut[];
   onAddToList?: (topicListId: number) => void;
   onMarkUninteresting?: (workId: number) => void;
+  onEnrichComplete?: () => void;
   timelineContext?: TimelineContext;
 }) {
   const { data: work, isLoading } = useWork(workId);
@@ -154,14 +156,14 @@ export default function WorkDetailPanel({
           <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Actions</h4>
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => fetchBwd.mutate(workId)}
+              onClick={() => fetchBwd.mutate(workId, { onSettled: onEnrichComplete })}
               disabled={fetchBwd.isPending}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
               {fetchBwd.isPending ? 'Fetching...' : 'Fetch References'}
             </button>
             <button
-              onClick={() => fetchFwd.mutate({ workId })}
+              onClick={() => fetchFwd.mutate({ workId }, { onSettled: onEnrichComplete })}
               disabled={fetchFwd.isPending}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
@@ -169,7 +171,7 @@ export default function WorkDetailPanel({
             </button>
             {work.doi && (
               <button
-                onClick={() => crossref.mutate(workId)}
+                onClick={() => crossref.mutate(workId, { onSettled: onEnrichComplete })}
                 disabled={crossref.isPending}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >

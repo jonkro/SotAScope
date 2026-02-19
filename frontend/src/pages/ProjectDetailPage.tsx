@@ -14,6 +14,7 @@ import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
   useAddIgnoredWork, useRemoveIgnoredWork,
 } from '../hooks/useProjects';
+import { useQueryClient } from '@tanstack/react-query';
 import { useWorks } from '../hooks/useWorks';
 import { useTimeline } from '../hooks/useTimeline';
 import { filterNeighbors } from '../lib/timelineFilter';
@@ -53,7 +54,12 @@ export default function ProjectDetailPage() {
   });
 
   // Timeline data
+  const qc = useQueryClient();
   const { data: timeline } = useTimeline(projectId);
+
+  const handleEnrichComplete = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
+  }, [qc, projectId]);
 
   const createList = useCreateTopicList();
   const updateList = useUpdateTopicList();
@@ -317,6 +323,7 @@ export default function ProjectDetailPage() {
           topicLists={project.topic_lists}
           onAddToList={(tlId) => addWork.mutate({ projectId, topicListId: tlId, workId: selectedWorkId })}
           onMarkUninteresting={(wid) => addIgnored.mutate({ projectId, workId: wid })}
+          onEnrichComplete={handleEnrichComplete}
           timelineContext={activeTab === 'timeline' ? timelineContext : undefined}
         />
       )}
