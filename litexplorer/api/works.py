@@ -46,9 +46,17 @@ def _get_work(db: Session, work_id: int) -> Work:
 
 
 def _work_detail(work: Work) -> WorkDetail:
+    venue_name = None
+    venue_display_name = None
+    if work.venue:
+        venue_name = work.venue.name
+        venue_display_name = (
+            work.venue.aliases[0].alias if work.venue.aliases else work.venue.name
+        )
     return WorkDetail(
         **{c.key: getattr(work, c.key) for c in Work.__table__.columns},
-        venue_name=work.venue.name if work.venue else None,
+        venue_name=venue_name,
+        venue_display_name=venue_display_name,
         locations=[WorkLocationOut.model_validate(loc) for loc in work.locations],
         authors=sorted(
             [

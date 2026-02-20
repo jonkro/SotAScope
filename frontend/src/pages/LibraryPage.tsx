@@ -5,7 +5,7 @@ import SearchInput from '../components/SearchInput';
 import Pagination from '../components/Pagination';
 import EmptyState from '../components/EmptyState';
 import WorkCard from '../components/WorkCard';
-import WorkDetailPanel from '../components/WorkDetailPanel';
+import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from '../components/WorkDetailPanel';
 import ImportDialog from '../components/ImportDialog';
 import SanitizeDialog from '../components/SanitizeDialog';
 import { useWorks } from '../hooks/useWorks';
@@ -19,6 +19,7 @@ export default function LibraryPage() {
   const [selectedWorkId, setSelectedWorkId] = useState<number | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [sanitizeOpen, setSanitizeOpen] = useState(false);
+  const [panelFoldState, setPanelFoldState] = useState<PanelFoldState>({ ...DEFAULT_FOLD_STATE });
 
   const venueIdParam = searchParams.get('venue_id');
   const venueIdFilter = venueIdParam ? Number(venueIdParam) : undefined;
@@ -109,6 +110,9 @@ export default function LibraryPage() {
           workId={selectedWorkId}
           onClose={() => setSelectedWorkId(null)}
           onDelete={() => setSelectedWorkId(null)}
+          onSelectWork={setSelectedWorkId}
+          foldState={panelFoldState}
+          onFoldChange={setPanelFoldState}
         />
       )}
 

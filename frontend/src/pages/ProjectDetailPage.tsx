@@ -5,14 +5,14 @@ import SearchInput from '../components/SearchInput';
 import EmptyState from '../components/EmptyState';
 import TopicListCard from '../components/TopicListCard';
 import TopicListFormDialog from '../components/TopicListFormDialog';
-import WorkDetailPanel from '../components/WorkDetailPanel';
+import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from '../components/WorkDetailPanel';
 import ConfirmDialog from '../components/ConfirmDialog';
 import CitationTimeline from '../components/CitationTimeline';
 import TimelineControls, { type CandidateFilter } from '../components/TimelineControls';
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
 import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
-  useAddIgnoredWork, useRemoveIgnoredWork,
+  useAddIgnoredWork, useRemoveIgnoredWork, useRemoveWorkFromTopicList,
 } from '../hooks/useProjects';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorks } from '../hooks/useWorks';
@@ -48,6 +48,9 @@ export default function ProjectDetailPage() {
   const [deleteListId, setDeleteListId] = useState<number | null>(null);
   const [selectedWorkId, setSelectedWorkId] = useState<number | null>(null);
 
+  // Detail panel fold state (persists across paper selections within this project)
+  const [panelFoldState, setPanelFoldState] = useState<PanelFoldState>({ ...DEFAULT_FOLD_STATE });
+
   // Auto-enrichment tracking
   const [enrichingWorkIds, setEnrichingWorkIds] = useState<Set<number>>(new Set());
 
@@ -73,6 +76,7 @@ export default function ProjectDetailPage() {
   const addWork = useAddWorkToTopicList();
   const addIgnored = useAddIgnoredWork();
   const removeIgnored = useRemoveIgnoredWork();
+  const removeWork = useRemoveWorkFromTopicList();
 
   const handleAddWorkToList = useCallback((topicListId: number, workId: number) => {
     addWork.mutate({ projectId, topicListId, workId }, {
@@ -139,6 +143,53 @@ export default function ProjectDetailPage() {
     }
     return result;
   }, [timeline, tier1Set, ignoredSet, threshold, decayStartYears, showBackward, showForward, candidateFilter]);
+
+  // Seed color map: seed work ID → array of topic list colors
+  const seedColorMap = useMemo(() => {
+    if (!timeline) return new Map<number, string[]>();
+    const tlColorMap = new Map(timeline.topic_lists.map((tl) => [tl.id, tl.color]));
+    const map = new Map<number, string[]>();
+    for (const seed of timeline.seeds) {
+      const colors = seed.topic_list_ids
+        .map((tlId) => tlColorMap.get(tlId))
+        .filter((c): c is string => c != null);
+      map.set(seed.id, colors.length > 0 ? colors : ['#6b7280']);
+    }
+    return map;
+  }, [timeline]);
+
+  // All work IDs rendered in the timeline (seeds + filtered neighbors)
+  const renderedWorkIds = useMemo(() => {
+    const ids = new Set<number>();
+    if (timeline) {
+      for (const s of timeline.seeds) ids.add(s.id);
+    }
+    for (const n of filteredNeighbors) ids.add(n.id);
+    return ids;
+  }, [timeline, filteredNeighbors]);
+
+  // Ignored work IDs for this project
+  const ignoredWorkIds = useMemo(
+    () => new Set(project?.ignored_works.map((iw) => iw.work_id) ?? []),
+    [project?.ignored_works],
+  );
+
+  // Topic list IDs for the currently selected work
+  const workTopicListIds = useMemo(() => {
+    if (!timeline || selectedWorkId == null) return [];
+    const seed = timeline.seeds.find((s) => s.id === selectedWorkId);
+    return seed?.topic_list_ids ?? [];
+  }, [timeline, selectedWorkId]);
+
+  const handleRemoveFromList = useCallback((topicListId: number) => {
+    if (selectedWorkId == null) return;
+    removeWork.mutate({ projectId, topicListId, workId: selectedWorkId }, {
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
+        qc.invalidateQueries({ queryKey: ['projects', projectId] });
+      },
+    });
+  }, [removeWork, projectId, selectedWorkId, qc]);
 
   // Timeline context for WorkDetailPanel
   const timelineContext = useMemo(() => {
@@ -362,10 +413,18 @@ export default function ProjectDetailPage() {
           onClose={() => setSelectedWorkId(null)}
           topicLists={project.topic_lists}
           onAddToList={(tlId) => handleAddWorkToList(tlId, selectedWorkId)}
+          onRemoveFromList={handleRemoveFromList}
           onMarkUninteresting={(wid) => addIgnored.mutate({ projectId, workId: wid })}
           onEnrichComplete={handleEnrichComplete}
           timelineContext={activeTab === 'timeline' ? timelineContext : undefined}
           isAutoEnriching={enrichingWorkIds.has(selectedWorkId)}
+          seedColorMap={activeTab === 'timeline' ? seedColorMap : undefined}
+          renderedWorkIds={activeTab === 'timeline' ? renderedWorkIds : undefined}
+          ignoredWorkIds={ignoredWorkIds}
+          onSelectWork={setSelectedWorkId}
+          workTopicListIds={workTopicListIds}
+          foldState={panelFoldState}
+          onFoldChange={setPanelFoldState}
         />
       )}
 

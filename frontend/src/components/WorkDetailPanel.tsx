@@ -5,26 +5,231 @@ import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCross
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 
-function CitationList({ title, items, isLoading }: { title: string; items?: CitationWorkBrief[]; isLoading: boolean }) {
+/* ------------------------------------------------------------------ */
+/* Fold state                                                          */
+/* ------------------------------------------------------------------ */
+
+export interface PanelFoldState {
+  abstract: boolean;
+  locations: boolean;
+  actions: boolean;
+  references: boolean;
+  citedBy: boolean;
+}
+
+export const DEFAULT_FOLD_STATE: PanelFoldState = {
+  abstract: false,
+  locations: false,
+  actions: true,
+  references: false,
+  citedBy: false,
+};
+
+/* ------------------------------------------------------------------ */
+/* SVG marker components matching timeline shapes                      */
+/* ------------------------------------------------------------------ */
+
+/** Seed marker: filled square, multi-color uses vertical stripes */
+function SeedMarker({ colors }: { colors: string[] }) {
+  const s = 8;
+  if (colors.length <= 1) {
+    return (
+      <svg width={s} height={s} className="shrink-0 mt-0.5">
+        <rect width={s} height={s} fill={colors[0] ?? '#6b7280'} />
+      </svg>
+    );
+  }
+  const sw = s / colors.length;
+  return (
+    <svg width={s} height={s} className="shrink-0 mt-0.5">
+      {colors.map((c, i) => (
+        <rect key={i} x={i * sw} width={sw} height={s} fill={c} />
+      ))}
+    </svg>
+  );
+}
+
+/** Backward neighbor marker: grey circle (matches timeline references) */
+function BackwardMarker() {
+  return (
+    <svg width={8} height={8} className="shrink-0 mt-0.5">
+      <circle cx={4} cy={4} r={3.5} fill="#9ca3af" />
+    </svg>
+  );
+}
+
+/** Forward neighbor marker: grey diamond (matches timeline citing papers) */
+function ForwardMarker() {
+  return (
+    <svg width={8} height={8} className="shrink-0 mt-0.5">
+      <rect x={1.17} y={1.17} width={5.66} height={5.66} fill="#9ca3af" transform="rotate(45,4,4)" />
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Collapsible section wrapper                                         */
+/* ------------------------------------------------------------------ */
+
+function CollapsibleSection({
+  sectionKey,
+  title,
+  defaultOpen = false,
+  count,
+  children,
+  foldState,
+  onFoldChange,
+}: {
+  sectionKey?: keyof PanelFoldState;
+  title: string;
+  defaultOpen?: boolean;
+  count?: number;
+  children: React.ReactNode;
+  foldState?: PanelFoldState;
+  onFoldChange?: (s: PanelFoldState) => void;
+}) {
+  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+
+  const isOpen = sectionKey && foldState
+    ? foldState[sectionKey]
+    : internalOpen;
+
+  const toggle = () => {
+    if (sectionKey && foldState && onFoldChange) {
+      onFoldChange({ ...foldState, [sectionKey]: !isOpen });
+    } else {
+      setInternalOpen(!internalOpen);
+    }
+  };
+
   return (
     <div>
-      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{title}</h4>
-      {isLoading ? (
-        <p className="text-xs text-gray-400">Loading...</p>
-      ) : !items?.length ? (
-        <p className="text-xs text-gray-400">None fetched yet</p>
-      ) : (
-        <ul className="space-y-1">
-          {items.map((c) => (
-            <li key={c.id} className="text-xs text-gray-700 leading-snug">
-              {c.title} {c.publication_year && <span className="text-gray-400">({c.publication_year})</span>}
-            </li>
-          ))}
-        </ul>
+      <button
+        onClick={toggle}
+        className="flex items-center gap-1 w-full text-left"
+      >
+        <span className="text-[10px] text-gray-400">{isOpen ? '\u25BE' : '\u25B8'}</span>
+        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          {title}
+          {count != null && <span className="text-gray-400 ml-1 normal-case">({count})</span>}
+        </h4>
+      </button>
+      {isOpen && <div className="mt-2">{children}</div>}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Citation list with timeline markers and clickability                */
+/* ------------------------------------------------------------------ */
+
+function CitationList({
+  sectionKey,
+  title,
+  direction,
+  items,
+  isLoading,
+  seedColorMap,
+  renderedWorkIds,
+  ignoredWorkIds,
+  onSelectWork,
+  foldState,
+  onFoldChange,
+}: {
+  sectionKey: keyof PanelFoldState;
+  title: string;
+  direction: 'backward' | 'forward';
+  items?: CitationWorkBrief[];
+  isLoading: boolean;
+  seedColorMap?: Map<number, string[]>;
+  renderedWorkIds?: Set<number>;
+  ignoredWorkIds?: Set<number>;
+  onSelectWork?: (workId: number) => void;
+  foldState?: PanelFoldState;
+  onFoldChange?: (s: PanelFoldState) => void;
+}) {
+  const [internalOpen, setInternalOpen] = useState(false);
+
+  const isOpen = foldState ? foldState[sectionKey] : internalOpen;
+
+  const toggle = () => {
+    if (foldState && onFoldChange) {
+      onFoldChange({ ...foldState, [sectionKey]: !isOpen });
+    } else {
+      setInternalOpen(!internalOpen);
+    }
+  };
+
+  return (
+    <div>
+      <button
+        onClick={toggle}
+        className="flex items-center gap-1 w-full text-left"
+      >
+        <span className="text-[10px] text-gray-400">{isOpen ? '\u25BE' : '\u25B8'}</span>
+        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          {title}
+          {items && <span className="text-gray-400 ml-1 normal-case">({items.length})</span>}
+        </h4>
+      </button>
+      {isOpen && (
+        isLoading ? (
+          <p className="text-xs text-gray-400 mt-2">Loading...</p>
+        ) : !items?.length ? (
+          <p className="text-xs text-gray-400 mt-2">None fetched yet</p>
+        ) : (
+          <ul className="space-y-1 mt-2">
+            {items.map((c) => {
+              const seedColors = seedColorMap?.get(c.id);
+              const isRendered = renderedWorkIds?.has(c.id);
+              const isIgnored = ignoredWorkIds?.has(c.id);
+              const clickable = onSelectWork && (renderedWorkIds === undefined || isRendered);
+
+              const label = (
+                <>
+                  {c.title}
+                  {c.publication_year && (
+                    <span className="text-gray-400"> ({c.publication_year})</span>
+                  )}
+                </>
+              );
+
+              // Marker: seed square > direction-specific neighbor shape > empty spacer
+              let marker: React.ReactNode = <span className="inline-block w-2 shrink-0" />;
+              if (seedColors) {
+                marker = <SeedMarker colors={seedColors} />;
+              } else if (isRendered) {
+                marker = direction === 'backward' ? <BackwardMarker /> : <ForwardMarker />;
+              }
+
+              return (
+                <li key={c.id} className="flex items-start gap-1.5 text-xs leading-snug">
+                  {marker}
+                  {clickable ? (
+                    <button
+                      onClick={() => onSelectWork(c.id)}
+                      className={`text-left hover:text-blue-600 ${isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}`}
+                    >
+                      {label}
+                    </button>
+                  ) : (
+                    <span className={isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}>
+                      {label}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )
       )}
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* TimelineContext type (kept for external callers)                     */
+/* ------------------------------------------------------------------ */
 
 interface TimelineContext {
   direction: 'seed' | 'backward' | 'forward';
@@ -32,26 +237,46 @@ interface TimelineContext {
   forwardCitationsFetchedAt: string | null;
 }
 
+/* ------------------------------------------------------------------ */
+/* Main panel                                                          */
+/* ------------------------------------------------------------------ */
+
 export default function WorkDetailPanel({
   workId,
   onClose,
   topicLists,
   onAddToList,
+  onRemoveFromList,
   onMarkUninteresting,
   onEnrichComplete,
   onDelete,
   timelineContext,
   isAutoEnriching,
+  seedColorMap,
+  renderedWorkIds,
+  ignoredWorkIds,
+  onSelectWork,
+  workTopicListIds,
+  foldState,
+  onFoldChange,
 }: {
   workId: number;
   onClose: () => void;
   topicLists?: TopicListOut[];
   onAddToList?: (topicListId: number) => void;
+  onRemoveFromList?: (topicListId: number) => void;
   onMarkUninteresting?: (workId: number) => void;
   onEnrichComplete?: () => void;
   onDelete?: () => void;
   timelineContext?: TimelineContext;
   isAutoEnriching?: boolean;
+  seedColorMap?: Map<number, string[]>;
+  renderedWorkIds?: Set<number>;
+  ignoredWorkIds?: Set<number>;
+  onSelectWork?: (workId: number) => void;
+  workTopicListIds?: number[];
+  foldState?: PanelFoldState;
+  onFoldChange?: (s: PanelFoldState) => void;
 }) {
   const { data: work, isLoading } = useWork(workId);
   const fwd = useForwardCitations(workId);
@@ -75,12 +300,31 @@ export default function WorkDetailPanel({
     );
   }
 
+  const currentTlIds = new Set(workTopicListIds ?? []);
+  const addableLists = topicLists?.filter((tl) => !currentTlIds.has(tl.id)) ?? [];
+  const removableLists = topicLists?.filter((tl) => currentTlIds.has(tl.id)) ?? [];
+
+  const roleBadge = timelineContext && (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${
+      timelineContext.direction === 'seed'
+        ? 'bg-blue-100 text-blue-700'
+        : timelineContext.direction === 'backward'
+        ? 'bg-amber-100 text-amber-700'
+        : 'bg-green-100 text-green-700'
+    }`}>
+      {timelineContext.direction === 'seed' ? 'Seed' : timelineContext.direction === 'backward' ? 'Reference' : 'Citing'}
+    </span>
+  );
+
   return (
     <>
     <div className="w-96 border-l border-gray-200 bg-white flex flex-col h-full overflow-y-auto">
       {/* Header */}
       <div className="flex items-start justify-between p-4 border-b border-gray-200">
-        <h3 className="text-sm font-semibold text-gray-900 leading-snug pr-2">{work.title}</h3>
+        <div className="pr-2 min-w-0">
+          <h3 className="text-sm font-semibold text-gray-900 leading-snug">{work.title}</h3>
+          {roleBadge && <div className="mt-1">{roleBadge}</div>}
+        </div>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 shrink-0">&times;</button>
       </div>
 
@@ -155,33 +399,53 @@ export default function WorkDetailPanel({
           )}
         </div>
 
-        {/* Abstract */}
+        {/* Abstract (collapsible) */}
         {work.abstract && (
-          <div>
-            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Abstract</h4>
+          <CollapsibleSection
+            sectionKey="abstract"
+            title="Abstract"
+            foldState={foldState}
+            onFoldChange={onFoldChange}
+          >
             <p className="text-xs text-gray-700 leading-relaxed">{work.abstract}</p>
-          </div>
+          </CollapsibleSection>
         )}
 
-        {/* Locations */}
+        {/* Locations (collapsible) */}
         {work.locations.length > 0 && (
-          <div>
-            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Locations</h4>
+          <CollapsibleSection
+            sectionKey="locations"
+            title="Locations"
+            count={work.locations.length}
+            foldState={foldState}
+            onFoldChange={onFoldChange}
+          >
             <ul className="space-y-1">
-              {work.locations.map((loc) => (
-                <li key={loc.id} className="text-xs">
-                  <a href={loc.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                    {loc.location_type}{loc.is_primary ? ' (primary)' : ''}
-                  </a>
-                </li>
-              ))}
+              {work.locations.map((loc) => {
+                const linkText =
+                  loc.location_type === 'venue' && (work.venue_display_name || work.venue_name)
+                    ? (work.venue_display_name || work.venue_name)
+                    : loc.location_type;
+                return (
+                  <li key={loc.id} className="text-xs">
+                    <a href={loc.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                      {linkText}{loc.is_primary ? ' (primary)' : ''}
+                    </a>
+                  </li>
+                );
+              })}
             </ul>
-          </div>
+          </CollapsibleSection>
         )}
 
-        {/* Enrich actions */}
-        <div>
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Actions</h4>
+        {/* Actions (collapsible, default open) */}
+        <CollapsibleSection
+          sectionKey="actions"
+          title="Actions"
+          defaultOpen
+          foldState={foldState}
+          onFoldChange={onFoldChange}
+        >
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => fetchBwd.mutate(workId, { onSettled: onEnrichComplete })}
@@ -247,51 +511,17 @@ export default function WorkDetailPanel({
               {resolveMsg}
             </p>
           )}
-        </div>
-
-        {/* Citations */}
-        <CitationList title="References (backward)" items={bwd.data} isLoading={bwd.isLoading} />
-        <CitationList title="Cited by (forward)" items={fwd.data} isLoading={fwd.isLoading} />
-
-        {/* Timeline context */}
-        {timelineContext && (
-          <div>
-            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-              Timeline
-            </h4>
-            <p className="text-xs text-gray-600 mb-1">
-              Role: <span className="font-medium capitalize">{timelineContext.direction}</span>
+          {timelineContext?.direction === 'seed' && timelineContext.forwardCitationsFetchedAt && (
+            <p className="text-xs text-gray-400 mt-1">
+              Forward citations last fetched: {new Date(timelineContext.forwardCitationsFetchedAt).toLocaleDateString()}
             </p>
-            {timelineContext.connectedSeeds.length > 0 && (
-              <div className="mt-1">
-                <p className="text-xs text-gray-500 mb-1">Connected seeds:</p>
-                <ul className="space-y-0.5">
-                  {timelineContext.connectedSeeds.map((s) => (
-                    <li key={s.id} className="flex items-center gap-1.5 text-xs text-gray-700">
-                      <span
-                        className="inline-block w-2 h-2 rounded-full shrink-0"
-                        style={{ backgroundColor: s.color }}
-                      />
-                      <span className="truncate">{s.title}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {timelineContext.direction === 'seed' && timelineContext.forwardCitationsFetchedAt && (
-              <p className="text-xs text-gray-400 mt-1">
-                Forward citations last fetched: {new Date(timelineContext.forwardCitationsFetchedAt).toLocaleDateString()}
-              </p>
-            )}
-          </div>
-        )}
+          )}
 
-        {/* Add to topic list */}
-        {topicLists && topicLists.length > 0 && onAddToList && (
-          <div>
-            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Add to Topic List</h4>
-            <div className="flex flex-wrap gap-2">
-              {topicLists.map((tl) => (
+          {/* Add to topic list (only lists the work is NOT on) */}
+          {addableLists.length > 0 && onAddToList && (
+            <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+              <span className="text-xs text-gray-500 w-full">Add to topic list:</span>
+              {addableLists.map((tl) => (
                 <button
                   key={tl.id}
                   onClick={() => onAddToList(tl.id)}
@@ -302,20 +532,67 @@ export default function WorkDetailPanel({
                 </button>
               ))}
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Mark uninteresting (neighbors only) */}
-        {onMarkUninteresting && timelineContext && (timelineContext.direction === 'backward' || timelineContext.direction === 'forward') && (
-          <div>
-            <button
-              onClick={() => { onMarkUninteresting(workId); onClose(); }}
-              className="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-300 rounded hover:bg-red-50"
-            >
-              Mark uninteresting
-            </button>
-          </div>
-        )}
+          {/* Remove from topic list (only lists the work IS on) */}
+          {removableLists.length > 0 && onRemoveFromList && (
+            <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+              <span className="text-xs text-gray-500 w-full">Remove from topic list:</span>
+              {removableLists.map((tl) => (
+                <button
+                  key={tl.id}
+                  onClick={() => onRemoveFromList(tl.id)}
+                  className="px-2 py-1 text-xs rounded border hover:opacity-80"
+                  style={{ borderColor: tl.color, color: tl.color }}
+                >
+                  {tl.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Mark uninteresting (neighbors only) */}
+          {onMarkUninteresting && timelineContext && (timelineContext.direction === 'backward' || timelineContext.direction === 'forward') && (
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <button
+                onClick={() => { onMarkUninteresting(workId); onClose(); }}
+                className="px-2 py-1 text-xs font-medium text-red-600 border border-red-300 rounded hover:bg-red-50"
+              >
+                Mark uninteresting
+              </button>
+            </div>
+          )}
+        </CollapsibleSection>
+
+        {/* References (backward) — collapsible with markers */}
+        <CitationList
+          sectionKey="references"
+          title="References (backward)"
+          direction="backward"
+          items={bwd.data}
+          isLoading={bwd.isLoading}
+          seedColorMap={seedColorMap}
+          renderedWorkIds={renderedWorkIds}
+          ignoredWorkIds={ignoredWorkIds}
+          onSelectWork={onSelectWork}
+          foldState={foldState}
+          onFoldChange={onFoldChange}
+        />
+
+        {/* Cited by (forward) — collapsible with markers */}
+        <CitationList
+          sectionKey="citedBy"
+          title="Cited by (forward)"
+          direction="forward"
+          items={fwd.data}
+          isLoading={fwd.isLoading}
+          seedColorMap={seedColorMap}
+          renderedWorkIds={renderedWorkIds}
+          ignoredWorkIds={ignoredWorkIds}
+          onSelectWork={onSelectWork}
+          foldState={foldState}
+          onFoldChange={onFoldChange}
+        />
 
         {/* Delete from library (library context only) */}
         {onDelete && (
