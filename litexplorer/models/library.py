@@ -25,6 +25,7 @@ class Work(Base):
     """A single scholarly work, uniquely keyed by DOI or arXiv ID."""
 
     __tablename__ = "works"
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     doi: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
@@ -41,9 +42,6 @@ class Work(Base):
     bibtex_key: Mapped[str | None] = mapped_column(String(255), unique=True)
     # Raw BibTeX entry, kept in sync with structured fields.
     bibtex_entry: Mapped[str | None] = mapped_column(Text)
-
-    # Relative path under the configured PDF directory.
-    pdf_path: Mapped[str | None] = mapped_column(String(512))
 
     citation_count: Mapped[int | None] = mapped_column(Integer, default=0)
 
@@ -66,9 +64,30 @@ class Work(Base):
     authors: Mapped[list["WorkAuthor"]] = relationship(
         back_populates="work", cascade="all, delete-orphan", order_by="WorkAuthor.position"
     )
+    pdfs: Mapped[list["WorkPDF"]] = relationship(
+        back_populates="work", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Work id={self.id} doi={self.doi!r} title={self.title[:60]!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Work PDFs
+# ---------------------------------------------------------------------------
+
+class WorkPDF(Base):
+    """A PDF file attached to a work."""
+
+    __tablename__ = "work_pdfs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    work: Mapped["Work"] = relationship(back_populates="pdfs")
 
 
 # ---------------------------------------------------------------------------

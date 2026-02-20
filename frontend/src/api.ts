@@ -1,6 +1,7 @@
 import type {
   WorkOut,
   WorkDetail,
+  WorkPDFOut,
   BibtexImportResult,
   CitationWorkBrief,
   VenueOut,
@@ -22,6 +23,8 @@ import type {
   WorkLocationOut,
   TimelineResponse,
   SettingOut,
+  BrowseResult,
+  PDFMigrationResult,
 } from './types';
 
 class ApiError extends Error {
@@ -136,6 +139,40 @@ export function mergeWorks(targetId: number, sourceId: number) {
 
 export function fetchDuplicates() {
   return apiFetch<import('./types').DuplicateGroup[]>('/api/works/duplicates');
+}
+
+// ---- Work PDFs ----
+
+export function fetchWorkPDFs(workId: number) {
+  return apiFetch<WorkPDFOut[]>(`/api/works/${workId}/pdfs`);
+}
+
+export async function uploadWorkPDF(workId: number, file: File): Promise<WorkPDFOut> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch(`/api/works/${workId}/pdfs`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body);
+  }
+  return res.json();
+}
+
+export function setWorkPDFPrimary(workId: number, pdfId: number) {
+  return apiFetch<WorkPDFOut>(`/api/works/${workId}/pdfs/${pdfId}/set-primary`, {
+    method: 'PATCH',
+  });
+}
+
+export function deleteWorkPDF(workId: number, pdfId: number) {
+  return apiFetch<void>(`/api/works/${workId}/pdfs/${pdfId}`, { method: 'DELETE' });
+}
+
+export function serveWorkPDFUrl(workId: number, pdfId: number): string {
+  return `/api/works/${workId}/pdfs/${pdfId}/file`;
 }
 
 // ---- Venues ----
@@ -318,6 +355,28 @@ export function updateSetting(key: string, value: string) {
   return apiFetch<SettingOut>(`/api/settings/${encodeURIComponent(key)}`, {
     method: 'PATCH',
     body: JSON.stringify({ value }),
+  });
+}
+
+// ---- Filesystem ----
+
+export function browseDirectory(path?: string) {
+  const sp = new URLSearchParams();
+  if (path) sp.set('path', path);
+  return apiFetch<BrowseResult>(`/api/filesystem/browse?${sp}`);
+}
+
+export function createDirectory(path: string) {
+  return apiFetch<{ path: string }>('/api/filesystem/mkdir', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function migratePDFStorage(newPath: string) {
+  return apiFetch<PDFMigrationResult>('/api/settings/pdf_storage_path/migrate', {
+    method: 'POST',
+    body: JSON.stringify({ new_path: newPath }),
   });
 }
 

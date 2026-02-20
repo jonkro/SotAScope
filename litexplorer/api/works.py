@@ -1,10 +1,17 @@
 """CRUD routes for works, locations, authors, citations, and BibTeX import."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import os
+import re
+import shutil
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import delete as sa_delete, exists, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
+from litexplorer.config import settings
 from litexplorer.models.library import (
     Author,
     Citation,
@@ -13,6 +20,7 @@ from litexplorer.models.library import (
     Work,
     WorkAuthor,
     WorkLocation,
+    WorkPDF,
 )
 from litexplorer.models.project import ProjectIgnoredWork, TopicListWork
 from litexplorer.schemas.works import (
@@ -28,6 +36,7 @@ from litexplorer.schemas.works import (
     WorkLocationCreate,
     WorkLocationOut,
     WorkOut,
+    WorkPDFOut,
     WorkUpdate,
 )
 
@@ -43,6 +52,35 @@ def _get_work(db: Session, work_id: int) -> Work:
     if not work:
         raise HTTPException(status_code=404, detail="Work not found")
     return work
+
+
+def _get_pdf_root(db: Session) -> Path:
+    """Resolve PDF storage root: DB setting > config default."""
+    from litexplorer.api.settings import get_setting_value
+    custom = get_setting_value(db, "pdf_storage_path")
+    if custom:
+        return Path(custom)
+    return settings.pdf_dir
+
+
+def _secure_filename(name: str) -> str:
+    """Sanitize a filename: strip path components, replace unsafe chars."""
+    name = os.path.basename(name)
+    name = re.sub(r"[^\w.\-]", "_", name)
+    name = name.lstrip("._")
+    return name or "unnamed.pdf"
+
+
+def _move_to_orphaned(src: Path, orphaned_dir: Path) -> None:
+    """Move a file to the orphaned directory, appending _N on collision."""
+    orphaned_dir.mkdir(parents=True, exist_ok=True)
+    dest = orphaned_dir / src.name
+    counter = 1
+    while dest.exists():
+        stem = src.stem
+        dest = orphaned_dir / f"{stem}_{counter}{src.suffix}"
+        counter += 1
+    shutil.move(str(src), str(dest))
 
 
 def _work_detail(work: Work) -> WorkDetail:
@@ -275,6 +313,19 @@ def update_work(work_id: int, body: WorkUpdate, db: Session = Depends(get_db)):
 @router.delete("/{work_id}", status_code=204)
 def delete_work(work_id: int, db: Session = Depends(get_db)):
     work = _get_work(db, work_id)
+    # Move PDF files to orphaned directory before cascade-deleting DB rows
+    pdf_root = _get_pdf_root(db)
+    work_pdf_dir = pdf_root / str(work_id)
+    if work_pdf_dir.is_dir():
+        orphaned_dir = pdf_root / "_orphaned" / str(work_id)
+        for f in work_pdf_dir.iterdir():
+            if f.is_file():
+                _move_to_orphaned(f, orphaned_dir)
+        # Remove the now-empty directory
+        try:
+            work_pdf_dir.rmdir()
+        except OSError:
+            pass
     db.delete(work)
     db.commit()
 
@@ -611,7 +662,7 @@ def _fill_metadata(db: Session, source: Work, target: Work) -> None:
 
     for field in (
         "doi", "arxiv_id", "openalex_id", "abstract", "publication_year",
-        "venue_id", "bibtex_key", "bibtex_entry", "pdf_path",
+        "venue_id", "bibtex_key", "bibtex_entry",
         "doi_auto_resolved", "created_by",
     ):
         src_val = saved[field] if field in saved else getattr(source, field)
@@ -660,3 +711,114 @@ def merge_works(target_id: int, source_id: int, db: Session = Depends(get_db)):
 
     db.commit()
     return _work_detail(result)
+
+
+# ---------------------------------------------------------------------------
+# PDFs
+# ---------------------------------------------------------------------------
+
+@router.post("/{work_id}/pdfs", response_model=WorkPDFOut, status_code=201)
+def upload_pdf(work_id: int, file: UploadFile, db: Session = Depends(get_db)):
+    """Upload a PDF and attach it to a work."""
+    _get_work(db, work_id)
+    safe_name = _secure_filename(file.filename or "unnamed.pdf")
+
+    pdf_root = _get_pdf_root(db)
+    work_dir = pdf_root / str(work_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = work_dir / safe_name
+    if dest.exists():
+        raise HTTPException(status_code=409, detail=f"File '{safe_name}' already exists for this work")
+
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # First PDF for this work becomes primary
+    existing_count = db.scalar(
+        select(func.count()).select_from(WorkPDF).where(WorkPDF.work_id == work_id)
+    )
+    is_primary = existing_count == 0
+
+    pdf = WorkPDF(work_id=work_id, filename=safe_name, is_primary=is_primary)
+    db.add(pdf)
+    db.commit()
+    db.refresh(pdf)
+    return pdf
+
+
+@router.get("/{work_id}/pdfs", response_model=list[WorkPDFOut])
+def list_pdfs(work_id: int, db: Session = Depends(get_db)):
+    """List all PDFs attached to a work."""
+    _get_work(db, work_id)
+    return db.scalars(
+        select(WorkPDF).where(WorkPDF.work_id == work_id).order_by(WorkPDF.id)
+    ).all()
+
+
+@router.get("/{work_id}/pdfs/{pdf_id}/file")
+def serve_pdf(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
+    """Serve a PDF file for download/viewing."""
+    pdf = db.scalars(
+        select(WorkPDF).where(WorkPDF.id == pdf_id, WorkPDF.work_id == work_id)
+    ).one_or_none()
+    if not pdf:
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    pdf_root = _get_pdf_root(db)
+    file_path = pdf_root / str(work_id) / pdf.filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="PDF file not found on disk")
+
+    return FileResponse(file_path, media_type="application/pdf", filename=pdf.filename)
+
+
+@router.patch("/{work_id}/pdfs/{pdf_id}/set-primary", response_model=WorkPDFOut)
+def set_pdf_primary(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
+    """Set a PDF as the primary for this work."""
+    pdf = db.scalars(
+        select(WorkPDF).where(WorkPDF.id == pdf_id, WorkPDF.work_id == work_id)
+    ).one_or_none()
+    if not pdf:
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    # Unset all others
+    others = db.scalars(
+        select(WorkPDF).where(WorkPDF.work_id == work_id, WorkPDF.id != pdf_id)
+    ).all()
+    for other in others:
+        other.is_primary = False
+    pdf.is_primary = True
+    db.commit()
+    db.refresh(pdf)
+    return pdf
+
+
+@router.delete("/{work_id}/pdfs/{pdf_id}", status_code=204)
+def delete_pdf(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
+    """Detach a PDF — moves the file to _orphaned/ and deletes the DB row."""
+    pdf = db.scalars(
+        select(WorkPDF).where(WorkPDF.id == pdf_id, WorkPDF.work_id == work_id)
+    ).one_or_none()
+    if not pdf:
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    pdf_root = _get_pdf_root(db)
+    file_path = pdf_root / str(work_id) / pdf.filename
+    if file_path.is_file():
+        orphaned_dir = pdf_root / "_orphaned" / str(work_id)
+        _move_to_orphaned(file_path, orphaned_dir)
+
+    was_primary = pdf.is_primary
+    db.delete(pdf)
+    db.flush()
+
+    # If deleted PDF was primary, reassign to the lowest-id remaining PDF
+    if was_primary:
+        next_pdf = db.scalars(
+            select(WorkPDF).where(WorkPDF.work_id == work_id).order_by(WorkPDF.id).limit(1)
+        ).one_or_none()
+        if next_pdf:
+            next_pdf.is_primary = True
+
+    db.commit()

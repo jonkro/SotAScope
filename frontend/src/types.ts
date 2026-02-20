@@ -11,7 +11,6 @@ export interface WorkOut {
   venue_id: number | null;
   bibtex_key: string | null;
   bibtex_entry: string | null;
-  pdf_path: string | null;
   citation_count: number | null;
   doi_auto_resolved: boolean | null;
   created_by: string | null;
@@ -69,6 +68,14 @@ export interface BibtexImportResult {
 export interface DuplicateGroup {
   reason: string;
   works: WorkOut[];
+}
+
+export interface WorkPDFOut {
+  id: number;
+  work_id: number;
+  filename: string;
+  is_primary: boolean;
+  created_at: string;
 }
 
 // ---- Venues ----
@@ -200,6 +207,22 @@ export interface SettingOut {
   key: string;
   value: string;
   description: string | null;
+}
+
+// ---- Filesystem ----
+
+export interface BrowseResult {
+  current_path: string;
+  parent_path: string | null;
+  directories: string[];
+}
+
+export interface PDFMigrationResult {
+  old_path: string;
+  new_path: string;
+  files_moved: number;
+  directories_moved: number;
+  errors: string[];
 }
 
 // ---- Enrichment ----

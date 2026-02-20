@@ -12,6 +12,7 @@ from litexplorer.models.library import (
     Work,
     WorkAuthor,
     WorkLocation,
+    WorkPDF,
 )
 from litexplorer.models.project import Project, ProjectIgnoredWork, TopicList, TopicListWork
 from litexplorer.models.settings import Setting
@@ -29,6 +30,7 @@ __all__ = [
     "Work",
     "WorkAuthor",
     "WorkLocation",
+    "WorkPDF",
     "Project",
     "ProjectIgnoredWork",
     "TopicList",

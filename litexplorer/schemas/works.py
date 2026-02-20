@@ -87,7 +87,6 @@ class WorkCreate(BaseModel):
     venue_id: int | None = None
     bibtex_key: str | None = None
     bibtex_entry: str | None = None
-    pdf_path: str | None = None
     citation_count: int | None = 0
     created_by: str | None = None
     locations: list[WorkLocationCreate] = []
@@ -104,7 +103,6 @@ class WorkUpdate(BaseModel):
     venue_id: int | None = None
     bibtex_key: str | None = None
     bibtex_entry: str | None = None
-    pdf_path: str | None = None
     citation_count: int | None = None
     created_by: str | None = None
     doi_auto_resolved: bool | None = None
@@ -121,7 +119,6 @@ class WorkOut(BaseModel):
     venue_id: int | None
     bibtex_key: str | None
     bibtex_entry: str | None
-    pdf_path: str | None
     citation_count: int | None
     doi_auto_resolved: bool | None
     created_by: str | None
@@ -165,3 +162,17 @@ class BibtexImportResult(BaseModel):
 class DuplicateGroup(BaseModel):
     reason: str
     works: list[WorkOut]
+
+
+# ---------------------------------------------------------------------------
+# Work PDFs
+# ---------------------------------------------------------------------------
+
+class WorkPDFOut(BaseModel):
+    id: int
+    work_id: int
+    filename: str
+    is_primary: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

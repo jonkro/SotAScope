@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useResolveDOI } from '../hooks/useEnrichment';
+import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF } from '../hooks/useWorkPDFs';
+import { serveWorkPDFUrl } from '../api';
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
+import ConfirmDialog from './ConfirmDialog';
 
 /* ------------------------------------------------------------------ */
 /* Fold state                                                          */
@@ -12,6 +15,7 @@ import DOIResolutionDialog from './DOIResolutionDialog';
 export interface PanelFoldState {
   abstract: boolean;
   locations: boolean;
+  pdfs: boolean;
   actions: boolean;
   references: boolean;
   citedBy: boolean;
@@ -20,6 +24,7 @@ export interface PanelFoldState {
 export const DEFAULT_FOLD_STATE: PanelFoldState = {
   abstract: false,
   locations: false,
+  pdfs: true,
   actions: true,
   references: false,
   citedBy: false,
@@ -286,6 +291,13 @@ export default function WorkDetailPanel({
   const fetchFwd = useFetchForwardCitations();
   const crossref = useEnrichFromCrossref();
   const resolveDOI = useResolveDOI();
+  const pdfsQuery = useWorkPDFs(workId);
+  const uploadPDF = useUploadWorkPDF();
+  const setPrimaryPDF = useSetWorkPDFPrimary();
+  const removePDF = useDeleteWorkPDF();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pdfToRemove, setPdfToRemove] = useState<{ id: number; filename: string } | null>(null);
+
   const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -437,6 +449,77 @@ export default function WorkDetailPanel({
             </ul>
           </CollapsibleSection>
         )}
+
+        {/* PDFs (collapsible, default open) */}
+        <CollapsibleSection
+          sectionKey="pdfs"
+          title="PDFs"
+          count={pdfsQuery.data?.length}
+          defaultOpen
+          foldState={foldState}
+          onFoldChange={onFoldChange}
+        >
+          {pdfsQuery.data && pdfsQuery.data.length > 0 && (
+            <ul className="space-y-1.5 mb-2">
+              {pdfsQuery.data.map((pdf) => (
+                <li key={pdf.id} className="flex items-center gap-2 text-xs">
+                  <a
+                    href={serveWorkPDFUrl(workId, pdf.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline truncate"
+                  >
+                    {pdf.filename}
+                  </a>
+                  {pdf.is_primary ? (
+                    <span className="text-[10px] px-1 py-0.5 bg-blue-100 text-blue-700 rounded font-medium shrink-0">
+                      Primary
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => setPrimaryPDF.mutate({ workId, pdfId: pdf.id })}
+                      className="text-[10px] text-gray-400 hover:text-blue-600 shrink-0"
+                    >
+                      Set primary
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setPdfToRemove({ id: pdf.id, filename: pdf.filename })}
+                    className="text-gray-400 hover:text-red-600 shrink-0 ml-auto"
+                    title="Remove PDF"
+                  >
+                    &times;
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                uploadPDF.mutate({ workId, file });
+              }
+              e.target.value = '';
+            }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadPDF.isPending}
+            className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+          >
+            {uploadPDF.isPending ? 'Uploading...' : 'Attach PDF'}
+          </button>
+          {uploadPDF.isError && (
+            <p className="text-xs text-red-600 mt-1">
+              Upload failed: {uploadPDF.error instanceof Error ? uploadPDF.error.message : 'Unknown error'}
+            </p>
+          )}
+        </CollapsibleSection>
 
         {/* Actions (collapsible, default open) */}
         <CollapsibleSection
@@ -641,6 +724,18 @@ export default function WorkDetailPanel({
         onClose={() => {
           setDoiResolutionResults(null);
           onEnrichComplete?.();
+        }}
+      />
+    )}
+
+    {pdfToRemove && (
+      <ConfirmDialog
+        title="Remove PDF"
+        message={`Remove "${pdfToRemove.filename}"? The file will be moved to an orphaned folder, not permanently deleted.`}
+        onCancel={() => setPdfToRemove(null)}
+        onConfirm={() => {
+          removePDF.mutate({ workId, pdfId: pdfToRemove.id });
+          setPdfToRemove(null);
         }}
       />
     )}
