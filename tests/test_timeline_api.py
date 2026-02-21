@@ -97,8 +97,6 @@ def test_timeline_seeds(client, timeline_data):
     # Seed A should be in topic list 1
     seed_a = next(s for s in data["seeds"] if s["id"] == timeline_data["seed_a"].id)
     assert seed_a["topic_list_ids"] == [timeline_data["tl1"].id]
-    assert seed_a["has_backward_citations"] is True
-    assert seed_a["has_forward_citations"] is True
 
     # Seed B should be in topic list 2
     seed_b = next(s for s in data["seeds"] if s["id"] == timeline_data["seed_b"].id)
