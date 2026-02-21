@@ -238,10 +238,19 @@ export default function CitationTimeline({
       .attr('cursor', 'default')
       .on('click', () => onSelectWork(null));
 
-    // X axis
+    // X axis — integer year ticks only, thinned when zoomed out
+    const visibleMinYear = Math.ceil(xScale.domain()[0]);
+    const visibleMaxYear = Math.floor(xScale.domain()[1]);
+    const yearSpan = visibleMaxYear - visibleMinYear + 1;
+    const maxTicks = Math.max(2, Math.floor(innerW / 50));
+    const step = Math.max(1, Math.ceil(yearSpan / maxTicks));
+    const yearTicks: number[] = [];
+    // Align to multiples of step for clean labels (e.g. every 5 or 10 years)
+    const firstTick = Math.ceil(visibleMinYear / step) * step;
+    for (let y = firstTick; y <= visibleMaxYear; y += step) yearTicks.push(y);
     g.append('g')
       .attr('transform', `translate(0,${innerH})`)
-      .call(d3.axisBottom(xScale).tickFormat(d3.format('d')))
+      .call(d3.axisBottom(xScale).tickValues(yearTicks).tickFormat(d3.format('d')))
       .selectAll('text')
       .attr('class', 'fill-gray-500 text-xs');
 
