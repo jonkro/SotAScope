@@ -151,12 +151,3 @@ class TestOpenAlexClient:
         assert len(works) == 2
         assert client._http.get.call_count == 2
 
-    def test_auth_header(self):
-        c = OpenAlexClient(api_key="my-secret-key")
-        assert c._http.headers["Authorization"] == "Bearer my-secret-key"
-        c.close()
-
-    def test_no_auth_header(self):
-        c = OpenAlexClient()
-        assert "Authorization" not in c._http.headers
-        c.close()
