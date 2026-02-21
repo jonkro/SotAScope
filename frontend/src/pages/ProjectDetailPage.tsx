@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import SearchInput from '../components/SearchInput';
@@ -25,6 +25,26 @@ import type { TimelineNeighborWork, ProjectNote } from '../types';
 
 type ActiveTab = 'timeline' | 'lists' | 'notes';
 
+interface ProjectViewSettings {
+  activeTab?: ActiveTab;
+  threshold?: number;
+  decayStartYears?: number;
+  showBackward?: boolean;
+  showForward?: boolean;
+  startYear?: number | null;
+  candidateFilter?: CandidateFilter;
+  hops?: number;
+}
+
+function loadProjectSettings(projectId: number): ProjectViewSettings {
+  try {
+    const raw = localStorage.getItem(`litexplorer:project:${projectId}:view`);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function ProjectDetailPage() {
   const { projectId: pid } = useParams<{ projectId: string }>();
   const projectId = Number(pid);
@@ -32,17 +52,33 @@ export default function ProjectDetailPage() {
 
   const { data: project, isLoading } = useProject(projectId);
 
+  // Load persisted settings for this project
+  const saved = useMemo(() => loadProjectSettings(projectId), [projectId]);
+
   // Tab state
-  const [activeTab, setActiveTab] = useState<ActiveTab>('timeline');
+  const [activeTab, setActiveTab] = useState<ActiveTab>(saved.activeTab ?? 'timeline');
 
   // Timeline filter state
-  const [threshold, setThreshold] = useState(0.5);
-  const [decayStartYears, setDecayStartYears] = useState(5);
-  const [showBackward, setShowBackward] = useState(true);
-  const [showForward, setShowForward] = useState(true);
-  const [startYear, setStartYear] = useState<number | null>(null);
-  const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>('all');
-  const [hops, setHops] = useState(1);
+  const [threshold, setThreshold] = useState(saved.threshold ?? 0.5);
+  const [decayStartYears, setDecayStartYears] = useState(saved.decayStartYears ?? 5);
+  const [showBackward, setShowBackward] = useState(saved.showBackward ?? true);
+  const [showForward, setShowForward] = useState(saved.showForward ?? true);
+  const [startYear, setStartYear] = useState<number | null>(saved.startYear ?? null);
+  const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>(saved.candidateFilter ?? 'all');
+  const [hops, setHops] = useState(saved.hops ?? 1);
+
+  // Persist last-visited project and view settings to localStorage
+  useEffect(() => {
+    localStorage.setItem('litexplorer:lastProjectId', String(projectId));
+  }, [projectId]);
+
+  useEffect(() => {
+    const settings: ProjectViewSettings = {
+      activeTab, threshold, decayStartYears, showBackward, showForward,
+      startYear, candidateFilter, hops,
+    };
+    localStorage.setItem(`litexplorer:project:${projectId}:view`, JSON.stringify(settings));
+  }, [projectId, activeTab, threshold, decayStartYears, showBackward, showForward, startYear, candidateFilter, hops]);
 
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
