@@ -17,6 +17,7 @@ class TimelineSeedWork(BaseModel):
     publication_year: int | None
     venue_id: int | None
     citation_count: int | None
+    citations_by_year: list[dict] | None
     topic_list_ids: list[int]
     has_backward_citations: bool
     has_forward_citations: bool
@@ -31,6 +32,7 @@ class TimelineNeighborWork(BaseModel):
     publication_year: int | None
     venue_id: int | None
     citation_count: int | None
+    citations_by_year: list[dict] | None
     direction: str  # 'backward' | 'forward'
     connected_seed_ids: list[int]
 

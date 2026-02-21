@@ -390,8 +390,28 @@ class EnrichmentService:
             # Citation edge: db_work (the citer) cites work (the seed)
             self._ensure_citation(citing_work_id=db_work.id, cited_work_id=work.id)
 
+        # Refresh the seed work's own metadata (citation_count, citations_by_year)
+        self._refresh_work_metadata(work)
+
         self.db.commit()
         return results
+
+    def _refresh_work_metadata(self, work: Work) -> None:
+        """Re-fetch and update a work's metadata from OpenAlex."""
+        if not work.openalex_id:
+            return
+        cache_key = f"work:openalex:{work.openalex_id}"
+        cached = self._get_cache("openalex", cache_key)
+        if cached:
+            raw = json.loads(cached.response_json)
+            ext = parse_work(raw)
+            self._update_work(work, ext)
+            return
+        raw = self.client.get_work_by_id_raw(work.openalex_id)
+        if raw and isinstance(raw, dict):
+            self._set_cache("openalex", cache_key, json.dumps(raw), "permanent")
+            ext = parse_work(raw)
+            self._update_work(work, ext)
 
     def _get_referenced_work_ids(self, work: Work) -> list[str]:
         """Get the referenced_work_ids for a work from its cached API response.
@@ -476,6 +496,7 @@ class EnrichmentService:
             abstract=ext.abstract,
             publication_year=ext.publication_year,
             citation_count=ext.citation_count,
+            citations_by_year=ext.citations_by_year,
             venue_id=venue.id if venue else None,
         )
         self.db.add(work)
@@ -519,9 +540,11 @@ class EnrichmentService:
         if work.title == "(untitled)" and ext.title and ext.title != "(untitled)":
             work.title = ext.title
 
-        # Always update citation count (it changes over time)
+        # Always update citation count and per-year breakdown (they change over time)
         if ext.citation_count is not None:
             work.citation_count = ext.citation_count
+        if ext.citations_by_year is not None:
+            work.citations_by_year = ext.citations_by_year
 
         # Venue: fill if missing
         if work.venue_id is None and ext.venue:

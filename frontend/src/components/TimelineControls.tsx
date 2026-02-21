@@ -1,10 +1,8 @@
 export type CandidateFilter = 'all' | 'top-venues' | 'none';
 
 interface TimelineControlsProps {
-  threshold: number;
-  onThresholdChange: (v: number) => void;
-  decayStartYears: number;
-  onDecayStartYearsChange: (v: number) => void;
+  citationsSinceYears: number | null;
+  onCitationsSinceYearsChange: (v: number | null) => void;
   showBackward: boolean;
   onShowBackwardChange: (v: boolean) => void;
   showForward: boolean;
@@ -21,11 +19,22 @@ interface TimelineControlsProps {
   onHopsChange: (v: number) => void;
 }
 
+// Slider positions 0–10 map to: null, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+const SLIDER_VALUES: (number | null)[] = [null, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+
+function sliderToValue(pos: number): number | null {
+  return SLIDER_VALUES[pos] ?? null;
+}
+
+function valueToSlider(v: number | null): number {
+  if (v == null) return 0;
+  const idx = SLIDER_VALUES.indexOf(v);
+  return idx >= 0 ? idx : 0;
+}
+
 export default function TimelineControls({
-  threshold,
-  onThresholdChange,
-  decayStartYears,
-  onDecayStartYearsChange,
+  citationsSinceYears,
+  onCitationsSinceYearsChange,
   showBackward,
   onShowBackwardChange,
   showForward,
@@ -43,34 +52,21 @@ export default function TimelineControls({
 }: TimelineControlsProps) {
   return (
     <div className="flex flex-wrap items-center gap-4 px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs">
-      {/* Threshold slider */}
+      {/* Citations since slider */}
       <label className="flex items-center gap-1.5">
-        <span className="text-gray-500">Threshold</span>
+        <span className="text-gray-500">Count citations</span>
         <input
           type="range"
           min={0}
           max={10}
-          step={0.1}
-          value={threshold}
-          onChange={(e) => onThresholdChange(Number(e.target.value))}
+          step={1}
+          value={valueToSlider(citationsSinceYears)}
+          onChange={(e) => onCitationsSinceYearsChange(sliderToValue(Number(e.target.value)))}
           className="w-20"
         />
-        <span className="text-gray-700 w-8 text-right">{threshold.toFixed(1)}</span>
-      </label>
-
-      {/* Decay start */}
-      <label className="flex items-center gap-1.5">
-        <span className="text-gray-500">Decay after</span>
-        <input
-          type="range"
-          min={1}
-          max={20}
-          step={1}
-          value={decayStartYears}
-          onChange={(e) => onDecayStartYearsChange(Number(e.target.value))}
-          className="w-16"
-        />
-        <span className="text-gray-700">{decayStartYears}y</span>
+        <span className="text-gray-700 w-20">
+          {citationsSinceYears == null ? 'all' : `of last ${citationsSinceYears}y`}
+        </span>
       </label>
 
       {/* Direction checkboxes */}

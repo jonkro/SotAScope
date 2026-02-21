@@ -190,6 +190,7 @@ def get_project_timeline(
             publication_year=w.publication_year,
             venue_id=w.venue_id,
             citation_count=w.citation_count,
+            citations_by_year=w.citations_by_year,
             topic_list_ids=sorted(seed_topic_map[wid]),
             has_backward_citations=wid in seeds_with_bwd,
             has_forward_citations=wid in seeds_with_fwd,
@@ -209,6 +210,7 @@ def get_project_timeline(
             publication_year=w.publication_year,
             venue_id=w.venue_id,
             citation_count=w.citation_count,
+            citations_by_year=w.citations_by_year,
             direction="backward",
             connected_seed_ids=sorted(bwd_neighbor_seeds[nid]),
         ))
@@ -225,6 +227,7 @@ def get_project_timeline(
             publication_year=w.publication_year,
             venue_id=w.venue_id,
             citation_count=w.citation_count,
+            citations_by_year=w.citations_by_year,
             direction="forward",
             connected_seed_ids=sorted(fwd_neighbor_seeds[nid]),
         ))

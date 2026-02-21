@@ -1,27 +1,38 @@
-import type { TimelineNeighborWork } from '../types';
+import type { TimelineNeighborWork, CitationsByYearEntry } from '../types';
 
 export interface FilterParams {
-  threshold: number;
-  decayStartYears: number;
   showBackward: boolean;
   showForward: boolean;
-  currentYear: number;
 }
 
-export function computeImportanceScore(
-  citationCount: number,
-  publicationYear: number,
-  params: FilterParams,
+/**
+ * Compute the citation count for a work given a "citations since" window.
+ *
+ * - If citationsSinceYears is null: return the all-time citation_count.
+ * - If citationsSinceYears is a number N: sum cited_by_count from
+ *   citations_by_year entries where year >= currentYear - N.
+ * - If citations_by_year is null, fall back to citation_count.
+ */
+export function computeCitationCount(
+  citationCount: number | null,
+  citationsByYear: CitationsByYearEntry[] | null,
+  citationsSinceYears: number | null,
 ): number {
-  const age = Math.max(params.currentYear - publicationYear, 1);
-  const baseScore = citationCount / age;
-  const decay = age > params.decayStartYears ? params.decayStartYears / age : 1.0;
-  return baseScore * decay;
+  if (citationsSinceYears == null || citationsByYear == null) {
+    return citationCount ?? 0;
+  }
+  const cutoff = new Date().getFullYear() - citationsSinceYears;
+  let sum = 0;
+  for (const entry of citationsByYear) {
+    if (entry.year >= cutoff) {
+      sum += entry.cited_by_count;
+    }
+  }
+  return sum;
 }
 
 export function filterNeighbors(
   neighbors: TimelineNeighborWork[],
-  tier1VenueIds: Set<number>,
   ignoredVenueIds: Set<number>,
   params: FilterParams,
 ): TimelineNeighborWork[] {
@@ -36,15 +47,6 @@ export function filterNeighbors(
     // Ignored venues are always excluded
     if (n.venue_id != null && ignoredVenueIds.has(n.venue_id)) return false;
 
-    // Tier-1 venues always included
-    if (n.venue_id != null && tier1VenueIds.has(n.venue_id)) return true;
-
-    // Score-based filtering
-    const score = computeImportanceScore(
-      n.citation_count ?? 0,
-      n.publication_year,
-      params,
-    );
-    return score >= params.threshold;
+    return true;
   });
 }

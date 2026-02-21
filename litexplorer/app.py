@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
     _seed_default_fields()
     _seed_default_settings()
     _normalize_existing_venue_names()
+    _backfill_citations_by_year()
     yield
 
 
@@ -56,8 +57,14 @@ def _migrate_schema() -> None:
             ))
             db.commit()
 
-        # Drop legacy pdf_path column from works (SQLite 3.35+)
+        # Add citations_by_year JSON column to works
         work_cols = {c["name"] for c in inspector.get_columns("works")}
+        if "citations_by_year" not in work_cols:
+            db.execute(text("ALTER TABLE works ADD COLUMN citations_by_year JSON"))
+            db.commit()
+            work_cols.add("citations_by_year")
+
+        # Drop legacy pdf_path column from works (SQLite 3.35+)
         if "pdf_path" in work_cols:
             db.execute(text("ALTER TABLE works DROP COLUMN pdf_path"))
             db.commit()
@@ -245,6 +252,101 @@ def _normalize_existing_venue_names() -> None:
         db.commit()
     finally:
         db.close()
+
+
+def _backfill_citations_by_year() -> None:
+    """One-time backfill: populate citations_by_year from cached OpenAlex responses."""
+    import json as _json
+    import logging
+    from sqlalchemy import select
+
+    from litexplorer.models.cache import ApiCache
+    from litexplorer.models.library import Work
+
+    logger = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        # Find works needing backfill
+        works_needing = db.scalars(
+            select(Work).where(Work.citations_by_year.is_(None))
+        ).all()
+        if not works_needing:
+            return
+
+        # Build lookup maps
+        by_openalex = {w.openalex_id: w for w in works_needing if w.openalex_id}
+        by_doi = {w.doi.lower(): w for w in works_needing if w.doi}
+
+        if not by_openalex and not by_doi:
+            return
+
+        # 1. Scan work:doi: cache entries (individual work lookups)
+        doi_caches = db.execute(
+            select(ApiCache.response_json).where(
+                ApiCache.source == "openalex",
+                ApiCache.query_key.like("work:doi:%"),
+            )
+        ).scalars().all()
+
+        filled = 0
+        for cached_json in doi_caches:
+            try:
+                raw = _json.loads(cached_json)
+                doi = (raw.get("doi") or "").replace("https://doi.org/", "").lower()
+                work = by_doi.get(doi) if doi else None
+                if work and _apply_counts_by_year(work, raw):
+                    filled += 1
+            except (ValueError, KeyError):
+                continue
+
+        # 2. Scan backward/forward citation cache entries (lists of works)
+        citation_caches = db.execute(
+            select(ApiCache.response_json).where(
+                ApiCache.source == "openalex",
+                ApiCache.query_key.like("backward_citations:%")
+                | ApiCache.query_key.like("forward_citations:%"),
+            )
+        ).scalars().all()
+
+        for cached_json in citation_caches:
+            try:
+                raw_list = _json.loads(cached_json)
+                if not isinstance(raw_list, list):
+                    continue
+                for raw in raw_list:
+                    if not isinstance(raw, dict):
+                        continue
+                    oa_id = raw.get("id")
+                    work = by_openalex.get(oa_id) if oa_id else None
+                    if work is None:
+                        doi = (raw.get("doi") or "").replace("https://doi.org/", "").lower()
+                        work = by_doi.get(doi) if doi else None
+                    if work and work.citations_by_year is None and _apply_counts_by_year(work, raw):
+                        filled += 1
+            except (ValueError, KeyError):
+                continue
+
+        if filled:
+            logger.info("Backfilled citations_by_year for %d works from cache", filled)
+            db.commit()
+    finally:
+        db.close()
+
+
+def _apply_counts_by_year(work, raw: dict) -> bool:
+    """Extract counts_by_year from a raw OpenAlex dict and apply to a Work."""
+    counts = raw.get("counts_by_year")
+    if not counts or not isinstance(counts, list):
+        return False
+    cby = [
+        {"year": e["year"], "cited_by_count": e["cited_by_count"]}
+        for e in counts
+        if isinstance(e, dict) and "year" in e and "cited_by_count" in e
+    ]
+    if cby:
+        work.citations_by_year = cby
+        return True
+    return False
 
 
 app = FastAPI(title="LitExplorer", version="0.1.0", lifespan=lifespan)

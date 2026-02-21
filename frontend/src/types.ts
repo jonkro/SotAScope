@@ -162,6 +162,11 @@ export interface ProjectDetail extends ProjectOut {
 
 // ---- Timeline ----
 
+export interface CitationsByYearEntry {
+  year: number;
+  cited_by_count: number;
+}
+
 export interface TimelineSeedWork {
   id: number;
   doi: string | null;
@@ -170,6 +175,7 @@ export interface TimelineSeedWork {
   publication_year: number | null;
   venue_id: number | null;
   citation_count: number | null;
+  citations_by_year: CitationsByYearEntry[] | null;
   topic_list_ids: number[];
   has_backward_citations: boolean;
   has_forward_citations: boolean;
@@ -184,6 +190,7 @@ export interface TimelineNeighborWork {
   publication_year: number | null;
   venue_id: number | null;
   citation_count: number | null;
+  citations_by_year: CitationsByYearEntry[] | null;
   direction: 'backward' | 'forward';
   connected_seed_ids: number[];
 }

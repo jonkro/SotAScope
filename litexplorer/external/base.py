@@ -42,6 +42,7 @@ class ExternalWork:
     abstract: str | None = None
     publication_year: int | None = None
     citation_count: int | None = None
+    citations_by_year: list[dict] | None = None  # [{"year": 2022, "cited_by_count": 45}, ...]
     venue: ExternalVenue | None = None
     authors: list[ExternalAuthor] = field(default_factory=list)
     locations: list[ExternalLocation] = field(default_factory=list)

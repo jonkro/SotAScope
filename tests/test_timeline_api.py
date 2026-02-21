@@ -202,3 +202,70 @@ def test_timeline_empty_project(client, db_session):
     assert data["seeds"] == []
     assert data["neighbors"] == []
     assert data["seed_citations"] == []
+
+
+def test_timeline_citations_by_year(client, db_session):
+    """Seeds and neighbors include citations_by_year when populated."""
+    venue = Venue(name="Test Venue", venue_type="conference", tier=2)
+    db_session.add(venue)
+    db_session.flush()
+
+    cby = [{"year": 2024, "cited_by_count": 15}, {"year": 2023, "cited_by_count": 30}]
+    seed = Work(
+        title="With CBY", publication_year=2021, citation_count=45,
+        citations_by_year=cby, venue_id=venue.id,
+    )
+    neighbor_work = Work(
+        title="Neighbor", publication_year=2020, citation_count=10,
+        citations_by_year=[{"year": 2024, "cited_by_count": 5}],
+    )
+    db_session.add_all([seed, neighbor_work])
+    db_session.flush()
+
+    project = Project(name="CBY Test")
+    db_session.add(project)
+    db_session.flush()
+
+    tl = TopicList(project_id=project.id, name="TL", color="#000")
+    db_session.add(tl)
+    db_session.flush()
+    db_session.add(TopicListWork(topic_list_id=tl.id, work_id=seed.id))
+
+    # seed cites neighbor_work
+    db_session.add(Citation(citing_work_id=seed.id, cited_work_id=neighbor_work.id, source="openalex"))
+    db_session.commit()
+
+    resp = client.get(f"/api/projects/{project.id}/timeline")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    s = data["seeds"][0]
+    assert s["citations_by_year"] == cby
+    assert s["citation_count"] == 45
+
+    n = data["neighbors"][0]
+    assert n["citations_by_year"] == [{"year": 2024, "cited_by_count": 5}]
+
+
+def test_timeline_citations_by_year_null(client, db_session):
+    """Works without citations_by_year return null in response."""
+    seed = Work(title="No CBY", publication_year=2021, citation_count=10)
+    db_session.add(seed)
+    db_session.flush()
+
+    project = Project(name="Null CBY")
+    db_session.add(project)
+    db_session.flush()
+
+    tl = TopicList(project_id=project.id, name="TL", color="#000")
+    db_session.add(tl)
+    db_session.flush()
+    db_session.add(TopicListWork(topic_list_id=tl.id, work_id=seed.id))
+    db_session.commit()
+
+    resp = client.get(f"/api/projects/{project.id}/timeline")
+    data = resp.json()
+
+    s = data["seeds"][0]
+    assert s["citations_by_year"] is None
+    assert s["citation_count"] == 10

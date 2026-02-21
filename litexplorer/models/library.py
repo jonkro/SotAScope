@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -45,6 +46,10 @@ class Work(Base):
     bibtex_entry: Mapped[str | None] = mapped_column(Text)
 
     citation_count: Mapped[int | None] = mapped_column(Integer, default=0)
+
+    # Per-year citation breakdown from OpenAlex counts_by_year
+    # e.g. [{"year": 2022, "cited_by_count": 45}, ...]
+    citations_by_year: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # None = DOI provided directly; True = DOI resolved via Crossref fuzzy match
     doi_auto_resolved: Mapped[bool | None] = mapped_column(default=None)

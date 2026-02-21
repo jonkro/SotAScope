@@ -129,6 +129,16 @@ def parse_work(raw: dict) -> ExternalWork:
         if ref_id:
             referenced_work_ids.append(ref_id)
 
+    # Per-year citation counts
+    raw_counts = raw.get("counts_by_year")
+    citations_by_year = None
+    if raw_counts and isinstance(raw_counts, list):
+        citations_by_year = [
+            {"year": entry["year"], "cited_by_count": entry["cited_by_count"]}
+            for entry in raw_counts
+            if isinstance(entry, dict) and "year" in entry and "cited_by_count" in entry
+        ]
+
     return ExternalWork(
         title=raw.get("title") or raw.get("display_name") or "(untitled)",
         external_id=openalex_id or None,
@@ -137,6 +147,7 @@ def parse_work(raw: dict) -> ExternalWork:
         abstract=abstract,
         publication_year=raw.get("publication_year"),
         citation_count=raw.get("cited_by_count"),
+        citations_by_year=citations_by_year,
         venue=venue,
         authors=authors,
         locations=locations,

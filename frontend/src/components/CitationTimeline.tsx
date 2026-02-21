@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as d3 from 'd3';
 import type { TimelineSeedWork, TimelineNeighborWork, TopicListOut, SeedCitation } from '../types';
-import { computeImportanceScore, type FilterParams } from '../lib/timelineFilter';
+import { computeCitationCount } from '../lib/timelineFilter';
 
 interface CitationTimelineProps {
   seeds: TimelineSeedWork[];
@@ -10,7 +10,7 @@ interface CitationTimelineProps {
   seedCitations: SeedCitation[];
   selectedWorkId: number | null;
   onSelectWork: (workId: number | null) => void;
-  decayStartYears: number;
+  citationsSinceYears: number | null;
   startYear: number | null;
   showBackward: boolean;
   showForward: boolean;
@@ -32,7 +32,7 @@ interface DotDatum {
   connectivity: number; // inter-seed citation connectivity (1 = base)
 }
 
-const MARGIN = { top: 20, right: 30, bottom: 56, left: 30 };
+const MARGIN = { top: 20, right: 30, bottom: 56, left: 50 };
 const BASE_RADIUS = 3;
 const NEIGHBOR_OPACITY = 0.45;
 const TIER1_STROKE = '#1f2937';
@@ -45,7 +45,7 @@ export default function CitationTimeline({
   seedCitations,
   selectedWorkId,
   onSelectWork,
-  decayStartYears,
+  citationsSinceYears,
   startYear,
   showBackward,
   showForward,
@@ -60,13 +60,8 @@ export default function CitationTimeline({
   // For click-to-cycle through overlapping dots
   const cycleStateRef = useRef<{ ids: number[]; index: number }>({ ids: [], index: -1 });
 
-  const currentYear = new Date().getFullYear();
-
   // Memoize dots: combines color lookup, seed connectivity, and dot building
   const dots = useMemo(() => {
-    const filterParams: FilterParams = {
-      threshold: 0, decayStartYears, showBackward: true, showForward: true, currentYear,
-    };
     const tlColorMap = new Map(topicLists.map((tl) => [tl.id, tl.color]));
 
     const seedConnectivity = new Map<number, number>();
@@ -84,27 +79,27 @@ export default function CitationTimeline({
       if (s.publication_year == null) continue;
       if (startYear != null && s.publication_year < startYear) continue;
       const colors = s.topic_list_ids.map((id) => tlColorMap.get(id) ?? '#6b7280');
-      const rawScore = computeImportanceScore(s.citation_count ?? 0, s.publication_year, filterParams);
+      const citCount = computeCitationCount(s.citation_count, s.citations_by_year, citationsSinceYears);
       result.push({
         id: s.id, title: s.title, year: s.publication_year, type: 'seed',
         colors, topicListIds: s.topic_list_ids, connectedSeedIds: [],
-        venueId: s.venue_id, citationCount: s.citation_count,
-        score: Math.log(1 + rawScore), connectivity: seedConnectivity.get(s.id) ?? 1,
+        venueId: s.venue_id, citationCount: citCount,
+        score: Math.log1p(citCount), connectivity: seedConnectivity.get(s.id) ?? 1,
       });
     }
     for (const n of neighbors) {
       if (n.publication_year == null) continue;
       if (startYear != null && n.publication_year < startYear) continue;
-      const rawScore = computeImportanceScore(n.citation_count ?? 0, n.publication_year, filterParams);
+      const citCount = computeCitationCount(n.citation_count, n.citations_by_year, citationsSinceYears);
       result.push({
         id: n.id, title: n.title, year: n.publication_year, type: n.direction,
         colors: ['#9ca3af'], topicListIds: [], connectedSeedIds: n.connected_seed_ids,
-        venueId: n.venue_id, citationCount: n.citation_count,
-        score: Math.log(1 + rawScore), connectivity: 1,
+        venueId: n.venue_id, citationCount: citCount,
+        score: Math.log1p(citCount), connectivity: 1,
       });
     }
     return result;
-  }, [seeds, neighbors, topicLists, seedCitations, decayStartYears, startYear, showBackward, showForward, currentYear]);
+  }, [seeds, neighbors, topicLists, seedCitations, citationsSinceYears, startYear, showBackward, showForward]);
 
   // Build adjacency map over rendered dots (recomputed when dot set changes, not on click)
   const adjacencyMap = useMemo(() => {
@@ -254,26 +249,37 @@ export default function CitationTimeline({
       .selectAll('text')
       .attr('class', 'fill-gray-500 text-xs');
 
-    // Y axis: thin line with upward arrow, no tick labels
-    g.append('line')
-      .attr('x1', 0).attr('y1', innerH)
-      .attr('x2', 0).attr('y2', 4)
-      .attr('stroke', '#9ca3af')
-      .attr('stroke-width', 1);
+    // Y axis: log1p-scaled citation count with tick labels
+    // Generate tick values at powers of 10: 0, 1, 10, 100, 1000, ...
+    const rawMaxScore = d3.max(dots.map((d) => d.citationCount ?? 0)) ?? 0;
+    const yTickValues = [0];
+    let tickVal = 1;
+    while (tickVal <= rawMaxScore * 1.2) {
+      yTickValues.push(tickVal);
+      tickVal *= 10;
+    }
+    // Add one more tick beyond the data range for headroom
+    if (yTickValues[yTickValues.length - 1] < rawMaxScore) {
+      yTickValues.push(tickVal);
+    }
 
-    g.append('path')
-      .attr('d', 'M-4,10 L0,0 L4,10')
-      .attr('fill', 'none')
-      .attr('stroke', '#9ca3af')
-      .attr('stroke-width', 1.5);
+    const yAxis = d3.axisLeft(yScale)
+      .tickValues(yTickValues.map((v) => Math.log1p(v)))
+      .tickFormat((_d, i) => String(yTickValues[i]));
 
+    g.append('g')
+      .call(yAxis)
+      .selectAll('text')
+      .attr('class', 'fill-gray-500 text-xs');
+
+    // Y axis label
     g.append('text')
-      .attr('x', 8)
-      .attr('y', 6)
-      .attr('text-anchor', 'start')
-      .attr('dominant-baseline', 'middle')
+      .attr('transform', 'rotate(-90)')
+      .attr('x', -innerH / 2)
+      .attr('y', -MARGIN.left + 12)
+      .attr('text-anchor', 'middle')
       .attr('class', 'fill-gray-400 text-xs')
-      .text('more important');
+      .text('Citations');
 
     // --- Jitter within year groups ---
     const yearGroups = new Map<number, DotDatum[]>();

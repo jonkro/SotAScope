@@ -27,8 +27,7 @@ type ActiveTab = 'timeline' | 'lists' | 'notes';
 
 interface ProjectViewSettings {
   activeTab?: ActiveTab;
-  threshold?: number;
-  decayStartYears?: number;
+  citationsSinceYears?: number | null;
   showBackward?: boolean;
   showForward?: boolean;
   startYear?: number | null;
@@ -59,8 +58,9 @@ export default function ProjectDetailPage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>(saved.activeTab ?? 'timeline');
 
   // Timeline filter state
-  const [threshold, setThreshold] = useState(saved.threshold ?? 0.5);
-  const [decayStartYears, setDecayStartYears] = useState(saved.decayStartYears ?? 5);
+  const [citationsSinceYears, setCitationsSinceYears] = useState<number | null>(
+    saved.citationsSinceYears !== undefined ? saved.citationsSinceYears : null,
+  );
   const [showBackward, setShowBackward] = useState(saved.showBackward ?? true);
   const [showForward, setShowForward] = useState(saved.showForward ?? true);
   const [startYear, setStartYear] = useState<number | null>(saved.startYear ?? null);
@@ -74,11 +74,11 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     const settings: ProjectViewSettings = {
-      activeTab, threshold, decayStartYears, showBackward, showForward,
+      activeTab, citationsSinceYears, showBackward, showForward,
       startYear, candidateFilter, hops,
     };
     localStorage.setItem(`litexplorer:project:${projectId}:view`, JSON.stringify(settings));
-  }, [projectId, activeTab, threshold, decayStartYears, showBackward, showForward, startYear, candidateFilter, hops]);
+  }, [projectId, activeTab, citationsSinceYears, showBackward, showForward, startYear, candidateFilter, hops]);
 
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
@@ -174,18 +174,15 @@ export default function ProjectDetailPage() {
 
   const filteredNeighbors: TimelineNeighborWork[] = useMemo(() => {
     if (!timeline || candidateFilter === 'none') return [];
-    let result = filterNeighbors(timeline.neighbors, tier1Set, ignoredSet, {
-      threshold,
-      decayStartYears,
+    let result = filterNeighbors(timeline.neighbors, ignoredSet, {
       showBackward,
       showForward,
-      currentYear: new Date().getFullYear(),
     });
     if (candidateFilter === 'top-venues') {
       result = result.filter((n) => n.venue_id != null && tier1Set.has(n.venue_id));
     }
     return result;
-  }, [timeline, tier1Set, ignoredSet, threshold, decayStartYears, showBackward, showForward, candidateFilter]);
+  }, [timeline, tier1Set, ignoredSet, showBackward, showForward, candidateFilter]);
 
   // Seed color map: seed work ID → array of topic list colors
   const seedColorMap = useMemo(() => {
@@ -336,10 +333,8 @@ export default function ProjectDetailPage() {
               <TimelineEnrichBar seeds={timeline.seeds} projectId={projectId} />
             )}
             <TimelineControls
-              threshold={threshold}
-              onThresholdChange={setThreshold}
-              decayStartYears={decayStartYears}
-              onDecayStartYearsChange={setDecayStartYears}
+              citationsSinceYears={citationsSinceYears}
+              onCitationsSinceYearsChange={setCitationsSinceYears}
               showBackward={showBackward}
               onShowBackwardChange={setShowBackward}
               showForward={showForward}
@@ -363,7 +358,7 @@ export default function ProjectDetailPage() {
                 seedCitations={timeline?.seed_citations ?? []}
                 selectedWorkId={selectedWorkId}
                 onSelectWork={setSelectedWorkId}
-                decayStartYears={decayStartYears}
+                citationsSinceYears={citationsSinceYears}
                 startYear={startYear}
                 showBackward={showBackward}
                 showForward={showForward}
