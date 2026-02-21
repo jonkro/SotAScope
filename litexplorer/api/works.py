@@ -772,7 +772,7 @@ def serve_pdf(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="PDF file not found on disk")
 
-    return FileResponse(file_path, media_type="application/pdf", filename=pdf.filename)
+    return FileResponse(file_path, media_type="application/pdf")
 
 
 @router.patch("/{work_id}/pdfs/{pdf_id}/set-primary", response_model=WorkPDFOut)
