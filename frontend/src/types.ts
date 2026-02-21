@@ -116,6 +116,7 @@ export interface VenueDetail extends VenueOut {
 export interface FieldOut {
   id: number;
   name: string;
+  venue_count: number;
 }
 
 // ---- Projects ----

@@ -179,11 +179,13 @@ export function serveWorkPDFUrl(workId: number, pdfId: number): string {
 
 // ---- Venues ----
 
-export function fetchVenues(params?: { offset?: number; limit?: number; q?: string }) {
+export function fetchVenues(params?: { offset?: number; limit?: number; q?: string; sort_by?: string; sort_dir?: string }) {
   const sp = new URLSearchParams();
   if (params?.offset) sp.set('offset', String(params.offset));
   if (params?.limit) sp.set('limit', String(params.limit));
   if (params?.q) sp.set('q', params.q);
+  if (params?.sort_by) sp.set('sort_by', params.sort_by);
+  if (params?.sort_dir) sp.set('sort_dir', params.sort_dir);
   return apiFetch<VenueOut[]>(`/api/venues?${sp}`);
 }
 
@@ -238,6 +240,10 @@ export function createField(name: string) {
     method: 'POST',
     body: JSON.stringify({ name }),
   });
+}
+
+export function deleteField(fieldId: number) {
+  return apiFetch<void>(`/api/fields/${fieldId}`, { method: 'DELETE' });
 }
 
 // ---- Venue Fields ----

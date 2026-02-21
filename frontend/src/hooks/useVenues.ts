@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchVenues, fetchVenue, updateVenue, addVenueAlias, deleteVenueAlias, reorderVenueAliases } from '../api';
 
-export function useVenues(params?: { offset?: number; limit?: number; q?: string }) {
+export function useVenues(params?: { offset?: number; limit?: number; q?: string; sort_by?: string; sort_dir?: string }) {
   return useQuery({
     queryKey: ['venues', params],
     queryFn: () => fetchVenues(params),

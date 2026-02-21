@@ -40,7 +40,7 @@ export default function VenueFieldEditor({
         );
       })}
       {allFields.length === 0 && (
-        <p className="text-xs text-gray-400">No fields defined. Create fields from the Venues page header.</p>
+        <p className="text-xs text-gray-400">No fields defined. Create fields from the Fields tab.</p>
       )}
     </div>
   );

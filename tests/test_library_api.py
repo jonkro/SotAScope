@@ -26,6 +26,48 @@ def test_duplicate_field_rejected(client):
     assert r.status_code == 409
 
 
+def test_field_list_includes_venue_count(client):
+    f = client.post("/api/fields", json={"name": "ai_ml"}).json()
+    v = client.post("/api/venues", json={"name": "NeurIPS", "venue_type": "conference"}).json()
+    client.post(f"/api/venues/{v['id']}/fields", json={"field_id": f["id"]})
+
+    r = client.get("/api/fields")
+    assert r.status_code == 200
+    field = next(fld for fld in r.json() if fld["id"] == f["id"])
+    assert field["venue_count"] == 1
+
+
+def test_delete_field_no_venues(client):
+    f = client.post("/api/fields", json={"name": "ai_ml"}).json()
+    r = client.delete(f"/api/fields/{f['id']}")
+    assert r.status_code == 204
+
+    r = client.get("/api/fields")
+    assert all(fld["id"] != f["id"] for fld in r.json())
+
+
+def test_delete_field_with_venues(client):
+    f = client.post("/api/fields", json={"name": "ai_ml"}).json()
+    v = client.post("/api/venues", json={"name": "NeurIPS", "venue_type": "conference"}).json()
+    client.post(f"/api/venues/{v['id']}/fields", json={"field_id": f["id"]})
+
+    r = client.delete(f"/api/fields/{f['id']}")
+    assert r.status_code == 204
+
+    # Field gone
+    r = client.get("/api/fields")
+    assert all(fld["id"] != f["id"] for fld in r.json())
+
+    # Venue no longer lists the field
+    r = client.get(f"/api/venues/{v['id']}")
+    assert len(r.json()["fields"]) == 0
+
+
+def test_delete_nonexistent_field(client):
+    r = client.delete("/api/fields/99999")
+    assert r.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # Venues
 # ---------------------------------------------------------------------------

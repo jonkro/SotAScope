@@ -8,5 +8,6 @@ class FieldCreate(BaseModel):
 class FieldOut(BaseModel):
     id: int
     name: str
+    venue_count: int = 0
 
     model_config = {"from_attributes": True}

@@ -231,7 +231,9 @@ class Field(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
 
-    venues: Mapped[list["VenueField"]] = relationship(back_populates="field")
+    venues: Mapped[list["VenueField"]] = relationship(
+        back_populates="field", passive_deletes=True
+    )
 
     def __repr__(self) -> str:
         return f"<Field id={self.id} name={self.name!r}>"

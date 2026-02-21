@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchFields, createField } from '../api';
+import { fetchFields, createField, deleteField } from '../api';
 
 export function useFields() {
   return useQuery({
@@ -13,5 +13,16 @@ export function useCreateField() {
   return useMutation({
     mutationFn: createField,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['fields'] }),
+  });
+}
+
+export function useDeleteField() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteField,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['fields'] });
+      qc.invalidateQueries({ queryKey: ['venues'] });
+    },
   });
 }

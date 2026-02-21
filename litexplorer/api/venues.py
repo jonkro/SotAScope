@@ -42,11 +42,16 @@ def _venue_detail(venue: Venue, work_count: int = 0) -> VenueDetail:
     )
 
 
+_VENUE_SORT_COLUMNS = {"name", "venue_type", "tier", "work_count", "field_display"}
+
+
 @router.get("", response_model=list[VenueOut])
 def list_venues(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     q: str | None = Query(None, description="Search venue name"),
+    sort_by: str = Query("name", description="Sort column"),
+    sort_dir: str = Query("asc", description="Sort direction: asc or desc"),
     db: Session = Depends(get_db),
 ):
     work_count_sq = (
@@ -57,16 +62,36 @@ def list_venues(
         .scalar_subquery()
         .label("work_count")
     )
+    field_name_sq = (
+        select(func.min(Field.name))
+        .select_from(VenueField)
+        .join(Field, VenueField.field_id == Field.id)
+        .where(VenueField.venue_id == Venue.id)
+        .correlate(Venue)
+        .scalar_subquery()
+        .label("field_display")
+    )
     stmt = (
-        select(Venue, work_count_sq)
+        select(Venue, work_count_sq, field_name_sq)
         .options(joinedload(Venue.fields).joinedload(VenueField.field))
-        .order_by(Venue.name)
     )
     if q:
         stmt = stmt.where(Venue.name.ilike(f"%{q}%"))
+
+    # Determine sort expression
+    col = sort_by if sort_by in _VENUE_SORT_COLUMNS else "name"
+    if col == "work_count":
+        sort_expr = work_count_sq
+    elif col == "field_display":
+        sort_expr = field_name_sq
+    else:
+        sort_expr = getattr(Venue, col)
+    sort_expr = sort_expr.desc() if sort_dir == "desc" else sort_expr.asc()
+    stmt = stmt.order_by(sort_expr)
+
     rows = db.execute(stmt.offset(offset).limit(limit)).unique().all()
     results = []
-    for v, wc in rows:
+    for v, wc, fd in rows:
         d = {c.key: getattr(v, c.key) for c in Venue.__table__.columns}
         names = [vf.field.name for vf in v.fields if vf.field]
         if len(names) == 0:

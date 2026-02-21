@@ -4,11 +4,24 @@ import PageHeader from '../components/PageHeader';
 import SearchInput from '../components/SearchInput';
 import Pagination from '../components/Pagination';
 import EmptyState from '../components/EmptyState';
+import ConfirmDialog from '../components/ConfirmDialog';
 import VenueFieldEditor from '../components/VenueTierEditor';
 import { useVenues, useVenue, useUpdateVenue, useAddVenueAlias, useDeleteVenueAlias, useReorderVenueAliases } from '../hooks/useVenues';
-import { useCreateField } from '../hooks/useFields';
+import { useFields, useCreateField, useDeleteField } from '../hooks/useFields';
+import type { FieldOut } from '../types';
 
 const PAGE_SIZE = 30;
+
+type SortColumn = 'name' | 'venue_type' | 'field_display' | 'work_count' | 'tier';
+type SortDir = 'asc' | 'desc';
+
+const VENUE_COLUMNS: { key: SortColumn; label: string }[] = [
+  { key: 'name', label: 'Name' },
+  { key: 'venue_type', label: 'Type' },
+  { key: 'field_display', label: 'Field' },
+  { key: 'work_count', label: 'Papers' },
+  { key: 'tier', label: 'Tier' },
+];
 
 const TIER_OPTIONS = [
   { value: '1', label: 'Top' },
@@ -201,14 +214,111 @@ function VenueRow({ venueId, onCollapse, onUpdateTier }: { venueId: number; onCo
   );
 }
 
+function FieldsTab() {
+  const { data: fields, isLoading } = useFields();
+  const createFieldM = useCreateField();
+  const deleteFieldM = useDeleteField();
+  const [newFieldName, setNewFieldName] = useState('');
+  const [fieldToDelete, setFieldToDelete] = useState<FieldOut | null>(null);
+
+  return (
+    <div className="p-6">
+      {/* Create field */}
+      <div className="flex items-center gap-2 mb-6">
+        <input
+          value={newFieldName}
+          onChange={(e) => setNewFieldName(e.target.value)}
+          placeholder="New field..."
+          className="border border-gray-300 rounded px-2 py-1 text-sm w-48"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && newFieldName.trim()) {
+              createFieldM.mutate(newFieldName.trim(), {
+                onSuccess: () => setNewFieldName(''),
+              });
+            }
+          }}
+        />
+        <button
+          onClick={() => {
+            if (newFieldName.trim()) {
+              createFieldM.mutate(newFieldName.trim(), {
+                onSuccess: () => setNewFieldName(''),
+              });
+            }
+          }}
+          className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+        >
+          Add Field
+        </button>
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-gray-400">Loading...</p>
+      ) : !fields?.length ? (
+        <EmptyState message="No fields yet. Create one above." />
+      ) : (
+        <div className="space-y-1">
+          {fields.map((field) => (
+            <div
+              key={field.id}
+              className="flex items-center justify-between px-3 py-2 rounded hover:bg-gray-50 border border-gray-100"
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-gray-900">{field.name}</span>
+                <span className="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                  {field.venue_count} {field.venue_count === 1 ? 'venue' : 'venues'}
+                </span>
+              </div>
+              <button
+                onClick={() => setFieldToDelete(field)}
+                className="text-gray-400 hover:text-red-500 text-lg leading-none px-1"
+                title="Delete field"
+              >
+                &times;
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {fieldToDelete && (
+        <ConfirmDialog
+          title="Delete field"
+          message={
+            fieldToDelete.venue_count > 0
+              ? `This field is assigned to ${fieldToDelete.venue_count} venue(s). Removing it will unassign it from all of them.`
+              : `Delete field '${fieldToDelete.name}'?`
+          }
+          onConfirm={() => {
+            deleteFieldM.mutate(fieldToDelete.id);
+            setFieldToDelete(null);
+          }}
+          onCancel={() => setFieldToDelete(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function VenuesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [newFieldName, setNewFieldName] = useState('');
+  const [activeTab, setActiveTab] = useState<'venues' | 'fields'>('venues');
+  const [sortBy, setSortBy] = useState<SortColumn>('name');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
 
-  const createField = useCreateField();
+  const handleSort = useCallback((col: SortColumn) => {
+    if (sortBy === col) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(col);
+      setSortDir('asc');
+    }
+    setOffset(0);
+  }, [sortBy]);
+
   const updateVenue = useUpdateVenue();
 
   // venue_id param: filter to single venue (expanded)
@@ -232,6 +342,8 @@ export default function VenuesPage() {
     offset,
     limit: PAGE_SIZE,
     q: search || undefined,
+    sort_by: sortBy,
+    sort_dir: sortDir,
   });
 
   // When filtering by venue_id, show only that venue (always expanded)
@@ -243,130 +355,140 @@ export default function VenuesPage() {
   return (
     <div className="flex flex-col h-screen">
       <PageHeader title="Venues">
-        <div className="flex items-center gap-1.5">
-          <input
-            value={newFieldName}
-            onChange={(e) => setNewFieldName(e.target.value)}
-            placeholder="New field..."
-            className="border border-gray-300 rounded px-2 py-1 text-sm w-32"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && newFieldName.trim()) {
-                createField.mutate(newFieldName.trim(), {
-                  onSuccess: () => setNewFieldName(''),
-                });
-              }
-            }}
-          />
-          <button
-            onClick={() => {
-              if (newFieldName.trim()) {
-                createField.mutate(newFieldName.trim(), {
-                  onSuccess: () => setNewFieldName(''),
-                });
-              }
-            }}
-            className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
-          >
-            Add Field
-          </button>
-        </div>
-        {!venueIdFilter && (
+        {activeTab === 'venues' && !venueIdFilter && (
           <SearchInput value={search} onChange={handleSearch} placeholder="Search venues..." />
         )}
       </PageHeader>
 
-      {venueIdFilter && filteredVenue && (
-        <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
-          <span className="text-xs text-blue-700">
-            Filtered by venue: <strong>{filteredVenue.name}</strong>
-          </span>
-          <button
-            onClick={clearVenueFilter}
-            className="text-xs text-blue-600 hover:text-blue-800 underline"
-          >
-            Clear filter
-          </button>
-        </div>
+      {/* Tab bar */}
+      <div className="flex border-b border-gray-200 px-6">
+        <button
+          onClick={() => setActiveTab('venues')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            activeTab === 'venues'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Venues
+        </button>
+        <button
+          onClick={() => setActiveTab('fields')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            activeTab === 'fields'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Fields
+        </button>
+      </div>
+
+      {activeTab === 'venues' && (
+        <>
+          {venueIdFilter && filteredVenue && (
+            <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
+              <span className="text-xs text-blue-700">
+                Filtered by venue: <strong>{filteredVenue.name}</strong>
+              </span>
+              <button
+                onClick={clearVenueFilter}
+                className="text-xs text-blue-600 hover:text-blue-800 underline"
+              >
+                Clear filter
+              </button>
+            </div>
+          )}
+
+          <div className="flex-1 overflow-y-auto">
+            {isLoading && !venueIdFilter ? (
+              <p className="p-6 text-sm text-gray-400">Loading...</p>
+            ) : !displayVenues?.length ? (
+              <EmptyState message="No venues yet. Venues are created automatically when importing works." />
+            ) : (
+              <table className="w-full">
+                <thead className="sticky top-0 bg-white border-b border-gray-200">
+                  <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    {VENUE_COLUMNS.map((col) => (
+                      <th
+                        key={col.key}
+                        onClick={() => handleSort(col.key)}
+                        className="px-4 py-2 cursor-pointer select-none hover:text-gray-700"
+                      >
+                        {col.label}
+                        {sortBy === col.key && (
+                          <span className="ml-1">{sortDir === 'asc' ? '\u25B2' : '\u25BC'}</span>
+                        )}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayVenues.map((v) =>
+                    effectiveExpandedId === v.id ? (
+                      <VenueRow
+                        key={v.id}
+                        venueId={v.id}
+                        onCollapse={venueIdFilter ? clearVenueFilter : () => setExpandedId(null)}
+                        onUpdateTier={(tier) => updateVenue.mutate({ venueId: v.id, data: { tier } })}
+                      />
+                    ) : (
+                      <tr
+                        key={v.id}
+                        onClick={() => setExpandedId(v.id)}
+                        className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+                      >
+                        <td className="px-4 py-2 text-sm text-gray-900">{v.name}</td>
+                        <td className="px-4 py-2 text-sm text-gray-500">{v.venue_type ?? '-'}</td>
+                        <td className="px-4 py-2 text-sm text-gray-500">{v.field_display ?? '-'}</td>
+                        <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
+                          {v.work_count > 0 ? (
+                            <Link
+                              to={`/library?venue_id=${v.id}`}
+                              className="text-sm text-blue-600 hover:underline"
+                            >
+                              {v.work_count}
+                            </Link>
+                          ) : (
+                            <span className="text-sm text-gray-400">0</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
+                          <select
+                            value={String(v.tier)}
+                            onChange={(e) => {
+                              updateVenue.mutate({ venueId: v.id, data: { tier: Number(e.target.value) } });
+                            }}
+                            className={`px-2 py-1 text-sm border rounded cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                              v.tier === 1
+                                ? 'border-green-400 bg-green-50 text-green-700'
+                                : v.tier === 3
+                                  ? 'border-red-300 bg-red-50 text-red-600'
+                                  : 'border-gray-300 bg-white text-gray-700'
+                            }`}
+                          >
+                            {TIER_OPTIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                        </td>
+                      </tr>
+                    ),
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {!venueIdFilter && venues && (
+              <div className="px-4">
+                <Pagination offset={offset} limit={PAGE_SIZE} count={venues.length} onChange={setOffset} />
+              </div>
+            )}
+          </div>
+        </>
       )}
 
-      <div className="flex-1 overflow-y-auto">
-        {isLoading && !venueIdFilter ? (
-          <p className="p-6 text-sm text-gray-400">Loading...</p>
-        ) : !displayVenues?.length ? (
-          <EmptyState message="No venues yet. Venues are created automatically when importing works." />
-        ) : (
-          <table className="w-full">
-            <thead className="sticky top-0 bg-white border-b border-gray-200">
-              <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
-                <th className="px-4 py-2">Name</th>
-                <th className="px-4 py-2">Type</th>
-                <th className="px-4 py-2">Field</th>
-                <th className="px-4 py-2">Papers</th>
-                <th className="px-4 py-2">Tier</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayVenues.map((v) =>
-                effectiveExpandedId === v.id ? (
-                  <VenueRow
-                    key={v.id}
-                    venueId={v.id}
-                    onCollapse={venueIdFilter ? clearVenueFilter : () => setExpandedId(null)}
-                    onUpdateTier={(tier) => updateVenue.mutate({ venueId: v.id, data: { tier } })}
-                  />
-                ) : (
-                  <tr
-                    key={v.id}
-                    onClick={() => setExpandedId(v.id)}
-                    className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
-                  >
-                    <td className="px-4 py-2 text-sm text-gray-900">{v.name}</td>
-                    <td className="px-4 py-2 text-sm text-gray-500">{v.venue_type ?? '-'}</td>
-                    <td className="px-4 py-2 text-sm text-gray-500">{v.field_display ?? '-'}</td>
-                    <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
-                      {v.work_count > 0 ? (
-                        <Link
-                          to={`/library?venue_id=${v.id}`}
-                          className="text-sm text-blue-600 hover:underline"
-                        >
-                          {v.work_count}
-                        </Link>
-                      ) : (
-                        <span className="text-sm text-gray-400">0</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
-                      <select
-                        value={String(v.tier)}
-                        onChange={(e) => {
-                          updateVenue.mutate({ venueId: v.id, data: { tier: Number(e.target.value) } });
-                        }}
-                        className={`px-2 py-1 text-sm border rounded cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                          v.tier === 1
-                            ? 'border-green-400 bg-green-50 text-green-700'
-                            : v.tier === 3
-                              ? 'border-red-300 bg-red-50 text-red-600'
-                              : 'border-gray-300 bg-white text-gray-700'
-                        }`}
-                      >
-                        {TIER_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                ),
-              )}
-            </tbody>
-          </table>
-        )}
-
-        {!venueIdFilter && venues && (
-          <div className="px-4">
-            <Pagination offset={offset} limit={PAGE_SIZE} count={venues.length} onChange={setOffset} />
-          </div>
-        )}
-      </div>
+      {activeTab === 'fields' && <FieldsTab />}
     </div>
   );
 }
