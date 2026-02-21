@@ -201,6 +201,26 @@ export interface TimelineResponse {
   seed_citations: SeedCitation[];
 }
 
+// ---- Notes ----
+
+export interface WorkNote {
+  id: number;
+  work_id: number;
+  project_id: number | null;
+  content: string;
+  note_type: string | null;
+  provenance: string;
+  model_id: string | null;
+  is_outdated: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectNote extends WorkNote {
+  work_title: string;
+  work_publication_year: number | null;
+}
+
 // ---- Settings ----
 
 export interface SettingOut {

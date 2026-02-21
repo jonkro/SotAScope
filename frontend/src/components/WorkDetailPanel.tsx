@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useResolveDOI } from '../hooks/useEnrichment';
 import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF } from '../hooks/useWorkPDFs';
+import { useWorkNotes, useCreateWorkNote, useUpdateWorkNote, useDeleteWorkNote } from '../hooks/useWorkNotes';
 import { serveWorkPDFUrl } from '../api';
-import type { CitationWorkBrief, DOIResolutionResult, TopicListOut } from '../types';
+import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -15,6 +16,7 @@ import ConfirmDialog from './ConfirmDialog';
 export interface PanelFoldState {
   abstract: boolean;
   locations: boolean;
+  notes: boolean;
   pdfs: boolean;
   actions: boolean;
   references: boolean;
@@ -24,6 +26,7 @@ export interface PanelFoldState {
 export const DEFAULT_FOLD_STATE: PanelFoldState = {
   abstract: false,
   locations: false,
+  notes: false,
   pdfs: true,
   actions: true,
   references: false,
@@ -249,6 +252,7 @@ interface TimelineContext {
 export default function WorkDetailPanel({
   workId,
   onClose,
+  projectId,
   topicLists,
   onAddToList,
   onRemoveFromList,
@@ -267,6 +271,7 @@ export default function WorkDetailPanel({
 }: {
   workId: number;
   onClose: () => void;
+  projectId?: number;
   topicLists?: TopicListOut[];
   onAddToList?: (topicListId: number) => void;
   onRemoveFromList?: (topicListId: number) => void;
@@ -297,6 +302,19 @@ export default function WorkDetailPanel({
   const removePDF = useDeleteWorkPDF();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pdfToRemove, setPdfToRemove] = useState<{ id: number; filename: string } | null>(null);
+
+  const notesQuery = useWorkNotes(workId, projectId);
+  const createNote = useCreateWorkNote(workId);
+  const updateNote = useUpdateWorkNote(workId);
+  const deleteNote = useDeleteWorkNote(workId);
+  const [addingNote, setAddingNote] = useState(false);
+  const [newNoteContent, setNewNoteContent] = useState('');
+  const [newNoteType, setNewNoteType] = useState('');
+  const [newNoteScope, setNewNoteScope] = useState<'general' | 'project'>('general');
+  const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [editNoteType, setEditNoteType] = useState('');
+  const [noteToDelete, setNoteToDelete] = useState<WorkNote | null>(null);
 
   const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
@@ -449,6 +467,246 @@ export default function WorkDetailPanel({
             </ul>
           </CollapsibleSection>
         )}
+
+        {/* Notes (collapsible) */}
+        <CollapsibleSection
+          sectionKey="notes"
+          title="Notes"
+          count={notesQuery.data?.length}
+          foldState={foldState}
+          onFoldChange={onFoldChange}
+        >
+          {/* Add note button / form */}
+          {addingNote ? (
+            <div className="mb-3 space-y-2 border border-gray-200 rounded p-2">
+              <textarea
+                value={newNoteContent}
+                onChange={(e) => setNewNoteContent(e.target.value)}
+                placeholder="Write a note..."
+                autoFocus
+                rows={3}
+                className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+              />
+              <input
+                type="text"
+                value={newNoteType}
+                onChange={(e) => setNewNoteType(e.target.value)}
+                placeholder="Note label (optional, e.g. key insight, limitation)"
+                className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {projectId != null && (
+                <div className="flex gap-3 text-xs">
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      checked={newNoteScope === 'general'}
+                      onChange={() => setNewNoteScope('general')}
+                    />
+                    General note
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      checked={newNoteScope === 'project'}
+                      onChange={() => setNewNoteScope('project')}
+                    />
+                    Project note
+                  </label>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    if (!newNoteContent.trim()) return;
+                    createNote.mutate({
+                      content: newNoteContent.trim(),
+                      note_type: newNoteType.trim() || null,
+                      project_id: newNoteScope === 'project' && projectId != null ? projectId : null,
+                    }, {
+                      onSuccess: () => {
+                        setAddingNote(false);
+                        setNewNoteContent('');
+                        setNewNoteType('');
+                        setNewNoteScope('general');
+                      },
+                    });
+                  }}
+                  disabled={!newNoteContent.trim() || createNote.isPending}
+                  className="px-2 py-1 text-xs text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {createNote.isPending ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  onClick={() => { setAddingNote(false); setNewNoteContent(''); setNewNoteType(''); setNewNoteScope('general'); }}
+                  className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAddingNote(true)}
+              className="mb-3 text-xs text-blue-600 hover:text-blue-800"
+            >
+              + Add note
+            </button>
+          )}
+
+          {notesQuery.isLoading && <p className="text-xs text-gray-400">Loading...</p>}
+
+          {notesQuery.data && (() => {
+            const projectNotes = notesQuery.data.filter((n) => n.project_id != null);
+            const generalNotes = notesQuery.data.filter((n) => n.project_id == null);
+            const hasGroups = projectNotes.length > 0 && generalNotes.length > 0;
+
+            const renderNote = (note: WorkNote) => {
+              const isEditing = editingNoteId === note.id;
+
+              if (isEditing) {
+                return (
+                  <div key={note.id} className="border border-blue-200 rounded p-2 space-y-2">
+                    <textarea
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      rows={3}
+                      autoFocus
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                    />
+                    <input
+                      type="text"
+                      value={editNoteType}
+                      onChange={(e) => setEditNoteType(e.target.value)}
+                      placeholder="Note label (optional)"
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          updateNote.mutate({
+                            noteId: note.id,
+                            data: {
+                              content: editContent.trim(),
+                              note_type: editNoteType.trim() || null,
+                            },
+                          }, {
+                            onSuccess: () => setEditingNoteId(null),
+                          });
+                        }}
+                        disabled={!editContent.trim() || updateNote.isPending}
+                        className="px-2 py-1 text-xs text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setEditingNoteId(null)}
+                        className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={note.id}
+                  className={`border rounded p-2 ${note.is_outdated ? 'border-gray-200 bg-gray-50 opacity-60' : 'border-gray-200'}`}
+                >
+                  <div className="flex items-start justify-between gap-1">
+                    <p className={`text-xs text-gray-700 leading-relaxed whitespace-pre-wrap flex-1 ${note.is_outdated ? 'line-through' : ''}`}>
+                      {note.content}
+                    </p>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => {
+                          setEditingNoteId(note.id);
+                          setEditContent(note.content);
+                          setEditNoteType(note.note_type ?? '');
+                        }}
+                        className="text-[10px] text-gray-400 hover:text-blue-600 underline"
+                      >
+                        edit
+                      </button>
+                      <button
+                        onClick={() => setNoteToDelete(note)}
+                        className="text-gray-400 hover:text-red-600 text-sm leading-none"
+                        title="Delete"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    {note.note_type && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded font-medium">
+                        {note.note_type}
+                      </span>
+                    )}
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                      note.provenance === 'user'
+                        ? 'bg-green-100 text-green-700'
+                        : note.provenance === 'ai'
+                        ? 'bg-blue-100 text-blue-700'
+                        : 'bg-teal-100 text-teal-700'
+                    }`}>
+                      {note.provenance === 'user' ? 'User' : note.provenance === 'ai' ? 'AI' : 'AI reviewed'}
+                    </span>
+                    {note.model_id && (
+                      <span className="text-[10px] text-gray-400">{note.model_id}</span>
+                    )}
+                    <button
+                      onClick={() => updateNote.mutate({ noteId: note.id, data: { is_outdated: !note.is_outdated } })}
+                      className={`text-[10px] px-1 py-0.5 rounded border ${
+                        note.is_outdated
+                          ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
+                          : 'border-gray-200 text-gray-400 hover:bg-gray-50'
+                      }`}
+                      title={note.is_outdated ? 'Mark as current' : 'Mark as outdated'}
+                    >
+                      {note.is_outdated ? 'outdated' : 'mark outdated'}
+                    </button>
+                    <span className="text-[10px] text-gray-400 ml-auto">
+                      {new Date(note.updated_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                </div>
+              );
+            };
+
+            const renderGroup = (notes: WorkNote[], label?: string) => {
+              const current = notes.filter((n) => !n.is_outdated);
+              const outdated = notes.filter((n) => n.is_outdated);
+              return (
+                <div>
+                  {label && <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">{label}</p>}
+                  <div className="space-y-2">
+                    {current.map(renderNote)}
+                    {outdated.map(renderNote)}
+                  </div>
+                </div>
+              );
+            };
+
+            if (notesQuery.data.length === 0) {
+              return <p className="text-xs text-gray-400">No notes yet</p>;
+            }
+
+            return (
+              <div className="space-y-3">
+                {hasGroups ? (
+                  <>
+                    {renderGroup(projectNotes, 'Project notes')}
+                    {renderGroup(generalNotes, 'General notes')}
+                  </>
+                ) : (
+                  renderGroup(notesQuery.data)
+                )}
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
 
         {/* PDFs (collapsible, default open) */}
         <CollapsibleSection
@@ -736,6 +994,19 @@ export default function WorkDetailPanel({
         onConfirm={() => {
           removePDF.mutate({ workId, pdfId: pdfToRemove.id });
           setPdfToRemove(null);
+        }}
+      />
+    )}
+
+    {noteToDelete && (
+      <ConfirmDialog
+        title="Delete Note"
+        message="Are you sure you want to permanently delete this note?"
+        confirmLabel="Delete"
+        onCancel={() => setNoteToDelete(null)}
+        onConfirm={() => {
+          deleteNote.mutate(noteToDelete.id);
+          setNoteToDelete(null);
         }}
       />
     )}

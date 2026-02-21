@@ -20,6 +20,7 @@ from litexplorer.models.library import (
     Work,
     WorkAuthor,
     WorkLocation,
+    WorkNote,
     WorkPDF,
 )
 from litexplorer.models.project import ProjectIgnoredWork, TopicListWork
@@ -39,6 +40,7 @@ from litexplorer.schemas.works import (
     WorkPDFOut,
     WorkUpdate,
 )
+from litexplorer.schemas.notes import WorkNoteCreate, WorkNoteOut, WorkNoteUpdate
 
 router = APIRouter(prefix="/api/works", tags=["works"])
 
@@ -821,4 +823,101 @@ def delete_pdf(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
         if next_pdf:
             next_pdf.is_primary = True
 
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Notes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{work_id}/notes", response_model=list[WorkNoteOut])
+def list_notes(
+    work_id: int,
+    project_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """List notes for a work.
+
+    If project_id is provided, returns general notes (project_id=NULL) AND
+    notes for that specific project.  If omitted, returns only general notes.
+    """
+    _get_work(db, work_id)
+
+    stmt = select(WorkNote).where(WorkNote.work_id == work_id)
+    if project_id is not None:
+        stmt = stmt.where(
+            (WorkNote.project_id == None) | (WorkNote.project_id == project_id)  # noqa: E711
+        )
+    else:
+        stmt = stmt.where(WorkNote.project_id == None)  # noqa: E711
+
+    stmt = stmt.order_by(WorkNote.created_at)
+    notes = db.scalars(stmt).all()
+    return [WorkNoteOut.model_validate(n) for n in notes]
+
+
+@router.post("/{work_id}/notes", response_model=WorkNoteOut, status_code=201)
+def create_note(
+    work_id: int,
+    body: WorkNoteCreate,
+    db: Session = Depends(get_db),
+):
+    """Create a user note on a work."""
+    _get_work(db, work_id)
+
+    note = WorkNote(
+        work_id=work_id,
+        project_id=body.project_id,
+        content=body.content,
+        note_type=body.note_type,
+        provenance="user",
+        model_id=None,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return WorkNoteOut.model_validate(note)
+
+
+@router.patch("/{work_id}/notes/{note_id}", response_model=WorkNoteOut)
+def update_note(
+    work_id: int,
+    note_id: int,
+    body: WorkNoteUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update a note. AI-provenance notes become 'ai_reviewed' on any edit."""
+    note = db.get(WorkNote, note_id)
+    if not note or note.work_id != work_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    if body.content is not None:
+        note.content = body.content
+    if body.note_type is not None:
+        note.note_type = body.note_type
+    if body.is_outdated is not None:
+        note.is_outdated = body.is_outdated
+
+    # If provenance is AI, any user edit implies review
+    if note.provenance == "ai":
+        note.provenance = "ai_reviewed"
+
+    db.commit()
+    db.refresh(note)
+    return WorkNoteOut.model_validate(note)
+
+
+@router.delete("/{work_id}/notes/{note_id}", status_code=204)
+def delete_note(
+    work_id: int,
+    note_id: int,
+    db: Session = Depends(get_db),
+):
+    """Delete a note."""
+    note = db.get(WorkNote, note_id)
+    if not note or note.work_id != work_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    db.delete(note)
     db.commit()

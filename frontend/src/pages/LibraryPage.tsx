@@ -107,6 +107,7 @@ export default function LibraryPage() {
 
       {selectedWorkId !== null && (
         <WorkDetailPanel
+          key={selectedWorkId}
           workId={selectedWorkId}
           onClose={() => setSelectedWorkId(null)}
           onDelete={() => setSelectedWorkId(null)}

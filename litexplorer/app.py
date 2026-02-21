@@ -62,6 +62,24 @@ def _migrate_schema() -> None:
             db.execute(text("ALTER TABLE works DROP COLUMN pdf_path"))
             db.commit()
 
+        # Create work_notes table if it doesn't exist
+        if "work_notes" not in existing_tables:
+            db.execute(text(
+                "CREATE TABLE work_notes ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,"
+                "  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,"
+                "  content TEXT NOT NULL,"
+                "  note_type VARCHAR(64),"
+                "  provenance VARCHAR(32) NOT NULL DEFAULT 'user',"
+                "  model_id VARCHAR(128),"
+                "  is_outdated BOOLEAN DEFAULT 0,"
+                "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+            db.commit()
+
         # Enable AUTOINCREMENT tracking for existing works table
         has_seq = db.execute(
             text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'")
@@ -240,6 +258,7 @@ from litexplorer.api.enrichment import router as enrichment_router  # noqa: E402
 from litexplorer.api.timeline import router as timeline_router  # noqa: E402
 from litexplorer.api.settings import router as settings_router  # noqa: E402
 from litexplorer.api.filesystem import router as filesystem_router  # noqa: E402
+from litexplorer.api.notes import project_notes_router  # noqa: E402
 
 app.include_router(works_router)
 app.include_router(authors_router)
@@ -250,6 +269,7 @@ app.include_router(enrichment_router)
 app.include_router(timeline_router)
 app.include_router(settings_router)
 app.include_router(filesystem_router)
+app.include_router(project_notes_router)
 
 # Serve built frontend (only when frontend/dist exists)
 if _frontend_dist.is_dir():

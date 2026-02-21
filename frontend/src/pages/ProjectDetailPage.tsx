@@ -19,9 +19,11 @@ import { useWorks } from '../hooks/useWorks';
 import { useTimeline } from '../hooks/useTimeline';
 import { fetchBackwardCitationsEnrich, fetchForwardCitationsEnrich, enrichFromCrossref } from '../api';
 import { filterNeighbors } from '../lib/timelineFilter';
-import type { TimelineNeighborWork } from '../types';
+import { useProjectNotes } from '../hooks/useWorkNotes';
+import { updateWorkNote, deleteWorkNote } from '../api';
+import type { TimelineNeighborWork, ProjectNote } from '../types';
 
-type ActiveTab = 'timeline' | 'lists';
+type ActiveTab = 'timeline' | 'lists' | 'notes';
 
 export default function ProjectDetailPage() {
   const { projectId: pid } = useParams<{ projectId: string }>();
@@ -50,6 +52,11 @@ export default function ProjectDetailPage() {
 
   // Detail panel fold state (persists across paper selections within this project)
   const [panelFoldState, setPanelFoldState] = useState<PanelFoldState>({ ...DEFAULT_FOLD_STATE });
+
+  // Notes tab state
+  const [notesSortBy, setNotesSortBy] = useState<'paper' | 'label'>('paper');
+  const projectNotes = useProjectNotes(projectId);
+  const [noteToDeleteId, setNoteToDeleteId] = useState<{ workId: number; noteId: number } | null>(null);
 
   // Auto-enrichment tracking
   const [enrichingWorkIds, setEnrichingWorkIds] = useState<Set<number>>(new Set());
@@ -272,6 +279,19 @@ export default function ProjectDetailPage() {
           >
             Topic Lists
           </button>
+          <button
+            onClick={() => setActiveTab('notes')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+              activeTab === 'notes'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Notes
+            {projectNotes.data && projectNotes.data.length > 0 && (
+              <span className="ml-1 text-xs text-gray-400">({projectNotes.data.length})</span>
+            )}
+          </button>
         </div>
 
         {activeTab === 'timeline' && (
@@ -405,12 +425,176 @@ export default function ProjectDetailPage() {
             )}
           </div>
         )}
+
+        {activeTab === 'notes' && (
+          <div className="flex-1 overflow-y-auto p-6">
+            {/* Sort controls */}
+            <div className="flex items-center gap-3 mb-4">
+              <span className="text-xs text-gray-500">Sort by:</span>
+              <button
+                onClick={() => setNotesSortBy('paper')}
+                className={`text-xs px-2 py-1 rounded ${
+                  notesSortBy === 'paper' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                Paper
+              </button>
+              <button
+                onClick={() => setNotesSortBy('label')}
+                className={`text-xs px-2 py-1 rounded ${
+                  notesSortBy === 'label' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                Note label
+              </button>
+            </div>
+
+            {projectNotes.isLoading && <p className="text-sm text-gray-400">Loading...</p>}
+
+            {projectNotes.data && projectNotes.data.length === 0 && (
+              <p className="text-sm text-gray-400">No notes yet. Add notes from the paper detail panel.</p>
+            )}
+
+            {projectNotes.data && projectNotes.data.length > 0 && (() => {
+              const qc2 = qc;
+              const notes = [...projectNotes.data];
+
+              if (notesSortBy === 'paper') {
+                notes.sort((a, b) => a.work_title.localeCompare(b.work_title) || a.created_at.localeCompare(b.created_at));
+              } else {
+                notes.sort((a, b) => (a.note_type ?? '').localeCompare(b.note_type ?? '') || a.created_at.localeCompare(b.created_at));
+              }
+
+              // Group notes
+              type Group = { key: string; notes: ProjectNote[] };
+              const groups: Group[] = [];
+              const groupMap = new Map<string, ProjectNote[]>();
+
+              for (const note of notes) {
+                const key = notesSortBy === 'paper'
+                  ? `${note.work_id}:${note.work_title}`
+                  : (note.note_type || '(no label)');
+                if (!groupMap.has(key)) {
+                  groupMap.set(key, []);
+                  groups.push({ key, notes: groupMap.get(key)! });
+                }
+                groupMap.get(key)!.push(note);
+              }
+
+              return (
+                <div className="space-y-6">
+                  {groups.map((group) => (
+                    <div key={group.key}>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                        {notesSortBy === 'paper' ? (
+                          <>
+                            <button
+                              onClick={() => {
+                                setSelectedWorkId(group.notes[0].work_id);
+                                setActiveTab('timeline');
+                              }}
+                              className="hover:text-blue-600 text-left"
+                            >
+                              {group.notes[0].work_title}
+                            </button>
+                            {group.notes[0].work_publication_year && (
+                              <span className="text-gray-400 font-normal">({group.notes[0].work_publication_year})</span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs font-medium">
+                            {group.key}
+                          </span>
+                        )}
+                      </h3>
+                      <div className="space-y-2 ml-2">
+                        {group.notes.map((note) => (
+                          <div
+                            key={note.id}
+                            className={`border rounded p-3 ${note.is_outdated ? 'border-gray-200 bg-gray-50 opacity-60' : 'border-gray-200'}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <p className={`text-sm text-gray-700 leading-relaxed whitespace-pre-wrap flex-1 ${note.is_outdated ? 'line-through' : ''}`}>
+                                {note.content}
+                              </p>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  onClick={() => {
+                                    updateWorkNote(note.work_id, note.id, { is_outdated: !note.is_outdated }).then(() => {
+                                      qc2.invalidateQueries({ queryKey: ['projectNotes'] });
+                                      qc2.invalidateQueries({ queryKey: ['workNotes', note.work_id] });
+                                    });
+                                  }}
+                                  className={`text-[10px] px-1 py-0.5 rounded border ${
+                                    note.is_outdated
+                                      ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
+                                      : 'border-gray-200 text-gray-400 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  {note.is_outdated ? 'outdated' : 'mark outdated'}
+                                </button>
+                                <button
+                                  onClick={() => setNoteToDeleteId({ workId: note.work_id, noteId: note.id })}
+                                  className="text-gray-400 hover:text-red-600 text-sm leading-none"
+                                  title="Delete"
+                                >
+                                  &times;
+                                </button>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                              {notesSortBy === 'label' && (
+                                <button
+                                  onClick={() => {
+                                    setSelectedWorkId(note.work_id);
+                                    setActiveTab('timeline');
+                                  }}
+                                  className="text-[10px] text-blue-600 hover:underline"
+                                >
+                                  {note.work_title}
+                                </button>
+                              )}
+                              {notesSortBy === 'paper' && note.note_type && (
+                                <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded font-medium">
+                                  {note.note_type}
+                                </span>
+                              )}
+                              {note.project_id != null ? (
+                                <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded font-medium">Project</span>
+                              ) : (
+                                <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded font-medium">General</span>
+                              )}
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                note.provenance === 'user'
+                                  ? 'bg-green-100 text-green-700'
+                                  : note.provenance === 'ai'
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : 'bg-teal-100 text-teal-700'
+                              }`}>
+                                {note.provenance === 'user' ? 'User' : note.provenance === 'ai' ? 'AI' : 'AI reviewed'}
+                              </span>
+                              <span className="text-[10px] text-gray-400 ml-auto">
+                                {new Date(note.updated_at).toLocaleDateString()}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        )}
       </div>
 
       {selectedWorkId !== null && (
         <WorkDetailPanel
+          key={selectedWorkId}
           workId={selectedWorkId}
           onClose={() => setSelectedWorkId(null)}
+          projectId={projectId}
           topicLists={project.topic_lists}
           onAddToList={(tlId) => handleAddWorkToList(tlId, selectedWorkId)}
           onRemoveFromList={handleRemoveFromList}
@@ -460,6 +644,22 @@ export default function ProjectDetailPage() {
               { projectId, topicListId: deleteListId },
               { onSuccess: () => setDeleteListId(null) },
             );
+          }}
+        />
+      )}
+
+      {noteToDeleteId && (
+        <ConfirmDialog
+          title="Delete Note"
+          message="Are you sure you want to permanently delete this note?"
+          confirmLabel="Delete"
+          onCancel={() => setNoteToDeleteId(null)}
+          onConfirm={() => {
+            deleteWorkNote(noteToDeleteId.workId, noteToDeleteId.noteId).then(() => {
+              qc.invalidateQueries({ queryKey: ['projectNotes'] });
+              qc.invalidateQueries({ queryKey: ['workNotes', noteToDeleteId.workId] });
+              setNoteToDeleteId(null);
+            });
           }}
         />
       )}

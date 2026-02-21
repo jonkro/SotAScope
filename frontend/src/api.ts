@@ -23,6 +23,8 @@ import type {
   WorkLocationOut,
   TimelineResponse,
   SettingOut,
+  WorkNote,
+  ProjectNote,
   BrowseResult,
   PDFMigrationResult,
 } from './types';
@@ -343,6 +345,36 @@ export function removeIgnoredWork(projectId: number, workId: number) {
 
 export function fetchTimeline(projectId: number) {
   return apiFetch<TimelineResponse>(`/api/projects/${projectId}/timeline`);
+}
+
+// ---- Notes ----
+
+export function fetchWorkNotes(workId: number, projectId?: number) {
+  const sp = new URLSearchParams();
+  if (projectId != null) sp.set('project_id', String(projectId));
+  return apiFetch<WorkNote[]>(`/api/works/${workId}/notes?${sp}`);
+}
+
+export function createWorkNote(workId: number, data: { content: string; note_type?: string | null; project_id?: number | null }) {
+  return apiFetch<WorkNote>(`/api/works/${workId}/notes`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateWorkNote(workId: number, noteId: number, data: { content?: string; note_type?: string | null; is_outdated?: boolean }) {
+  return apiFetch<WorkNote>(`/api/works/${workId}/notes/${noteId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWorkNote(workId: number, noteId: number) {
+  return apiFetch<void>(`/api/works/${workId}/notes/${noteId}`, { method: 'DELETE' });
+}
+
+export function fetchProjectNotes(projectId: number) {
+  return apiFetch<ProjectNote[]>(`/api/projects/${projectId}/notes`);
 }
 
 // ---- Settings ----

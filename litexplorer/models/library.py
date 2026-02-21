@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -67,6 +68,9 @@ class Work(Base):
     pdfs: Mapped[list["WorkPDF"]] = relationship(
         back_populates="work", cascade="all, delete-orphan"
     )
+    notes: Mapped[list["WorkNote"]] = relationship(
+        back_populates="work", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Work id={self.id} doi={self.doi!r} title={self.title[:60]!r}>"
@@ -88,6 +92,34 @@ class WorkPDF(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     work: Mapped["Work"] = relationship(back_populates="pdfs")
+
+
+# ---------------------------------------------------------------------------
+# Work Notes
+# ---------------------------------------------------------------------------
+
+class WorkNote(Base):
+    """A note attached to a work, optionally scoped to a project."""
+
+    __tablename__ = "work_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    note_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provenance: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    is_outdated: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    work: Mapped["Work"] = relationship(back_populates="notes")
 
 
 # ---------------------------------------------------------------------------
