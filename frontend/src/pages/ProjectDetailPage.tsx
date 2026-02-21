@@ -67,11 +67,7 @@ export default function ProjectDetailPage() {
   const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>(saved.candidateFilter ?? 'all');
   const [hops, setHops] = useState(saved.hops ?? 1);
 
-  // Persist last-visited project and view settings to localStorage
-  useEffect(() => {
-    localStorage.setItem('litexplorer:lastProjectId', String(projectId));
-  }, [projectId]);
-
+  // Persist view settings to localStorage
   useEffect(() => {
     const settings: ProjectViewSettings = {
       activeTab, citationsSinceYears, showBackward, showForward,
@@ -276,7 +272,7 @@ export default function ProjectDetailPage() {
             onClick={() => navigate('/projects')}
             className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
           >
-            Back
+            To project overview
           </button>
           <button
             onClick={() => setShowCreateList(true)}
