@@ -14,7 +14,8 @@ Two distinct layers:
 - A local database with BibTeX import support, conceptually similar to JabRef
 - Each work is uniquely identified by its **DOI** where available, with **arXiv ID** as fallback key. Works may also carry an **OpenAlex ID** for citation graph integration.
 - A work may have multiple "locations" (typed as `venue` or `preprint`). The venue version is treated as primary. arXiv links are stored as preprint locations.
-- PDFs can be attached to a work via a configurable local folder path (schema supports it; upload UI is deferred to phase 2 of the project).
+- **PDF management**: PDFs are stored in a configurable local folder (`pdf_storage_path` setting, default `{data_dir}/pdfs/`). Each work can have multiple PDFs via the `WorkPDF` table; the first uploaded is auto-set as primary. Files are organized as `{pdf_root}/{work_id}/{filename}`. Deleted PDFs are moved to `{pdf_root}/_orphaned/` rather than permanently removed. PDFs are served inline (not as downloads) via `FileResponse` with `Content-Disposition: inline`.
+- **Work notes**: Per-work notes stored in the `WorkNote` table. Notes can be scoped to a project (`project_id` set) or general (`project_id` null). Each note has `content`, `note_type` (optional label), `provenance` ("user", "ai", or "ai_reviewed"), `model_id`, and `is_outdated` flag. Editing an AI-generated note changes provenance to "ai_reviewed".
 - The library stores a **venue tier list**: a user-maintained mapping of venues to tiers (1 = top venue, 2 = regular, 3 = ignore). Tiers are global per venue (not per-field). Venues can be associated with one or more research fields (e.g., "AI/ML", "Computer Networks") via a many-to-many relationship, but the tier is a single global value.
 - **Venue aliases** handle year-to-year name variation (e.g., the same conference has different OpenAlex names across years). Aliases are manually reorderable; the first alias (by sort_order) is the **preferred alias** used for display throughout the UI.
 - **Venue normalization** runs at startup: strips "Proceedings of the..." prefixes, calendar years, and ordinal edition numbers. Detects and merges duplicate venues after normalization, preserving old names as aliases.
@@ -35,7 +36,7 @@ Two APIs are actively integrated:
 
 | Source | Role |
 |---|---|
-| **OpenAlex** | Primary source: citation graph, forward citations, paper metadata, venue info |
+| **OpenAlex** | Primary source: citation graph, forward citations, paper metadata, venue info, per-year citation counts |
 | **Crossref** | DOI resolution (including fuzzy search), authoritative venue metadata (ISSN, publisher) |
 
 Semantic Scholar is referenced in the schema (as a possible `source` value on Citation and ApiCache) but **has no client implementation yet**. It is reserved for future enrichment of influence scores.
@@ -45,6 +46,8 @@ Both clients support a "polite pool" email for better rate limits. This email is
 1. A **database setting** (`api_contact_email`) editable from the Settings page (preferred)
 2. Environment variable fallback (`LITEXPLORER_OPENALEX_API_KEY`, `LITEXPLORER_CROSSREF_MAILTO`)
 If no email is configured, the clients still work but with lower rate limits.
+
+Note: OpenAlex uses `mailto` query parameter for polite pool access, not Bearer token auth.
 
 ### Caching policy
 All API responses are cached in an `api_cache` table with source and query key.
@@ -61,6 +64,8 @@ When a work is added to a topic list (becoming a seed), the system automatically
 
 This runs in parallel and the UI shows a progress indicator during the process.
 
+When forward citations are fetched, the seed work's own metadata (`citation_count`, `citations_by_year`) is refreshed from OpenAlex via `_refresh_work_metadata()`.
+
 ### DOI resolution
 For works without a DOI (e.g., imported from BibTeX without one), the system can:
 - **Auto-resolve**: Crossref fuzzy search with configurable thresholds (score >= 80, ratio to 2nd candidate >= 1.5). Auto-resolved DOIs are marked with `doi_auto_resolved = true`.
@@ -71,7 +76,7 @@ For works without a DOI (e.g., imported from BibTeX without one), the system can
 
 ## Core visualization: Citation Timeline
 
-The main view of a project is a **timeline** (x-axis = publication year, y-axis = log-scaled importance score):
+The main view of a project is a **timeline** (x-axis = publication year, y-axis = log-scaled citation count):
 
 - **Seed papers** (papers in any topic list): shown as filled **squares**, color-coded by topic list. If a paper is in multiple topic lists, vertical color stripes are used.
 - **Backward neighbors** (references of seed papers): shown as **circles** in muted gray
@@ -79,23 +84,19 @@ The main view of a project is a **timeline** (x-axis = publication year, y-axis 
 
 Dot size scales by `sqrt(connectivity)` where connectivity = 1 + number of seed connections. Within each year column, dots are jittered horizontally using a deterministic hash (Knuth multiplicative) to avoid overlap while maintaining stable positions.
 
-### Paper inclusion logic (two-tier system)
-1. **Unconditional tier**: papers from tier-1 venues are always included, regardless of score
-2. **Ignored tier**: papers from tier-3 (ignored) venues are always excluded
-3. **Scored tier**: all other papers are ranked by importance score and shown above a user-adjustable threshold
+### Y-axis: Citation count with sliding window
+The y-axis shows citation count on a `log(1+x)` scale. A "Count citations" slider controls the time window:
+- **All** (default): uses the all-time `citation_count` from OpenAlex
+- **Of last Ny** (1–10 years): sums `cited_by_count` from `citations_by_year` entries within the window
 
-**Importance score formula**: `(citation_count / age) * decay`
-- `age = max(currentYear - publicationYear, 1)`
-- `decay = age > decayStartYears ? decayStartYears / age : 1.0`
-- `decayStartYears` is user-adjustable (default: 5 years)
+This is computed client-side via `computeCitationCount()` — no API re-fetch on slider change. Works without `citations_by_year` data fall back to the all-time `citation_count` regardless of slider position.
 
-Note: the score uses total citation count, not a sliding-window count. The threshold and decay parameters are exposed as controls in the UI.
+Y-axis ticks show untransformed integers at powers of 10 (0, 1, 10, 100, 1000...). Label: "Citations".
 
-### Candidate filter
-A dropdown control allows filtering visible candidates:
-- **All**: show all candidates passing the score threshold
-- **Top venues**: show only candidates from tier-1 venues
-- **None**: hide all candidates, show only seeds
+### Paper inclusion logic
+- Papers from tier-3 (ignored) venues are always excluded
+- **Candidate filter** dropdown: All (show all candidates), Top venues (tier-1 only), None (seeds only)
+- No score threshold — all candidates passing the venue/direction filters are shown
 
 ### Interaction
 - **Click a dot**: show a side panel with paper metadata, abstract, venue, citation count, and its connections. When dots overlap, clicking cycles through them.
@@ -105,6 +106,17 @@ A dropdown control allows filtering visible candidates:
 - **Mark uninteresting**: for neighbor papers, moves them to the project's ignored list
 - **Citation list markers**: References and Cited-by lists in the side panel show SVG markers matching the timeline shapes (colored squares for seeds, grey circles for backward refs, grey diamonds for forward cites). Entries are clickable to navigate to that paper in the timeline.
 - **Collapsible sections**: Abstract, Locations, Actions, References, and Cited-by sections are collapsible. Fold state persists across paper selections within the same page.
+
+### Timeline controls
+- **Count citations**: sliding window slider (all / of last 10y down to 1y)
+- **References / Cited by**: checkboxes to toggle direction visibility
+- **Candidates**: dropdown (All / Top venues / None)
+- **Hops**: segmented button (1, 2, 3)
+- **From**: year range slider (when data spans multiple years)
+- **Stats**: "Showing N of M candidates"
+
+### Per-client state persistence
+Timeline settings (citations window, direction, candidates, hops, start year, active tab) are stored in `localStorage` per project (`litexplorer:project:{id}:view`). Each browser client has independent settings. The sidebar "Projects" link remembers the last `/projects/*` path within the current session (via React ref, not localStorage).
 
 ---
 
@@ -117,15 +129,20 @@ A dropdown control allows filtering visible candidates:
 - OpenAlex + Crossref integration with caching
 - DOI auto-resolution via Crossref fuzzy search
 - Auto-enrichment on seed addition
-- Citation timeline visualization with two-tier inclusion logic
+- Citation timeline visualization with citation count y-axis and sliding window
 - Paper side panel with add/remove from topic list, mark uninteresting, citation browsing
 - K-hop connection visualization (1-3 hops)
 - Import: BibTeX file or list of DOIs
-- Settings page for API contact email (stored in database)
+- Settings page for API contact email and PDF storage path (stored in database)
 - Venue management UI: alias editing, reordering, tier assignment, field association
+- Venues page with Venues tab (sortable table) and Fields tab (CRUD with deletion)
+- PDF management: upload, serve inline, set primary, delete (moved to orphaned folder)
+- Work notes: per-work and project-scoped notes with labels, provenance tracking
+- Project notes tab: aggregated view of all notes for a project, sortable by paper or label
+- Filesystem browser for configuring PDF storage path
+- Per-client timeline state persistence via localStorage
 
 ### Not yet implemented from Phase 1 spec
-- PDF upload UI (schema supports `pdf_path` but no upload mechanism)
 - systemd unit file for deployment
 - Semantic Scholar integration
 
@@ -165,69 +182,79 @@ A dropdown control allows filtering visible candidates:
 
 ```
 litexplorer/
-├── app.py                # FastAPI app with lifespan (startup migrations, seeding, SPA mount)
+├── app.py                # FastAPI app with lifespan (startup migrations, backfills, SPA mount)
 ├── config.py             # Settings via Pydantic BaseSettings (LITEXPLORER_ env prefix)
 ├── database.py           # Engine, SessionLocal, init_db()
 ├── models/
 │   ├── base.py           # SQLAlchemy DeclarativeBase
-│   ├── library.py        # Work, WorkLocation, Author, WorkAuthor, Venue, VenueAlias,
-│   │                     #   Field, VenueField, Citation
+│   ├── library.py        # Work (with citations_by_year JSON), WorkLocation, Author, WorkAuthor,
+│   │                     #   Venue, VenueAlias, Field (passive_deletes=True), VenueField,
+│   │                     #   Citation, WorkPDF, WorkNote
 │   ├── project.py        # Project, TopicList, TopicListWork, ProjectIgnoredWork
 │   ├── cache.py          # ApiCache (permanent / timestamped)
 │   └── settings.py       # Setting (key-value store)
 ├── schemas/              # Pydantic v2 request/response models
-│   ├── works.py          # WorkOut, WorkDetail, WorkCreate, BibtexImportResult, etc.
+│   ├── works.py          # WorkOut, WorkDetail, WorkCreate, BibtexImportResult, WorkPDFOut, etc.
 │   ├── venues.py         # VenueOut, VenueDetail, VenueAliasOut, etc.
 │   ├── projects.py       # ProjectOut, ProjectDetail, TopicListOut, etc.
 │   ├── enrichment.py     # EnrichDOIResult, CitationResult, DOIResolutionResult, etc.
 │   ├── timeline.py       # TimelineResponse, TimelineSeedWork, TimelineNeighborWork
-│   ├── fields.py         # FieldOut
+│   │                     #   (seeds/neighbors include citations_by_year: list[dict] | None)
+│   ├── fields.py         # FieldOut (includes venue_count: int)
+│   ├── notes.py          # WorkNoteCreate, WorkNoteUpdate, WorkNoteOut, ProjectNoteOut
 │   └── settings.py       # SettingOut, SettingUpdate
 ├── api/
 │   ├── deps.py           # get_db dependency
-│   ├── works.py          # /api/works — CRUD, BibTeX import, citations, merge, duplicates
-│   ├── venues.py         # /api/venues — CRUD, aliases, field associations
-│   ├── fields.py         # /api/fields — CRUD
+│   ├── works.py          # /api/works — CRUD, BibTeX import, citations, merge, duplicates,
+│   │                     #   PDF upload/serve/delete, notes CRUD
+│   ├── venues.py         # /api/venues — CRUD, aliases, field associations, sortable (sort_by, sort_dir)
+│   ├── fields.py         # /api/fields — CRUD + DELETE /{field_id} (cascade deletes VenueField)
 │   ├── projects.py       # /api/projects — CRUD, topic lists, ignored works
 │   ├── enrichment.py     # /api/enrich — DOI import, citation fetching, Crossref, DOI resolution
 │   ├── timeline.py       # /api/projects/{id}/timeline — timeline data aggregation
-│   └── settings.py       # /api/settings — key-value settings CRUD
+│   ├── notes.py          # /api/projects/{id}/notes — project-scoped notes aggregation
+│   ├── settings.py       # /api/settings — key-value settings CRUD
+│   └── filesystem.py     # /api/filesystem — directory browser + mkdir
 ├── services/
 │   └── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
-│                         #   DOI resolution, cache management, deduplication
+│                         #   DOI resolution, cache management, deduplication,
+│                         #   _refresh_work_metadata() on forward citation fetch
 └── external/
-    ├── base.py           # ExternalWork, ExternalVenue, ExternalAuthor, ExternalLocation
+    ├── base.py           # ExternalWork (with citations_by_year), ExternalVenue, ExternalAuthor, ExternalLocation
     ├── openalex.py       # OpenAlexClient — DOI lookup, batch fetch, forward citations
+    │                     #   parse_work() extracts counts_by_year from OpenAlex responses
     └── crossref.py       # CrossrefClient — DOI lookup, fuzzy search
 
 frontend/src/
 ├── App.tsx               # Routes: /projects, /projects/:id, /library, /venues, /settings
-├── api.ts                # All fetch functions (works, venues, projects, enrichment, etc.)
+├── api.ts                # All fetch functions (works, venues, projects, enrichment, PDFs, notes, fields, etc.)
 ├── types.ts              # TypeScript interfaces matching backend schemas
+│                         #   (includes CitationsByYearEntry, WorkNote, ProjectNote, WorkPDFOut, etc.)
 ├── queryClient.ts        # TanStack React Query client configuration
 ├── lib/
-│   └── timelineFilter.ts # computeImportanceScore(), filterNeighbors()
+│   └── timelineFilter.ts # computeCitationCount(), filterNeighbors()
 ├── hooks/                # React Query hooks for each domain
 │   ├── useWorks.ts
-│   ├── useVenues.ts
+│   ├── useVenues.ts      # accepts sort_by, sort_dir params
 │   ├── useProjects.ts
 │   ├── useTimeline.ts
 │   ├── useEnrichment.ts
-│   ├── useFields.ts
+│   ├── useFields.ts      # includes useDeleteField()
 │   ├── useVenueTiers.ts
+│   ├── useWorkNotes.ts   # useWorkNotes(), useProjectNotes(), useCreateWorkNote(), etc.
 │   └── useSettings.ts
 ├── pages/
 │   ├── ProjectsPage.tsx       # Project listing with create/delete
-│   ├── ProjectDetailPage.tsx  # Timeline + Topic Lists tabs, all timeline state management
+│   ├── ProjectDetailPage.tsx  # Timeline + Topic Lists + Notes tabs, localStorage persistence
 │   ├── LibraryPage.tsx        # Work listing with search, pagination, venue filter
-│   ├── VenuesPage.tsx         # Venue management: aliases, tiers, fields
-│   └── SettingsPage.tsx       # Database-stored settings editor
+│   ├── VenuesPage.tsx         # Venues tab (sortable table) + Fields tab (CRUD with delete)
+│   └── SettingsPage.tsx       # Database-stored settings editor + PDF folder browser
 └── components/
     ├── AppShell.tsx            # Layout: Sidebar + Outlet
-    ├── Sidebar.tsx             # Nav: Projects, Library, Venues, Settings
-    ├── CitationTimeline.tsx    # D3 scatter plot with full interaction model
-    ├── WorkDetailPanel.tsx     # Side panel with collapsible sections, markers, actions
-    ├── TimelineControls.tsx    # Filter bar: threshold, decay, direction, candidates, hops, year
+    ├── Sidebar.tsx             # Nav: Projects (remembers last path), Library, Venues, Settings
+    ├── CitationTimeline.tsx    # D3 scatter plot with log1p citation count y-axis
+    ├── WorkDetailPanel.tsx     # Side panel with collapsible sections, markers, actions, notes
+    ├── TimelineControls.tsx    # Filter bar: citation window, direction, candidates, hops, year range
     ├── TimelineEnrichBar.tsx   # Enrichment progress for seed papers
     ├── ImportDialog.tsx        # DOI list or BibTeX import with resolution
     ├── SanitizeDialog.tsx      # Library cleanup tools
@@ -244,16 +271,32 @@ frontend/src/
 
 tests/
 ├── conftest.py                # db_session + client fixtures (StaticPool, in-memory SQLite)
-├── test_library_api.py        # Work CRUD, BibTeX import, citations, merge
+├── test_library_api.py        # Work CRUD, BibTeX import, citations, merge, field deletion
 ├── test_enrichment_api.py     # Enrichment endpoints with mocked clients
 ├── test_enrichment_service.py # EnrichmentService unit tests
+├── test_enrichment_crossref.py# Crossref enrichment tests
+├── test_crossref_client.py    # Crossref client unit tests
 ├── test_project_api.py        # Project/topic list CRUD
-├── test_timeline_api.py       # Timeline endpoint
+├── test_timeline_api.py       # Timeline endpoint + citations_by_year tests
 ├── test_venue_api.py          # Venue CRUD, aliases, tiers
-├── test_openalex_client.py    # OpenAlex client (requires network)
+├── test_openalex_client.py    # OpenAlex client (parse_work, client methods)
+├── test_pdf_api.py            # PDF upload, serve, set primary, delete
+├── test_notes_api.py          # Note CRUD operations
+├── test_filesystem_api.py     # Directory browsing and mkdir
 └── fixtures/
     └── openalex_responses.py  # Sample API response fixtures
 ```
+
+---
+
+## Startup lifecycle (app.py lifespan)
+
+1. `init_db()` — create engine and tables
+2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking)
+3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
+4. `_seed_default_settings()` — create `api_contact_email` and `pdf_storage_path` settings
+5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
+6. `_backfill_citations_by_year()` — populate `citations_by_year` from cached OpenAlex responses (scans `work:doi:*`, `backward_citations:*`, and `forward_citations:*` cache entries)
 
 ---
 
@@ -264,6 +307,7 @@ The deployment context is a small team of trusted collaborators on a shared loca
 - All users share the same **library layer** (papers, PDFs, venue tier list)
 - Each **project** has an owner (stored in the DB) but is visible and editable by all users — trust is assumed
 - Concurrent writes are handled by SQLite's WAL mode, which is sufficient for a small team
+- Timeline settings (citation window, filters, etc.) are per-browser-client via localStorage
 
 Authentication and per-user access control are explicitly deferred to a future phase.
 
@@ -273,7 +317,32 @@ Authentication and per-user access control are explicitly deferred to a future p
 
 - Venue normalization in CS is messy. OpenAlex venue names are inconsistent across years for the same conference. The VenueAlias table handles this, with automatic normalization at startup and manual curation in the Venues UI.
 - The same work may appear under different DOIs (rare but real) or without a DOI (arXiv-only papers). The dedup logic checks DOI first, then arXiv ID, then OpenAlex ID.
-- Forward citation queries can return hundreds of results for well-cited papers. The two-tier filter is applied before rendering, not after.
+- Forward citation queries can return hundreds of results for well-cited papers. The candidate filter is applied before rendering, not after.
 - BibTeX entry keys follow AuthorYearKeyword convention but the internal unique key is always DOI or arXiv ID.
 - When transferring a UNIQUE field value between rows (e.g., during work merge), null out the field on the source row and `db.flush()` before setting it on the target — SQLAlchemy batches UPDATEs within a single flush with no guaranteed row ordering.
 - TestClient + in-memory SQLite requires `StaticPool` + `check_same_thread=False`. Override `get_db` from `litexplorer.api.deps` (not `litexplorer.database`).
+- `Field.venues` relationship uses `passive_deletes=True` because the DB has `ON DELETE CASCADE` on `VenueField.field_id`. Without this, SQLAlchemy tries to set `field_id = NULL` on eagerly-loaded relationships before delete, which fails because `field_id` is NOT NULL.
+- The `citations_by_year` sliding window only works for works that have the data populated from OpenAlex. Works without it (e.g., imported from Crossref or BibTeX only) fall back to the all-time `citation_count` regardless of slider position. The startup backfill populates from cached responses; re-enriching a work will also populate it.
+- `_update_work()` always overwrites `citation_count` and `citations_by_year` (they change over time), unlike other fields which use update-without-overwrite.
+
+---
+
+## Design deviations from original spec
+
+- **Y-axis changed from importance score to citation count**: The original spec defined an importance score formula `(citation_count / age) * decay` with threshold and decay controls. This was replaced with a direct citation count y-axis using `log(1+x)` scale, with a "Count citations of last N years" sliding window. The threshold and decay sliders were removed.
+- **No score-based filtering**: The original spec had a scored tier where candidates were shown above a user-adjustable threshold. This was removed — all candidates passing venue/direction filters are shown.
+- **PDF management fully implemented**: Originally deferred to Phase 2, PDF upload/serve/delete is now fully functional with the `WorkPDF` table (replacing the removed `pdf_path` column on Work).
+- **Work notes system added**: Not in original spec — added to support per-paper annotations with provenance tracking (user vs AI-generated).
+- **Fields tab on Venues page**: Field creation moved from the Venues page header to a dedicated Fields tab, with field deletion support.
+- **Venue table sorting**: Venues table headers are clickable to sort ascending/descending by any column.
+
+---
+
+## Running tests
+
+```bash
+python -m pytest tests/ -v          # all tests (155 tests)
+cd frontend && npm run build        # TypeScript type check + production build
+```
+
+All tests should pass. There are no known pre-existing failures.
