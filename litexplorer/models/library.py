@@ -94,6 +94,10 @@ class WorkPDF(Base):
     work_id: Mapped[int] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     is_primary: Mapped[bool] = mapped_column(default=False)
+    # 'pending' = extraction not yet attempted
+    # 'ready'   = .txt file exists and is non-empty
+    # 'failed'  = extraction was attempted but yielded no text
+    extraction_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     work: Mapped["Work"] = relationship(back_populates="pdfs")

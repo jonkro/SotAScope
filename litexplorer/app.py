@@ -87,6 +87,14 @@ def _migrate_schema() -> None:
             ))
             db.commit()
 
+        # Add extraction_status column to work_pdfs
+        pdf_cols = {c["name"] for c in inspector.get_columns("work_pdfs")}
+        if "extraction_status" not in pdf_cols:
+            db.execute(text(
+                "ALTER TABLE work_pdfs ADD COLUMN extraction_status VARCHAR(16) NOT NULL DEFAULT 'pending'"
+            ))
+            db.commit()
+
         # Enable AUTOINCREMENT tracking for existing works table
         has_seq = db.execute(
             text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'")

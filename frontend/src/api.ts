@@ -177,6 +177,17 @@ export function serveWorkPDFUrl(workId: number, pdfId: number): string {
   return `/api/works/${workId}/pdfs/${pdfId}/file`;
 }
 
+export function extractWorkPDFText(workId: number, pdfId: number) {
+  return apiFetch<{ status: string; char_count: number }>(
+    `/api/works/${workId}/pdfs/${pdfId}/extract-text`,
+    { method: 'POST' },
+  );
+}
+
+export function workPDFTextUrl(workId: number, pdfId: number): string {
+  return `/api/works/${workId}/pdfs/${pdfId}/text`;
+}
+
 // ---- Venues ----
 
 export function fetchVenues(params?: { offset?: number; limit?: number; q?: string; sort_by?: string; sort_dir?: string }) {

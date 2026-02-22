@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -174,5 +175,6 @@ class WorkPDFOut(BaseModel):
     filename: str
     is_primary: bool
     created_at: datetime
+    extraction_status: Literal["ready", "failed", "pending"] = "pending"
 
     model_config = {"from_attributes": True}

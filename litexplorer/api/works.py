@@ -1,9 +1,12 @@
 """CRUD routes for works, locations, authors, citations, and BibTeX import."""
 
+import logging
 import os
 import re
 import shutil
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -83,6 +86,11 @@ def _move_to_orphaned(src: Path, orphaned_dir: Path) -> None:
         dest = orphaned_dir / f"{stem}_{counter}{src.suffix}"
         counter += 1
     shutil.move(str(src), str(dest))
+
+
+def _txt_path_for(pdf_root: Path, work_id: int, filename: str) -> Path:
+    """Return the companion .txt path for a PDF file."""
+    return pdf_root / str(work_id) / Path(filename).with_suffix(".txt")
 
 
 def _work_detail(work: Work) -> WorkDetail:
@@ -722,6 +730,8 @@ def merge_works(target_id: int, source_id: int, db: Session = Depends(get_db)):
 @router.post("/{work_id}/pdfs", response_model=WorkPDFOut, status_code=201)
 def upload_pdf(work_id: int, file: UploadFile, db: Session = Depends(get_db)):
     """Upload a PDF and attach it to a work."""
+    from litexplorer.services.pdf import ExtractionError, extract_pdf_text
+
     _get_work(db, work_id)
     safe_name = _secure_filename(file.filename or "unnamed.pdf")
 
@@ -746,6 +756,22 @@ def upload_pdf(work_id: int, file: UploadFile, db: Session = Depends(get_db)):
     db.add(pdf)
     db.commit()
     db.refresh(pdf)
+
+    # Auto-extract text; failure is non-fatal
+    txt_path = _txt_path_for(pdf_root, work_id, safe_name)
+    try:
+        text = extract_pdf_text(dest)
+        txt_path.write_text(text, encoding="utf-8")
+        pdf.extraction_status = "ready"
+    except ExtractionError as exc:
+        logger.warning("PDF text extraction failed for %s: %s", dest, exc)
+        pdf.extraction_status = "failed"
+    except Exception as exc:
+        logger.warning("Unexpected error extracting text from %s: %s", dest, exc)
+        pdf.extraction_status = "failed"
+    db.commit()
+    db.refresh(pdf)
+
     return pdf
 
 
@@ -806,10 +832,13 @@ def delete_pdf(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="PDF not found")
 
     pdf_root = _get_pdf_root(db)
+    orphaned_dir = pdf_root / "_orphaned" / str(work_id)
     file_path = pdf_root / str(work_id) / pdf.filename
     if file_path.is_file():
-        orphaned_dir = pdf_root / "_orphaned" / str(work_id)
         _move_to_orphaned(file_path, orphaned_dir)
+    txt_path = _txt_path_for(pdf_root, work_id, pdf.filename)
+    if txt_path.is_file():
+        _move_to_orphaned(txt_path, orphaned_dir)
 
     was_primary = pdf.is_primary
     db.delete(pdf)
@@ -824,6 +853,63 @@ def delete_pdf(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
             next_pdf.is_primary = True
 
     db.commit()
+
+
+@router.post("/{work_id}/pdfs/{pdf_id}/extract-text")
+def extract_pdf_text_endpoint(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
+    """Extract (or re-extract) text from a PDF. Returns char_count on success."""
+    from litexplorer.services.pdf import ExtractionError, extract_pdf_text
+
+    pdf = db.scalars(
+        select(WorkPDF).where(WorkPDF.id == pdf_id, WorkPDF.work_id == work_id)
+    ).one_or_none()
+    if not pdf:
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    pdf_root = _get_pdf_root(db)
+    file_path = pdf_root / str(work_id) / pdf.filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="PDF file not found on disk")
+
+    txt_path = _txt_path_for(pdf_root, work_id, pdf.filename)
+    try:
+        text = extract_pdf_text(file_path)
+        txt_path.write_text(text, encoding="utf-8")
+        pdf.extraction_status = "ready"
+        db.commit()
+        return {"status": "ready", "char_count": len(text)}
+    except ExtractionError as exc:
+        pdf.extraction_status = "failed"
+        db.commit()
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get("/{work_id}/pdfs/{pdf_id}/text")
+def get_pdf_text(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
+    """Serve the extracted text for a PDF as text/plain."""
+    from fastapi.responses import PlainTextResponse
+
+    pdf = db.scalars(
+        select(WorkPDF).where(WorkPDF.id == pdf_id, WorkPDF.work_id == work_id)
+    ).one_or_none()
+    if not pdf:
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    if pdf.extraction_status == "pending":
+        raise HTTPException(status_code=404, detail="No extracted text found — run extraction first")
+    if pdf.extraction_status == "failed":
+        raise HTTPException(status_code=422, detail="Extraction failed or PDF has no text layer")
+
+    # Status is "ready" — serve the .txt file
+    pdf_root = _get_pdf_root(db)
+    txt_path = _txt_path_for(pdf_root, work_id, pdf.filename)
+    if not txt_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Text file missing from disk — please re-extract",
+        )
+
+    return PlainTextResponse(txt_path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchWorkPDFs, uploadWorkPDF, setWorkPDFPrimary, deleteWorkPDF } from '../api';
+import { fetchWorkPDFs, uploadWorkPDF, setWorkPDFPrimary, deleteWorkPDF, extractWorkPDFText } from '../api';
 
 export function useWorkPDFs(workId: number | null) {
   return useQuery({
@@ -36,6 +36,17 @@ export function useDeleteWorkPDF() {
     mutationFn: ({ workId, pdfId }: { workId: number; pdfId: number }) =>
       deleteWorkPDF(workId, pdfId),
     onSuccess: (_data, { workId }) => {
+      qc.invalidateQueries({ queryKey: ['works', workId, 'pdfs'] });
+    },
+  });
+}
+
+export function useExtractWorkPDFText() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workId, pdfId }: { workId: number; pdfId: number }) =>
+      extractWorkPDFText(workId, pdfId),
+    onSettled: (_data, _err, { workId }) => {
       qc.invalidateQueries({ queryKey: ['works', workId, 'pdfs'] });
     },
   });

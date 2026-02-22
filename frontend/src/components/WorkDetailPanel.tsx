@@ -2,9 +2,9 @@ import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useResolveDOI } from '../hooks/useEnrichment';
-import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF } from '../hooks/useWorkPDFs';
+import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF, useExtractWorkPDFText } from '../hooks/useWorkPDFs';
 import { useWorkNotes, useCreateWorkNote, useUpdateWorkNote, useDeleteWorkNote } from '../hooks/useWorkNotes';
-import { serveWorkPDFUrl } from '../api';
+import { serveWorkPDFUrl, workPDFTextUrl } from '../api';
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 import ConfirmDialog from './ConfirmDialog';
@@ -300,6 +300,8 @@ export default function WorkDetailPanel({
   const uploadPDF = useUploadWorkPDF();
   const setPrimaryPDF = useSetWorkPDFPrimary();
   const removePDF = useDeleteWorkPDF();
+  const extractText = useExtractWorkPDFText();
+  const [extractErrors, setExtractErrors] = useState<Record<number, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pdfToRemove, setPdfToRemove] = useState<{ id: number; filename: string } | null>(null);
 
@@ -718,38 +720,112 @@ export default function WorkDetailPanel({
           onFoldChange={onFoldChange}
         >
           {pdfsQuery.data && pdfsQuery.data.length > 0 && (
-            <ul className="space-y-1.5 mb-2">
-              {pdfsQuery.data.map((pdf) => (
-                <li key={pdf.id} className="flex items-center gap-2 text-xs">
-                  <a
-                    href={serveWorkPDFUrl(workId, pdf.id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline truncate"
-                  >
-                    {pdf.filename}
-                  </a>
-                  {pdf.is_primary ? (
-                    <span className="text-[10px] px-1 py-0.5 bg-blue-100 text-blue-700 rounded font-medium shrink-0">
-                      Primary
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => setPrimaryPDF.mutate({ workId, pdfId: pdf.id })}
-                      className="text-[10px] text-gray-400 hover:text-blue-600 shrink-0"
-                    >
-                      Set primary
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setPdfToRemove({ id: pdf.id, filename: pdf.filename })}
-                    className="text-gray-400 hover:text-red-600 shrink-0 ml-auto"
-                    title="Remove PDF"
-                  >
-                    &times;
-                  </button>
-                </li>
-              ))}
+            <ul className="space-y-2 mb-2">
+              {pdfsQuery.data.map((pdf) => {
+                const isExtracting = extractText.isPending && extractText.variables?.pdfId === pdf.id;
+                const extractErr = extractErrors[pdf.id];
+                return (
+                  <li key={pdf.id} className="text-xs">
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={serveWorkPDFUrl(workId, pdf.id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline truncate"
+                      >
+                        {pdf.filename}
+                      </a>
+                      {/* Extraction status badge */}
+                      {pdf.extraction_status === 'ready' && (
+                        <span className="text-[10px] px-1 py-0.5 bg-green-100 text-green-700 rounded font-medium shrink-0">
+                          Text ready
+                        </span>
+                      )}
+                      {pdf.extraction_status === 'failed' && (
+                        <span className="text-[10px] px-1 py-0.5 bg-red-100 text-red-700 rounded font-medium shrink-0">
+                          Extraction failed
+                        </span>
+                      )}
+                      {pdf.extraction_status === 'pending' && (
+                        <span className="text-[10px] px-1 py-0.5 bg-gray-100 text-gray-500 rounded font-medium shrink-0">
+                          No text
+                        </span>
+                      )}
+                      {/* Primary badge / button */}
+                      {pdf.is_primary ? (
+                        <span className="text-[10px] px-1 py-0.5 bg-blue-100 text-blue-700 rounded font-medium shrink-0">
+                          Primary
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setPrimaryPDF.mutate({ workId, pdfId: pdf.id })}
+                          className="text-[10px] text-gray-400 hover:text-blue-600 shrink-0"
+                        >
+                          Set primary
+                        </button>
+                      )}
+                      {/* Extract / re-extract controls */}
+                      <span className="ml-auto flex items-center gap-1 shrink-0">
+                        {pdf.extraction_status === 'ready' && (
+                          <>
+                            <a
+                              href={workPDFTextUrl(workId, pdf.id)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[10px] text-blue-600 hover:underline"
+                            >
+                              View text
+                            </a>
+                            <button
+                              onClick={() => {
+                                setExtractErrors((prev) => { const next = { ...prev }; delete next[pdf.id]; return next; });
+                                extractText.mutate({ workId, pdfId: pdf.id }, {
+                                  onError: (err) => setExtractErrors((prev) => ({ ...prev, [pdf.id]: err instanceof Error ? err.message : 'Unknown error' })),
+                                });
+                              }}
+                              disabled={isExtracting}
+                              title="Re-extract text"
+                              className="text-gray-400 hover:text-blue-600 disabled:opacity-50"
+                            >
+                              {isExtracting ? (
+                                <span className="inline-block w-3 h-3 border border-gray-400 border-t-transparent rounded-full animate-spin" />
+                              ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                                </svg>
+                              )}
+                            </button>
+                          </>
+                        )}
+                        {(pdf.extraction_status === 'failed' || pdf.extraction_status === 'pending') && (
+                          <button
+                            onClick={() => {
+                              setExtractErrors((prev) => { const next = { ...prev }; delete next[pdf.id]; return next; });
+                              extractText.mutate({ workId, pdfId: pdf.id }, {
+                                onError: (err) => setExtractErrors((prev) => ({ ...prev, [pdf.id]: err instanceof Error ? err.message : 'Unknown error' })),
+                              });
+                            }}
+                            disabled={isExtracting}
+                            className="text-[10px] border border-gray-300 rounded px-1 py-0.5 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            {isExtracting ? 'Extracting…' : 'Extract text'}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setPdfToRemove({ id: pdf.id, filename: pdf.filename })}
+                          className="text-gray-400 hover:text-red-600"
+                          title="Remove PDF"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    </div>
+                    {extractErr && (
+                      <p className="text-red-600 mt-0.5 pl-0">Extraction failed: {extractErr}</p>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
           <input

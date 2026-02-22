@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.27",
     "bibtexparser>=1.4",
     "python-multipart>=0.0.7",
+    "pdfplumber>=0.10",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
+]
+fixtures = [
+    "fpdf2>=2.7",
+    "matplotlib>=3.8",
 ]
 
 [tool.setuptools.packages.find]

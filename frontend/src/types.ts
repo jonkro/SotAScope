@@ -76,6 +76,7 @@ export interface WorkPDFOut {
   filename: string;
   is_primary: boolean;
   created_at: string;
+  extraction_status: 'ready' | 'failed' | 'pending';
 }
 
 // ---- Venues ----
