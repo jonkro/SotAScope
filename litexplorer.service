@@ -1,0 +1,39 @@
+[Unit]
+Description=LitExplorer — research literature dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=litexplorer
+Group=litexplorer
+
+WorkingDirectory=/opt/litexplorer/LitExplorer
+
+# Environment file for secrets and proxy settings.
+# Variables understood by this file:
+#   HTTP_PROXY, HTTPS_PROXY, NO_PROXY          — corporate proxy (if any)
+#   LITEXPLORER_DATA_DIR                       — persistent data root (DB, PDFs)
+#   LITEXPLORER_OPENALEX_API_KEY               — polite-pool e-mail for OpenAlex
+#   LITEXPLORER_CROSSREF_MAILTO                — polite-pool e-mail for Crossref
+EnvironmentFile=/etc/litexplorer/env
+
+ExecStart=/opt/litexplorer/venv/bin/uvicorn litexplorer.app:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 1
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+
+# Give the process time to flush WAL on clean shutdown
+TimeoutStopSec=30
+
+# Logging goes to journald by default; view with: journalctl -u litexplorer -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litexplorer
+
+[Install]
+WantedBy=multi-user.target
