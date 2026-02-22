@@ -277,14 +277,13 @@ frontend/src/
 
 tests/
 ├── conftest.py                # db_session + client fixtures (StaticPool, in-memory SQLite)
-├── test_library_api.py        # Work CRUD, BibTeX import, citations, merge, field deletion
+├── test_library_api.py        # Work CRUD, BibTeX import, citations, merge, field deletion, venue CRUD
 ├── test_enrichment_api.py     # Enrichment endpoints with mocked clients
 ├── test_enrichment_service.py # EnrichmentService unit tests
 ├── test_enrichment_crossref.py# Crossref enrichment tests
 ├── test_crossref_client.py    # Crossref client unit tests
 ├── test_project_api.py        # Project/topic list CRUD
 ├── test_timeline_api.py       # Timeline endpoint + citations_by_year tests
-├── test_venue_api.py          # Venue CRUD, aliases, tiers
 ├── test_openalex_client.py    # OpenAlex client (parse_work, client methods)
 ├── test_pdf_api.py            # PDF upload, serve, set primary, delete
 ├── test_notes_api.py          # Note CRUD operations
