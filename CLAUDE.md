@@ -137,13 +137,14 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - Venue management UI: alias editing, reordering, tier assignment, field association
 - Venues page with Venues tab (sortable table) and Fields tab (CRUD with deletion)
 - PDF management: upload, serve inline, set primary, delete (moved to orphaned folder)
+- **PDF text extraction**: auto-extracted on upload via `litexplorer/services/pdf.py` (pdfplumber); two-column layout detection via x0 histogram heuristics; status tracked in `WorkPDF.extraction_status` (`pending`/`ready`/`failed`); companion `.txt` stored at `{pdf_root}/{work_id}/{stem}.txt`; re-extract endpoint; "View text" / "Extract text" / "Re-extract" UI in WorkDetailPanel
 - Work notes: per-work and project-scoped notes with labels, provenance tracking
 - Project notes tab: aggregated view of all notes for a project, sortable by paper or label
 - Filesystem browser for configuring PDF storage path
 - Per-client timeline state persistence via localStorage
+- Deployment: `README.md`, `litexplorer.service` (optional systemd unit), `env.example`; pre-built frontend committed to `frontend/dist/` (no Node.js required to run)
 
 ### Not yet implemented from Phase 1 spec
-- systemd unit file for deployment
 - Semantic Scholar integration
 
 ## Phase 2 scope (not started)
@@ -189,12 +190,13 @@ litexplorer/
 │   ├── base.py           # SQLAlchemy DeclarativeBase
 │   ├── library.py        # Work (with citations_by_year JSON), WorkLocation, Author, WorkAuthor,
 │   │                     #   Venue, VenueAlias, Field (passive_deletes=True), VenueField,
-│   │                     #   Citation, WorkPDF, WorkNote
+│   │                     #   Citation, WorkPDF (extraction_status: pending/ready/failed), WorkNote
 │   ├── project.py        # Project, TopicList, TopicListWork, ProjectIgnoredWork
 │   ├── cache.py          # ApiCache (permanent / timestamped)
 │   └── settings.py       # Setting (key-value store)
 ├── schemas/              # Pydantic v2 request/response models
-│   ├── works.py          # WorkOut, WorkDetail, WorkCreate, BibtexImportResult, WorkPDFOut, etc.
+│   ├── works.py          # WorkOut, WorkDetail, WorkCreate, BibtexImportResult,
+│   │                     #   WorkPDFOut (with extraction_status: Literal[ready/failed/pending]), etc.
 │   ├── venues.py         # VenueOut, VenueDetail, VenueAliasOut, etc.
 │   ├── projects.py       # ProjectOut, ProjectDetail, TopicListOut, etc.
 │   ├── enrichment.py     # EnrichDOIResult, CitationResult, DOIResolutionResult, etc.
@@ -206,7 +208,7 @@ litexplorer/
 ├── api/
 │   ├── deps.py           # get_db dependency
 │   ├── works.py          # /api/works — CRUD, BibTeX import, citations, merge, duplicates,
-│   │                     #   PDF upload/serve/delete, notes CRUD
+│   │                     #   PDF upload/serve/delete/extract-text/text, notes CRUD
 │   ├── venues.py         # /api/venues — CRUD, aliases, field associations, sortable (sort_by, sort_dir)
 │   ├── fields.py         # /api/fields — CRUD + DELETE /{field_id} (cascade deletes VenueField)
 │   ├── projects.py       # /api/projects — CRUD, topic lists, ignored works
@@ -216,9 +218,11 @@ litexplorer/
 │   ├── settings.py       # /api/settings — key-value settings CRUD
 │   └── filesystem.py     # /api/filesystem — directory browser + mkdir
 ├── services/
-│   └── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
-│                         #   DOI resolution, cache management, deduplication,
-│                         #   _refresh_work_metadata() on forward citation fetch
+│   ├── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
+│   │                     #   DOI resolution, cache management, deduplication,
+│   │                     #   _refresh_work_metadata() on forward citation fetch
+│   └── pdf.py            # extract_pdf_text(), _detect_two_column(), _words_to_text()
+│                         #   ExtractionError; two-column detection via x0 histogram heuristics
 └── external/
     ├── base.py           # ExternalWork (with citations_by_year), ExternalVenue, ExternalAuthor, ExternalLocation
     ├── openalex.py       # OpenAlexClient — DOI lookup, batch fetch, forward citations
@@ -242,6 +246,8 @@ frontend/src/
 │   ├── useFields.ts      # includes useDeleteField()
 │   ├── useVenueTiers.ts
 │   ├── useWorkNotes.ts   # useWorkNotes(), useProjectNotes(), useCreateWorkNote(), etc.
+│   ├── useWorkPDFs.ts    # useWorkPDFs(), useUploadWorkPDF(), useSetWorkPDFPrimary(),
+│   │                     #   useDeleteWorkPDF(), useExtractWorkPDFText()
 │   └── useSettings.ts
 ├── pages/
 │   ├── ProjectsPage.tsx       # Project listing with create/delete
@@ -283,8 +289,13 @@ tests/
 ├── test_pdf_api.py            # PDF upload, serve, set primary, delete
 ├── test_notes_api.py          # Note CRUD operations
 ├── test_filesystem_api.py     # Directory browsing and mkdir
+├── test_extract.py            # PDF text extraction: two-column detection, ordering, ExtractionError
 └── fixtures/
-    └── openalex_responses.py  # Sample API response fixtures
+    ├── openalex_responses.py  # Sample API response fixtures
+    ├── generate_fixtures.py   # One-off script to regenerate synthetic PDF fixtures (fpdf2 + matplotlib)
+    └── pdfs/
+        ├── two_column.pdf     # Synthetic two-column fixture (committed)
+        └── single_column.pdf  # Synthetic single-column fixture (committed)
 ```
 
 ---
@@ -292,7 +303,7 @@ tests/
 ## Startup lifecycle (app.py lifespan)
 
 1. `init_db()` — create engine and tables
-2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking)
+2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs)
 3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
 4. `_seed_default_settings()` — create `api_contact_email` and `pdf_storage_path` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
@@ -335,14 +346,17 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Work notes system added**: Not in original spec — added to support per-paper annotations with provenance tracking (user vs AI-generated).
 - **Fields tab on Venues page**: Field creation moved from the Venues page header to a dedicated Fields tab, with field deletion support.
 - **Venue table sorting**: Venues table headers are clickable to sort ascending/descending by any column.
+- **PDF text extraction added**: auto-extraction on upload, re-extract endpoint, companion `.txt` file colocated with the PDF. Two-column layout handled by x0-histogram heuristics (gutter gap + right-column margin spike). Deleted PDFs move both the `.pdf` and `.txt` to `_orphaned/`.
+- **Pre-built frontend committed**: `frontend/dist/` is committed to the repo so users only need conda + pip to run the app. Node.js is only needed to rebuild after frontend source changes.
+- **Deployment docs added**: `README.md`, `litexplorer.service` (optional systemd), `env.example` (template for machine-specific env vars).
 
 ---
 
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (155 tests)
-cd frontend && npm run build        # TypeScript type check + production build
+python -m pytest tests/ -v          # all tests (163 tests)
+cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 
 All tests should pass. There are no known pre-existing failures.
