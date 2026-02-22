@@ -10,20 +10,19 @@ Group=litexplorer
 
 WorkingDirectory=/opt/litexplorer/LitExplorer
 
-# Environment file for secrets and proxy settings.
+# Environment file for machine-specific paths, secrets, and proxy settings.
 # Variables understood by this file:
+#   UVICORN_BIN                                — full path to uvicorn in the conda env
+#                                                (find with: conda run -n litexplorer which uvicorn)
 #   HTTP_PROXY, HTTPS_PROXY, NO_PROXY          — corporate proxy (if any)
 #   LITEXPLORER_DATA_DIR                       — persistent data root (DB, PDFs)
 #   LITEXPLORER_OPENALEX_API_KEY               — polite-pool e-mail for OpenAlex
 #   LITEXPLORER_CROSSREF_MAILTO                — polite-pool e-mail for Crossref
 EnvironmentFile=/etc/litexplorer/env
 
-# Full path to uvicorn inside the conda environment.
-# Adjust CONDA_ENV_PATH to match where conda is installed on your server,
-# e.g. /opt/miniconda3/envs/litexplorer or /opt/anaconda3/envs/litexplorer.
-# Do NOT use 'conda run' or 'conda activate' here — systemd needs a direct
-# executable path, not a shell wrapper.
-ExecStart=/opt/conda/envs/litexplorer/bin/uvicorn litexplorer.app:app \
+# UVICORN_BIN must be set in /etc/litexplorer/env.
+# Find the right value with: conda run -n litexplorer which uvicorn
+ExecStart=${UVICORN_BIN} litexplorer.app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --workers 1

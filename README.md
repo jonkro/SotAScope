@@ -82,23 +82,17 @@ cd frontend && npm install && npm run build && cd ..
 sudo chown -R litexplorer:litexplorer /opt/litexplorer
 ```
 
-The unit file's `ExecStart` uses the full path to the conda env's `uvicorn` binary
-(`/opt/conda/envs/litexplorer/bin/uvicorn` by default). If conda is installed
-elsewhere, edit that line in `litexplorer.service` before copying it:
-
-```
-# Common locations:
-#   /opt/miniconda3/envs/litexplorer/bin/uvicorn
-#   /opt/anaconda3/envs/litexplorer/bin/uvicorn
-#   /home/<user>/miniconda3/envs/litexplorer/bin/uvicorn
-```
-
-Find the right path with: `conda run -n litexplorer which uvicorn`
+The unit file reads `UVICORN_BIN` from `/etc/litexplorer/env` (set in the next step).
+This keeps machine-specific paths out of the committed unit file.
 
 #### 3. Create the environment file
 
 ```bash
 sudo tee /etc/litexplorer/env <<'EOF'
+# Path to uvicorn inside the conda env — set this to the output of:
+#   conda run -n litexplorer which uvicorn
+UVICORN_BIN=/path/to/conda/envs/litexplorer/bin/uvicorn
+
 # Data directory — put this on a persistent volume, not inside the repo.
 LITEXPLORER_DATA_DIR=/var/lib/litexplorer
 
