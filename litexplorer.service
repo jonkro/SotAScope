@@ -5,22 +5,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=litexplorer
-Group=litexplorer
 
-WorkingDirectory=/opt/litexplorer/LitExplorer
+# Run as the user who owns the application directory.
+# Replace with the actual username if different.
+User=%i
+Group=%i
 
-# Environment file for machine-specific paths, secrets, and proxy settings.
-# Variables understood by this file:
-#   UVICORN_BIN                                — full path to uvicorn in the conda env
-#                                                (find with: conda run -n litexplorer which uvicorn)
-#   HTTP_PROXY, HTTPS_PROXY, NO_PROXY          — corporate proxy (if any)
-#   LITEXPLORER_DATA_DIR                       — persistent data root (DB, PDFs)
-#   LITEXPLORER_OPENALEX_API_KEY               — polite-pool e-mail for OpenAlex
-#   LITEXPLORER_CROSSREF_MAILTO                — polite-pool e-mail for Crossref
-EnvironmentFile=/etc/litexplorer/env
+# Adjust this to wherever you cloned the repo.
+WorkingDirectory=/path/to/LitExplorer
 
-# UVICORN_BIN must be set in /etc/litexplorer/env.
+# env file lives inside the repo directory so the user owns it.
+# Copy env.example to env and fill in the values before starting.
+EnvironmentFile=/path/to/LitExplorer/env
+
+# UVICORN_BIN must be set in the env file.
 # Find the right value with: conda run -n litexplorer which uvicorn
 ExecStart=${UVICORN_BIN} litexplorer.app:app \
     --host 0.0.0.0 \
@@ -34,7 +32,7 @@ RestartSec=5s
 # Give the process time to flush WAL on clean shutdown
 TimeoutStopSec=30
 
-# Logging goes to journald by default; view with: journalctl -u litexplorer -f
+# Logging goes to journald; view with: journalctl -u litexplorer -f
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=litexplorer

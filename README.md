@@ -52,73 +52,51 @@ Open `http://localhost:8000` in your browser. The SQLite database and PDFs are c
 
 ### Server (shared team use)
 
-The backend is a single `uvicorn` process; no separate worker or message queue is needed for a small team. The included `litexplorer.service` systemd unit manages it.
-
 **Prerequisites on the server**: conda (Miniconda or Anaconda), Node.js 18+.
 
-#### 1. Create a dedicated user and directories
+#### 1. Clone and build
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin litexplorer
-sudo mkdir -p /opt/litexplorer /etc/litexplorer
-sudo chown litexplorer:litexplorer /opt/litexplorer
-```
-
-#### 2. Clone and build
-
-```bash
-# As yourself (or as root, then chown)
-git clone <repo-url> /opt/litexplorer/LitExplorer
-cd /opt/litexplorer/LitExplorer
+git clone <repo-url>
+cd LitExplorer
 
 # Create the conda environment (pins Python 3.11)
-conda env create -f environment.yml   # creates the 'litexplorer' env
+conda env create -f environment.yml
 conda activate litexplorer
 pip install -e .
 
 # Frontend
 cd frontend && npm install && npm run build && cd ..
-
-sudo chown -R litexplorer:litexplorer /opt/litexplorer
 ```
 
-The unit file reads `UVICORN_BIN` from `/etc/litexplorer/env` (set in the next step).
-This keeps machine-specific paths out of the committed unit file.
-
-#### 3. Create the environment file
+#### 2. Create the environment file
 
 ```bash
-sudo tee /etc/litexplorer/env <<'EOF'
-# Path to uvicorn inside the conda env — set this to the output of:
+cp env.example env
+# Edit env and fill in at minimum UVICORN_BIN:
 #   conda run -n litexplorer which uvicorn
-UVICORN_BIN=/path/to/conda/envs/litexplorer/bin/uvicorn
-
-# Data directory — put this on a persistent volume, not inside the repo.
-LITEXPLORER_DATA_DIR=/var/lib/litexplorer
-
-# Polite-pool e-mail for OpenAlex and Crossref (gets better rate limits).
-# Same value can go in both; or configure via the Settings page in the UI.
-LITEXPLORER_OPENALEX_API_KEY=your.email@example.com
-LITEXPLORER_CROSSREF_MAILTO=your.email@example.com
-
-# Corporate proxy — if pip/curl already work via a proxy on this machine,
-# copy those proxy settings here so the app can reach OpenAlex and Crossref.
-# HTTP_PROXY=http://proxy.example.com:3128
-# HTTPS_PROXY=http://proxy.example.com:3128
-# NO_PROXY=localhost,127.0.0.1
-EOF
-sudo chmod 640 /etc/litexplorer/env
-sudo chown root:litexplorer /etc/litexplorer/env
-
-# Create the data directory
-sudo mkdir -p /var/lib/litexplorer
-sudo chown litexplorer:litexplorer /var/lib/litexplorer
 ```
 
-#### 4. Install and start the systemd unit
+See `env.example` for all available options (data directory, contact email, proxy).
+
+#### 3. Start the server
+
+**Option A — tmux/screen** (simplest, no root required):
 
 ```bash
-sudo cp /opt/litexplorer/LitExplorer/litexplorer.service /etc/systemd/system/
+conda activate litexplorer
+uvicorn litexplorer.app:app --host 0.0.0.0 --port 8000
+```
+
+Run this inside a `tmux` or `screen` session so it keeps running after you disconnect.
+
+**Option B — systemd** (survives reboots, restarts on failure):
+
+Edit `litexplorer.service` and replace the two `/path/to/LitExplorer` placeholders
+with the absolute path to your clone. Then:
+
+```bash
+sudo cp litexplorer.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now litexplorer
 ```
@@ -135,12 +113,11 @@ The app listens on `0.0.0.0:8000`. Put a reverse proxy (nginx, Caddy) in front i
 #### Updating
 
 ```bash
-cd /opt/litexplorer/LitExplorer
 git pull
 conda run -n litexplorer pip install -e .
 cd frontend && npm install && npm run build && cd ..
-sudo chown -R litexplorer:litexplorer /opt/litexplorer
-sudo systemctl restart litexplorer
+# Option A: restart uvicorn in your tmux/screen session
+# Option B: sudo systemctl restart litexplorer
 ```
 
 Schema migrations run automatically at startup.
