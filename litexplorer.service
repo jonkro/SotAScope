@@ -18,7 +18,12 @@ WorkingDirectory=/opt/litexplorer/LitExplorer
 #   LITEXPLORER_CROSSREF_MAILTO                — polite-pool e-mail for Crossref
 EnvironmentFile=/etc/litexplorer/env
 
-ExecStart=/opt/litexplorer/venv/bin/uvicorn litexplorer.app:app \
+# Full path to uvicorn inside the conda environment.
+# Adjust CONDA_ENV_PATH to match where conda is installed on your server,
+# e.g. /opt/miniconda3/envs/litexplorer or /opt/anaconda3/envs/litexplorer.
+# Do NOT use 'conda run' or 'conda activate' here — systemd needs a direct
+# executable path, not a shell wrapper.
+ExecStart=/opt/conda/envs/litexplorer/bin/uvicorn litexplorer.app:app \
     --host 0.0.0.0 \
     --port 8000 \
     --workers 1

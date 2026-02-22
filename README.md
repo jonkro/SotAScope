@@ -54,7 +54,7 @@ Open `http://localhost:8000` in your browser. The SQLite database and PDFs are c
 
 The backend is a single `uvicorn` process; no separate worker or message queue is needed for a small team. The included `litexplorer.service` systemd unit manages it.
 
-**Prerequisites on the server**: Python 3.11+, Node.js 18+, conda or a system Python venv.
+**Prerequisites on the server**: conda (Miniconda or Anaconda), Node.js 18+.
 
 #### 1. Create a dedicated user and directories
 
@@ -71,15 +71,29 @@ sudo chown litexplorer:litexplorer /opt/litexplorer
 git clone <repo-url> /opt/litexplorer/LitExplorer
 cd /opt/litexplorer/LitExplorer
 
-# Python venv (or use conda and adjust ExecStart in the unit file)
-python3.11 -m venv /opt/litexplorer/venv
-/opt/litexplorer/venv/bin/pip install -e .
+# Create the conda environment (pins Python 3.11)
+conda env create -f environment.yml   # creates the 'litexplorer' env
+conda activate litexplorer
+pip install -e .
 
 # Frontend
 cd frontend && npm install && npm run build && cd ..
 
 sudo chown -R litexplorer:litexplorer /opt/litexplorer
 ```
+
+The unit file's `ExecStart` uses the full path to the conda env's `uvicorn` binary
+(`/opt/conda/envs/litexplorer/bin/uvicorn` by default). If conda is installed
+elsewhere, edit that line in `litexplorer.service` before copying it:
+
+```
+# Common locations:
+#   /opt/miniconda3/envs/litexplorer/bin/uvicorn
+#   /opt/anaconda3/envs/litexplorer/bin/uvicorn
+#   /home/<user>/miniconda3/envs/litexplorer/bin/uvicorn
+```
+
+Find the right path with: `conda run -n litexplorer which uvicorn`
 
 #### 3. Create the environment file
 
@@ -129,7 +143,7 @@ The app listens on `0.0.0.0:8000`. Put a reverse proxy (nginx, Caddy) in front i
 ```bash
 cd /opt/litexplorer/LitExplorer
 git pull
-/opt/litexplorer/venv/bin/pip install -e .
+conda run -n litexplorer pip install -e .
 cd frontend && npm install && npm run build && cd ..
 sudo chown -R litexplorer:litexplorer /opt/litexplorer
 sudo systemctl restart litexplorer
