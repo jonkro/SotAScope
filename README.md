@@ -22,80 +22,56 @@ External API calls (OpenAlex, Crossref) are cached locally. All data — SQLite 
 
 ## Installation
 
-### Laptop / desktop (local use)
+The pre-built frontend (`frontend/dist/`) is committed to the repo, so **Node.js is not required** to run the application. Just install the Python package and start the server.
 
-**Prerequisites**: Python 3.11+, Node.js 18+, conda (recommended for Python version pinning).
+### Prerequisites
+
+- conda (Miniconda or Anaconda) — for the Python environment
+
+### Steps
 
 ```bash
 # 1. Clone
 git clone <repo-url>
 cd LitExplorer
 
-# 2. Python environment
-conda env create -f environment.yml   # creates the 'litexplorer' env
+# 2. Python environment (pins Python 3.11)
+conda env create -f environment.yml
 conda activate litexplorer
 pip install -e .
 
-# 3. Frontend
-cd frontend
-npm install
-npm run build          # outputs to frontend/dist — served by FastAPI
-cd ..
-
-# 4. Run
-uvicorn litexplorer.app:app --host 127.0.0.1 --port 8000
+# 3. Run
+uvicorn litexplorer.app:app --host 0.0.0.0 --port 8000
 ```
 
 Open `http://localhost:8000` in your browser. The SQLite database and PDFs are created under `~/.litexplorer/` by default. Set `LITEXPLORER_DATA_DIR` to use a different location.
+
+No root or sudo rights are required.
 
 ---
 
 ### Server (shared team use)
 
-**Prerequisites on the server**: conda (Miniconda or Anaconda), Node.js 18+.
-
-#### 1. Clone and build
+Same install steps as above. For the server to keep running after you disconnect, run uvicorn inside a `tmux` or `screen` session:
 
 ```bash
-git clone <repo-url>
-cd LitExplorer
-
-# Create the conda environment (pins Python 3.11)
-conda env create -f environment.yml
+tmux new -s litexplorer
 conda activate litexplorer
-pip install -e .
-
-# Frontend
-cd frontend && npm install && npm run build && cd ..
+uvicorn litexplorer.app:app --host 0.0.0.0 --port 8000
+# Detach with Ctrl-b d
 ```
 
-#### 2. Create the environment file
+The app listens on `0.0.0.0:8000`. Put a reverse proxy (nginx, Caddy) in front if you want HTTPS or a custom port.
+
+#### Optional: run as a systemd service
+
+If you want the process to start automatically on boot and restart on failure, a systemd unit file is included. Edit `litexplorer.service` and replace the two `/path/to/LitExplorer` placeholders with the absolute path to your clone, then:
 
 ```bash
 cp env.example env
-# Edit env and fill in at minimum UVICORN_BIN:
-#   conda run -n litexplorer which uvicorn
-```
+# Edit env — set UVICORN_BIN to the output of: conda run -n litexplorer which uvicorn
+# Set any other options you need (data directory, proxy, contact email)
 
-See `env.example` for all available options (data directory, contact email, proxy).
-
-#### 3. Start the server
-
-**Option A — tmux/screen** (simplest, no root required):
-
-```bash
-conda activate litexplorer
-uvicorn litexplorer.app:app --host 0.0.0.0 --port 8000
-```
-
-Run this inside a `tmux` or `screen` session so it keeps running after you disconnect.
-
-**Option B — systemd** (survives reboots, restarts on failure):
-
-Edit `litexplorer.service` and replace the two `/path/to/LitExplorer` placeholders
-with the absolute path to your clone. Then:
-
-```bash
 sudo cp litexplorer.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now litexplorer
@@ -108,16 +84,14 @@ sudo systemctl status litexplorer
 journalctl -u litexplorer -f
 ```
 
-The app listens on `0.0.0.0:8000`. Put a reverse proxy (nginx, Caddy) in front if you want HTTPS or a custom port.
-
 #### Updating
 
 ```bash
 git pull
 conda run -n litexplorer pip install -e .
-cd frontend && npm install && npm run build && cd ..
-# Option A: restart uvicorn in your tmux/screen session
-# Option B: sudo systemctl restart litexplorer
+# Restart however you started it:
+#   tmux: kill and relaunch uvicorn
+#   systemd: sudo systemctl restart litexplorer
 ```
 
 Schema migrations run automatically at startup.
@@ -130,10 +104,10 @@ Most configuration is done through the **Settings page** in the UI (`/settings`)
 
 | Setting | Description |
 |---|---|
-| `api_contact_email` | E-mail sent to OpenAlex and Crossref for polite-pool access (better rate limits). Equivalent to the env vars above; the UI value takes precedence. |
-| `pdf_storage_path` | Where PDFs are stored. Defaults to `{data_dir}/pdfs/`. On a server, set this to a directory outside the repo on a persistent volume. |
+| `api_contact_email` | E-mail sent to OpenAlex and Crossref for polite-pool access (better rate limits). Equivalent to the env vars below; the UI value takes precedence. |
+| `pdf_storage_path` | Where PDFs are stored. Defaults to `{data_dir}/pdfs/`. On a server, point this to a persistent directory outside the repo. |
 
-Environment variables (all prefixed `LITEXPLORER_`) override defaults but are themselves overridden by the database settings above where both apply.
+Environment variables (all prefixed `LITEXPLORER_`) can be set in a shell or in the `env` file (see `env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -143,13 +117,26 @@ Environment variables (all prefixed `LITEXPLORER_`) override defaults but are th
 
 ---
 
+## Rebuilding the frontend
+
+The pre-built frontend is sufficient for running the application. Only rebuild if you modify the frontend source code. Requires Node.js 18+.
+
+```bash
+cd frontend
+npm install
+npm run build   # outputs to frontend/dist/
+cd ..
+```
+
+---
+
 ## Running tests
 
 ```bash
 # Backend (163 tests)
 python -m pytest tests/ -v
 
-# Frontend — TypeScript type check + production build
+# Frontend — TypeScript type check + production build (requires Node.js)
 cd frontend && npm run build
 ```
 
@@ -174,11 +161,10 @@ litexplorer/          Python package (FastAPI app, models, API routes, services)
   api/                FastAPI routers
   services/           Business logic (enrichment, PDF extraction)
   external/           OpenAlex and Crossref API clients
-frontend/             React + TypeScript source (Vite)
-  src/
-    pages/            Route-level components
-    components/       Reusable UI components
-    hooks/            TanStack React Query hooks
+frontend/
+  src/                React + TypeScript source
+  dist/               Pre-built frontend — served by FastAPI (committed to repo)
 tests/                pytest suite
-litexplorer.service   systemd unit file for server deployment
+env.example           Template for the env file (copy to env and fill in values)
+litexplorer.service   Optional systemd unit file for server deployment
 ```
