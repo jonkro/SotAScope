@@ -6,6 +6,21 @@ import DOIResolutionDialog from './DOIResolutionDialog';
 
 type Tab = 'doi' | 'bibtex';
 
+function formatError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (
+    msg.includes('SSL_CERTIFICATE_ERROR') ||
+    msg.includes('CERTIFICATE_VERIFY_FAILED') ||
+    msg.toLowerCase().includes('ssl certificate')
+  ) {
+    return (
+      'SSL certificate error — this may be caused by a corporate proxy. ' +
+      'You can disable SSL verification in Settings, or install your corporate CA certificate.'
+    );
+  }
+  return `Error: ${msg}`;
+}
+
 export default function ImportDialog({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('doi');
   const [doiInput, setDoiInput] = useState('');
@@ -39,7 +54,7 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
       setResult(msg);
       qc.invalidateQueries({ queryKey: ['works'] });
     },
-    onError: (err) => setResult(`Error: ${err instanceof Error ? err.message : String(err)}`),
+    onError: (err) => setResult(formatError(err)),
   });
 
   const bibtexMutation = useMutation({
@@ -70,7 +85,7 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
             setDoiResolutionResults(results);
           }
         } catch (err) {
-          msg += `\nDOI resolution error: ${err instanceof Error ? err.message : String(err)}`;
+          msg += `\nDOI resolution error: ${formatError(err)}`;
           setResult(msg);
         } finally {
           setIsResolving(false);
@@ -79,7 +94,7 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
         setResult(msg);
       }
     },
-    onError: (err) => setResult(`Error: ${err instanceof Error ? err.message : String(err)}`),
+    onError: (err) => setResult(formatError(err)),
   });
 
   const isPending = doiMutation.isPending || bibtexMutation.isPending || isResolving;

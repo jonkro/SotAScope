@@ -41,25 +41,43 @@ def _get_contact_email(db: Session) -> str | None:
     return settings.openalex_api_key or settings.crossref_mailto or None
 
 
+def _get_ssl_verify(db: Session) -> bool:
+    """Read ssl_verify setting from DB. Defaults to True (SSL verification enabled)."""
+    from litexplorer.api.settings import get_setting_value
+
+    val = get_setting_value(db, "ssl_verify")
+    if val is None:
+        return True
+    return val.lower() != "false"
+
+
 def _get_crossref_client(db: Session) -> CrossrefClient:
     """Create a Crossref client with polite-pool email if available."""
     email = _get_contact_email(db)
+    ssl_verify = _get_ssl_verify(db)
     if not email:
         logger.warning("No API contact email configured — Crossref requests will not use polite pool")
+    if not ssl_verify:
+        logger.warning("SSL certificate verification is disabled for Crossref requests")
     return CrossrefClient(
         base_url=settings.crossref_base_url,
         mailto=email,
+        verify=ssl_verify,
     )
 
 
 def _get_client(db: Session) -> OpenAlexClient:
     """Create an OpenAlex client with polite-pool email if available."""
     email = _get_contact_email(db)
+    ssl_verify = _get_ssl_verify(db)
     if not email:
         logger.warning("No API contact email configured — OpenAlex requests will not use polite pool")
+    if not ssl_verify:
+        logger.warning("SSL certificate verification is disabled for OpenAlex requests")
     return OpenAlexClient(
         base_url=settings.openalex_base_url,
         api_key=email,
+        verify=ssl_verify,
     )
 
 

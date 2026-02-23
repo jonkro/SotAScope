@@ -102,6 +102,7 @@ class CrossrefClient:
         self,
         base_url: str = "https://api.crossref.org",
         mailto: str | None = None,
+        verify: bool = True,
     ):
         ua = "LitExplorer/0.1"
         if mailto:
@@ -110,6 +111,7 @@ class CrossrefClient:
             base_url=base_url,
             headers={"User-Agent": ua},
             timeout=30.0,
+            verify=verify,
         )
 
     def close(self) -> None:

@@ -144,6 +144,13 @@ def _seed_default_settings() -> None:
             "",
             "Absolute path for PDF storage. Defaults to {data_dir}/pdfs/ if empty.",
         ),
+        (
+            "ssl_verify",
+            "true",
+            "Verify SSL certificates when calling external APIs (OpenAlex, Crossref). "
+            "Set to 'false' only if you are behind a corporate proxy that intercepts HTTPS traffic. "
+            "The preferred fix is to install your corporate CA certificate into the system trust store.",
+        ),
     ]
 
     db = SessionLocal()
@@ -358,6 +365,39 @@ def _apply_counts_by_year(work, raw: dict) -> bool:
 
 
 app = FastAPI(title="LitExplorer", version="0.1.0", lifespan=lifespan)
+
+
+import ssl as _ssl  # noqa: E402
+
+import httpx as _httpx  # noqa: E402
+from fastapi import Request as _Request  # noqa: E402
+from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
+
+
+@app.exception_handler(_httpx.ConnectError)
+async def _httpx_connect_error_handler(request: _Request, exc: _httpx.ConnectError):
+    """Return a 503 with a clear message for SSL or connection failures."""
+    cause = exc.__cause__ or exc.__context__
+    msg = str(exc)
+    is_ssl = isinstance(cause, (_ssl.SSLError,)) or any(
+        kw in msg.upper() for kw in ("SSL", "CERTIFICATE_VERIFY_FAILED", "CERTIFICATE")
+    )
+    if is_ssl:
+        return _JSONResponse(
+            status_code=503,
+            content={
+                "detail": (
+                    "SSL_CERTIFICATE_ERROR: SSL certificate verification failed when calling "
+                    "an external API. This is often caused by a corporate proxy that intercepts "
+                    f"HTTPS traffic. Details: {msg}"
+                )
+            },
+        )
+    return _JSONResponse(
+        status_code=503,
+        content={"detail": f"Connection error when calling external API: {msg}"},
+    )
+
 
 # Import and include routers after app creation to avoid circular imports.
 from litexplorer.api.works import authors_router, router as works_router  # noqa: E402

@@ -158,12 +158,19 @@ def parse_work(raw: dict) -> ExternalWork:
 class OpenAlexClient(ExternalLiteratureClient):
     """Synchronous OpenAlex API client using httpx."""
 
-    def __init__(self, base_url: str = "https://api.openalex.org", api_key: str | None = None):
+    def __init__(
+        self,
+        base_url: str = "https://api.openalex.org",
+        api_key: str | None = None,
+        verify: bool = True,
+    ):
         headers = {"User-Agent": f"LitExplorer/0.1 (mailto:{api_key or 'litexplorer@local'})"}
         params = {}
         if api_key:
             params["mailto"] = api_key
-        self._http = httpx.Client(base_url=base_url, headers=headers, params=params, timeout=30.0)
+        self._http = httpx.Client(
+            base_url=base_url, headers=headers, params=params, timeout=30.0, verify=verify
+        )
 
     def close(self):
         self._http.close()

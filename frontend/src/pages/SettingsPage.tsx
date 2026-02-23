@@ -99,6 +99,25 @@ export default function SettingsPage() {
                   Browse
                 </button>
               </div>
+            ) : s.key === 'ssl_verify' ? (
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    checked={(drafts[s.key] ?? 'true') === 'false'}
+                    onChange={(e) =>
+                      setDrafts((d) => ({ ...d, ssl_verify: e.target.checked ? 'false' : 'true' }))
+                    }
+                  />
+                  <span className="text-sm text-gray-700">Disable SSL certificate verification</span>
+                </label>
+                <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                  Only enable this if you are behind a corporate proxy that intercepts HTTPS traffic.
+                  This exposes API calls to potential interception. The preferred fix is to install
+                  your corporate CA certificate into the system trust store.
+                </p>
+              </div>
             ) : (
               <input
                 type="text"
