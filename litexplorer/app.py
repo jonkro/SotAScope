@@ -95,6 +95,11 @@ def _migrate_schema() -> None:
             ))
             db.commit()
 
+        # Add semantic_scholar_id column to works (no unique constraint)
+        if "semantic_scholar_id" not in columns:
+            db.execute(text("ALTER TABLE works ADD COLUMN semantic_scholar_id VARCHAR(128)"))
+            db.commit()
+
         # Enable AUTOINCREMENT tracking for existing works table
         has_seq = db.execute(
             text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'")

@@ -11,6 +11,7 @@ from litexplorer.api.deps import get_db
 from litexplorer.config import settings
 from litexplorer.external.crossref import CrossrefClient
 from litexplorer.external.openalex import OpenAlexClient
+from litexplorer.external.semantic_scholar import SemanticScholarClient
 from litexplorer.schemas.enrichment import (
     BatchResolveDOIRequest,
     CitationResult,
@@ -21,6 +22,7 @@ from litexplorer.schemas.enrichment import (
     EnrichDOIBatchResult,
     EnrichDOIRequest,
     EnrichDOIResult,
+    SemanticScholarEnrichResult,
 )
 from litexplorer.schemas.works import WorkOut
 from litexplorer.services.enrichment import EnrichmentService
@@ -49,6 +51,14 @@ def _get_ssl_verify(db: Session) -> bool:
     if val is None:
         return True
     return val.lower() != "false"
+
+
+def _get_ss_client(db: Session) -> SemanticScholarClient:
+    """Create a Semantic Scholar client, respecting the ssl_verify setting."""
+    ssl_verify = _get_ssl_verify(db)
+    if not ssl_verify:
+        logger.warning("SSL certificate verification is disabled for Semantic Scholar requests")
+    return SemanticScholarClient(verify=ssl_verify)
 
 
 def _get_crossref_client(db: Session) -> CrossrefClient:
@@ -263,3 +273,33 @@ def resolve_doi_batch(body: BatchResolveDOIRequest, db: Session = Depends(get_db
         cr_client.close()
         oa_client.close()
     return results
+
+
+@router.post("/works/{work_id}/semantic-scholar", response_model=SemanticScholarEnrichResult)
+def enrich_from_semantic_scholar(work_id: int, db: Session = Depends(get_db)):
+    """Fetch backward and forward citations from Semantic Scholar.
+
+    Looks up the work by DOI (preferred) or stored semantic_scholar_id.
+    Upserts returned papers into the library and merges citation edges,
+    skipping duplicates.  Returns counts of new vs. already-existing edges.
+    """
+    ss_client = _get_ss_client(db)
+    oa_client = _get_client(db)
+    try:
+        svc = EnrichmentService(db=db, client=oa_client)
+        try:
+            summary = svc.enrich_from_semantic_scholar(work_id, ss_client)
+        except ValueError as e:
+            raise HTTPException(status_code=404 if "not found" in str(e).lower() else 400, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+    finally:
+        ss_client.close()
+        oa_client.close()
+
+    from litexplorer.models.library import Work as WorkModel
+    work = db.get(WorkModel, work_id)
+    return SemanticScholarEnrichResult(
+        work=WorkOut.model_validate(work),
+        **summary,
+    )

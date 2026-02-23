@@ -39,6 +39,7 @@ class ExternalWork:
     external_id: str | None = None  # e.g. OpenAlex work ID "W..."
     doi: str | None = None  # bare DOI, no https://doi.org/ prefix
     arxiv_id: str | None = None
+    semantic_scholar_id: str | None = None  # Semantic Scholar paper ID
     abstract: str | None = None
     publication_year: int | None = None
     citation_count: int | None = None

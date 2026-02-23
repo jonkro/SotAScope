@@ -62,3 +62,12 @@ class ConfirmDOIRequest(BaseModel):
 
 class BatchResolveDOIRequest(BaseModel):
     work_ids: list[int]
+
+
+class SemanticScholarEnrichResult(BaseModel):
+    work: WorkOut
+    new_references: int
+    existing_references: int
+    new_citing: int
+    existing_citing: int
+

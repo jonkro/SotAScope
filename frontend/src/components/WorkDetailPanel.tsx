@@ -1,7 +1,8 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
-import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useResolveDOI } from '../hooks/useEnrichment';
+import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useEnrichFromSemanticScholar, useResolveDOI } from '../hooks/useEnrichment';
+import { useUpdateWork } from '../hooks/useWorks';
 import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF, useExtractWorkPDFText } from '../hooks/useWorkPDFs';
 import { useWorkNotes, useCreateWorkNote, useUpdateWorkNote, useDeleteWorkNote } from '../hooks/useWorkNotes';
 import { serveWorkPDFUrl, workPDFTextUrl } from '../api';
@@ -295,6 +296,8 @@ export default function WorkDetailPanel({
   const fetchBwd = useFetchBackwardCitations();
   const fetchFwd = useFetchForwardCitations();
   const crossref = useEnrichFromCrossref();
+  const enrichSS = useEnrichFromSemanticScholar();
+  const updateWork = useUpdateWork();
   const resolveDOI = useResolveDOI();
   const pdfsQuery = useWorkPDFs(workId);
   const uploadPDF = useUploadWorkPDF();
@@ -320,6 +323,9 @@ export default function WorkDetailPanel({
 
   const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
+  const [ssEnrichMsg, setSsEnrichMsg] = useState<string | null>(null);
+  const [editSsId, setEditSsId] = useState(false);
+  const [ssIdDraft, setSsIdDraft] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleteMutation = useDeleteWork();
   const navigate = useNavigate();
@@ -423,6 +429,60 @@ export default function WorkDetailPanel({
               </a>
             </>
           )}
+          <>
+            <span className="text-gray-500">Semantic Scholar</span>
+            {editSsId ? (
+              <span className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={ssIdDraft}
+                  onChange={(e) => setSsIdDraft(e.target.value)}
+                  placeholder="Paste paper ID"
+                  className="flex-1 border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  autoFocus
+                />
+                <button
+                  onClick={() => {
+                    updateWork.mutate(
+                      { workId, data: { semantic_scholar_id: ssIdDraft.trim() || null } },
+                      { onSettled: () => setEditSsId(false) },
+                    );
+                  }}
+                  disabled={updateWork.isPending}
+                  className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setEditSsId(false)}
+                  className="text-xs text-gray-500 hover:underline"
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1">
+                {work.semantic_scholar_id ? (
+                  <a
+                    href={`https://www.semanticscholar.org/paper/${work.semantic_scholar_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline text-xs truncate"
+                  >
+                    {work.semantic_scholar_id}
+                  </a>
+                ) : (
+                  <span className="text-gray-400 text-xs">Not set</span>
+                )}
+                <button
+                  onClick={() => { setSsIdDraft(work.semantic_scholar_id ?? ''); setEditSsId(true); }}
+                  className="text-[10px] text-gray-400 hover:text-blue-600 underline ml-1"
+                >
+                  {work.semantic_scholar_id ? 'Edit' : 'Set'}
+                </button>
+              </span>
+            )}
+          </>
           {work.citation_count != null && (
             <>
               <span className="text-gray-500">Citations</span>
@@ -887,6 +947,31 @@ export default function WorkDetailPanel({
                 {crossref.isPending ? 'Enriching...' : 'Enrich from Crossref'}
               </button>
             )}
+            {(work.doi || work.semantic_scholar_id) && (
+              <button
+                onClick={() => {
+                  setSsEnrichMsg(null);
+                  enrichSS.mutate(workId, {
+                    onSuccess: (result) => {
+                      setSsEnrichMsg(
+                        `Added ${result.new_references} new references, ${result.new_citing} new citing papers` +
+                        (result.existing_references + result.existing_citing > 0
+                          ? ` (${result.existing_references + result.existing_citing} already existed)`
+                          : '')
+                      );
+                      onEnrichComplete?.();
+                    },
+                    onError: (err) => {
+                      setSsEnrichMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                    },
+                  });
+                }}
+                disabled={enrichSS.isPending || isAutoEnriching}
+                className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                {enrichSS.isPending ? 'Fetching...' : 'Fetch from Semantic Scholar'}
+              </button>
+            )}
             {!work.doi && (
               <button
                 onClick={() => {
@@ -926,6 +1011,11 @@ export default function WorkDetailPanel({
           {resolveMsg && (
             <p className={`text-xs mt-1 ${resolveMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
               {resolveMsg}
+            </p>
+          )}
+          {ssEnrichMsg && (
+            <p className={`text-xs mt-1 ${ssEnrichMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+              {ssEnrichMsg}
             </p>
           )}
           {timelineContext?.direction === 'seed' && timelineContext.forwardCitationsFetchedAt && (

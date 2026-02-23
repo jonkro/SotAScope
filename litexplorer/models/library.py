@@ -54,6 +54,9 @@ class Work(Base):
     # None = DOI provided directly; True = DOI resolved via Crossref fuzzy match
     doi_auto_resolved: Mapped[bool | None] = mapped_column(default=None)
 
+    # Semantic Scholar paper ID (no uniqueness constraint — some works may lack one)
+    semantic_scholar_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     # Soft user scope for future multi-user support.
     created_by: Mapped[str | None] = mapped_column(String(128))
 

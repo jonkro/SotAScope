@@ -5,6 +5,7 @@ export interface WorkOut {
   doi: string | null;
   arxiv_id: string | null;
   openalex_id: string | null;
+  semantic_scholar_id: string | null;
   title: string;
   abstract: string | null;
   publication_year: number | null;
@@ -20,6 +21,14 @@ export interface WorkOut {
   author_count: number;
   venue_display_name: string | null;
   venue_tier: number | null;
+}
+
+export interface SemanticScholarEnrichResult {
+  work: WorkOut;
+  new_references: number;
+  existing_references: number;
+  new_citing: number;
+  existing_citing: number;
 }
 
 export interface WorkLocationOut {

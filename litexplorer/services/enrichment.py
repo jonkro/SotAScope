@@ -463,7 +463,7 @@ class EnrichmentService:
         return self._create_work(ext)
 
     def _find_existing_work(self, ext: ExternalWork) -> Work | None:
-        """Deduplication cascade: DOI → openalex_id → arxiv_id."""
+        """Deduplication cascade: DOI → openalex_id → arxiv_id → semantic_scholar_id."""
         if ext.doi:
             work = self.db.execute(
                 select(Work).where(Work.doi == ext.doi)
@@ -482,6 +482,12 @@ class EnrichmentService:
             ).scalar_one_or_none()
             if work:
                 return work
+        if ext.semantic_scholar_id:
+            work = self.db.execute(
+                select(Work).where(Work.semantic_scholar_id == ext.semantic_scholar_id)
+            ).scalar_one_or_none()
+            if work:
+                return work
         return None
 
     def _create_work(self, ext: ExternalWork) -> Work:
@@ -492,6 +498,7 @@ class EnrichmentService:
             doi=ext.doi,
             arxiv_id=ext.arxiv_id,
             openalex_id=ext.external_id,
+            semantic_scholar_id=ext.semantic_scholar_id,
             title=ext.title,
             abstract=ext.abstract,
             publication_year=ext.publication_year,
@@ -533,6 +540,8 @@ class EnrichmentService:
             work.arxiv_id = ext.arxiv_id
         if work.openalex_id is None and ext.external_id:
             work.openalex_id = ext.external_id
+        if work.semantic_scholar_id is None and ext.semantic_scholar_id:
+            work.semantic_scholar_id = ext.semantic_scholar_id
         if work.abstract is None and ext.abstract:
             work.abstract = ext.abstract
         if work.publication_year is None and ext.publication_year:
@@ -672,8 +681,13 @@ class EnrichmentService:
         self.db.flush()
         return author
 
-    def _ensure_citation(self, citing_work_id: int, cited_work_id: int) -> None:
-        """Create a citation edge if it doesn't already exist."""
+    def _ensure_citation(
+        self, citing_work_id: int, cited_work_id: int, source: str = "openalex"
+    ) -> bool:
+        """Create a citation edge if it doesn't already exist.
+
+        Returns True if a new edge was created, False if it already existed.
+        """
         existing = self.db.execute(
             select(Citation).where(
                 Citation.citing_work_id == citing_work_id,
@@ -685,9 +699,104 @@ class EnrichmentService:
                 Citation(
                     citing_work_id=citing_work_id,
                     cited_work_id=cited_work_id,
-                    source="openalex",
+                    source=source,
                 )
             )
+            return True
+        return False
+
+    # -- Semantic Scholar enrichment ------------------------------------------
+
+    def enrich_from_semantic_scholar(self, work_id: int, ss_client) -> dict:
+        """Fetch backward and forward citations from Semantic Scholar.
+
+        Looks up the paper on Semantic Scholar (by DOI, then by stored
+        semantic_scholar_id), fetches all references and citing papers,
+        upserts each returned work into the library, and creates Citation
+        edges (skipping duplicates).
+
+        Returns a summary dict with new/existing counts for each direction.
+
+        Raises:
+            ValueError: work not found, or work has no DOI or S2 ID.
+            RuntimeError: paper not found on Semantic Scholar.
+        """
+        work = self.db.get(Work, work_id)
+        if not work:
+            raise ValueError(f"Work {work_id} not found")
+
+        if not work.doi and not work.semantic_scholar_id:
+            raise ValueError(
+                f"Work {work_id} has no DOI or Semantic Scholar ID — "
+                "cannot look up on Semantic Scholar"
+            )
+
+        # Look up the paper to get its Semantic Scholar ID
+        ss_paper: ExternalWork | None = None
+        if work.doi:
+            ss_paper = ss_client.get_paper_by_doi(work.doi)
+        if ss_paper is None and work.semantic_scholar_id:
+            ss_paper = ss_client.get_paper_by_id(work.semantic_scholar_id)
+
+        if ss_paper is None:
+            raise RuntimeError(
+                f"Paper not found on Semantic Scholar (doi={work.doi!r}, "
+                f"semantic_scholar_id={work.semantic_scholar_id!r})"
+            )
+
+        paper_id = ss_paper.semantic_scholar_id
+        if not paper_id:
+            raise RuntimeError("Semantic Scholar returned a paper without a paperId")
+
+        # Store the S2 ID on the work if we just discovered it
+        if work.semantic_scholar_id is None and paper_id:
+            work.semantic_scholar_id = paper_id
+            self.db.commit()
+
+        # Fetch backward citations (references)
+        refs = ss_client.get_references(paper_id)
+        new_refs = 0
+        existing_refs = 0
+        for ref_ext in refs:
+            ref_work = self._upsert_work(ref_ext)
+            created = self._ensure_citation(
+                citing_work_id=work.id,
+                cited_work_id=ref_work.id,
+                source="semantic_scholar",
+            )
+            if created:
+                new_refs += 1
+            else:
+                existing_refs += 1
+        self.db.commit()
+
+        # Fetch forward citations (papers citing this work)
+        citing_papers = ss_client.get_citations(paper_id)
+        new_citing = 0
+        existing_citing = 0
+        for cite_ext in citing_papers:
+            cite_work = self._upsert_work(cite_ext)
+            created = self._ensure_citation(
+                citing_work_id=cite_work.id,
+                cited_work_id=work.id,
+                source="semantic_scholar",
+            )
+            if created:
+                new_citing += 1
+            else:
+                existing_citing += 1
+        self.db.commit()
+
+        logger.info(
+            "S2 enrichment work=%d: +%d refs (%d exist), +%d citing (%d exist)",
+            work_id, new_refs, existing_refs, new_citing, existing_citing,
+        )
+        return {
+            "new_references": new_refs,
+            "existing_references": existing_refs,
+            "new_citing": new_citing,
+            "existing_citing": existing_citing,
+        }
 
     # -- Cache helpers --------------------------------------------------------
 

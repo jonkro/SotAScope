@@ -18,6 +18,7 @@ import type {
   EnrichDOIBatchResult,
   CitationResult,
   CrossrefEnrichResult,
+  SemanticScholarEnrichResult,
   DOIResolutionResult,
   AuthorOut,
   WorkLocationOut,
@@ -460,6 +461,12 @@ export function fetchForwardCitationsEnrich(workId: number, forceRefresh = false
 
 export function enrichFromCrossref(workId: number) {
   return apiFetch<CrossrefEnrichResult>(`/api/enrich/works/${workId}/crossref`, {
+    method: 'POST',
+  });
+}
+
+export function enrichFromSemanticScholar(workId: number) {
+  return apiFetch<SemanticScholarEnrichResult>(`/api/enrich/works/${workId}/semantic-scholar`, {
     method: 'POST',
   });
 }

@@ -99,6 +99,7 @@ class WorkUpdate(BaseModel):
     doi: str | None = None
     arxiv_id: str | None = None
     openalex_id: str | None = None
+    semantic_scholar_id: str | None = None
     abstract: str | None = None
     publication_year: int | None = None
     venue_id: int | None = None
@@ -114,6 +115,7 @@ class WorkOut(BaseModel):
     doi: str | None
     arxiv_id: str | None
     openalex_id: str | None
+    semantic_scholar_id: str | None
     title: str
     abstract: str | None
     publication_year: int | None
