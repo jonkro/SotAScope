@@ -100,6 +100,13 @@ def _migrate_schema() -> None:
             db.execute(text("ALTER TABLE works ADD COLUMN semantic_scholar_id VARCHAR(128)"))
             db.commit()
 
+        # Add source column to citations (was added with S2 integration; backfill with 'openalex')
+        citation_cols = {c["name"] for c in inspector.get_columns("citations")}
+        if "source" not in citation_cols:
+            db.execute(text("ALTER TABLE citations ADD COLUMN source VARCHAR(32)"))
+            db.execute(text("UPDATE citations SET source = 'openalex' WHERE source IS NULL"))
+            db.commit()
+
         # Enable AUTOINCREMENT tracking for existing works table
         has_seq = db.execute(
             text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'")
