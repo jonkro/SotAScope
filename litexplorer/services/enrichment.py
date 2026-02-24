@@ -28,7 +28,7 @@ from litexplorer.models.library import (
     WorkAuthor,
     WorkLocation,
 )
-from litexplorer.schemas.enrichment import DOICandidate, DOIResolutionResult
+from litexplorer.schemas.enrichment import DOICandidate, DOIResolutionResult, SearchImportCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -705,9 +705,119 @@ class EnrichmentService:
             return True
         return False
 
+    def import_by_semantic_scholar_id(self, ss_id: str, ss_client) -> Work | None:
+        """Import a work by Semantic Scholar ID. Returns the persisted Work or None if not found."""
+        ss_paper = ss_client.get_paper_by_id(ss_id)
+        if ss_paper is None:
+            return None
+        return self._upsert_work(ss_paper)
+
+    # -- Search-based import --------------------------------------------------
+
+    def search_import_candidates(
+        self,
+        title: str,
+        authors: str | None,
+        year: int | None,
+        crossref_client,
+        ss_client=None,
+        max_results: int = 5,
+    ) -> list[SearchImportCandidate]:
+        """Search Crossref (with Semantic Scholar fallback) and return candidates.
+
+        The Semantic Scholar fallback is used when Crossref returns zero results.
+        Candidates are returned with source label and a relevance score.
+        """
+        # Build combined query string
+        parts: list[str] = [title]
+        if authors:
+            parts.append(authors)
+        if year:
+            parts.append(str(year))
+        query = " ".join(parts)
+
+        # ---- Crossref search ------------------------------------------------
+        crossref_items = crossref_client.search_works(query, rows=max_results)
+        crossref_candidates = self._parse_crossref_search_candidates(crossref_items)
+
+        if crossref_candidates:
+            return crossref_candidates[:max_results]
+
+        # ---- Semantic Scholar fallback --------------------------------------
+        if ss_client is None:
+            return []
+
+        ss_items = ss_client.search_by_title(query, limit=max_results)
+        return self._parse_ss_search_candidates(ss_items)[:max_results]
+
+    @staticmethod
+    def _parse_crossref_search_candidates(
+        items: list[dict],
+    ) -> list[SearchImportCandidate]:
+        candidates: list[SearchImportCandidate] = []
+        for item in items:
+            doi = (item.get("DOI") or "").lower() or None
+            titles = item.get("title") or []
+            title = titles[0] if titles else "(untitled)"
+            authors: list[str] = []
+            for a in item.get("author") or []:
+                name = f"{a.get('given', '')} {a.get('family', '')}".strip()
+                if name:
+                    authors.append(name)
+            pub_year = None
+            issued = item.get("issued") or {}
+            date_parts = issued.get("date-parts") or []
+            if date_parts and date_parts[0] and date_parts[0][0]:
+                pub_year = date_parts[0][0]
+            container = item.get("container-title") or []
+            venue = container[0] if container else None
+            score = float(item.get("score") or 0)
+            candidates.append(SearchImportCandidate(
+                title=title,
+                authors=authors,
+                year=pub_year,
+                venue=venue,
+                doi=doi,
+                semantic_scholar_id=None,
+                source="crossref",
+                score=score,
+            ))
+        return candidates
+
+    @staticmethod
+    def _parse_ss_search_candidates(
+        items: list[dict],
+    ) -> list[SearchImportCandidate]:
+        candidates: list[SearchImportCandidate] = []
+        for i, item in enumerate(items):
+            paper_id = item.get("paperId") or None
+            ext_ids = item.get("externalIds") or {}
+            doi_raw = ext_ids.get("DOI") or ""
+            doi = doi_raw.lower() or None
+            title = item.get("title") or "(untitled)"
+            authors: list[str] = [
+                a.get("name", "") for a in (item.get("authors") or []) if a.get("name")
+            ]
+            year = item.get("year")
+            # S2 search doesn't return a score — assign descending synthetic scores
+            score = float(50 - i)
+            candidates.append(SearchImportCandidate(
+                title=title,
+                authors=authors,
+                year=year,
+                venue=None,  # S2 search results don't include venue
+                doi=doi,
+                semantic_scholar_id=paper_id,
+                source="semantic_scholar",
+                score=score,
+            ))
+        return candidates
+
     # -- Semantic Scholar enrichment ------------------------------------------
 
-    def enrich_from_semantic_scholar(self, work_id: int, ss_client) -> dict:
+    def enrich_from_semantic_scholar(
+        self, work_id: int, ss_client, direction: str = "both"
+    ) -> dict:
         """Fetch backward and forward citations from Semantic Scholar.
 
         Looks up the paper on Semantic Scholar (by DOI, then by stored
@@ -754,48 +864,58 @@ class EnrichmentService:
             self.db.commit()
 
         # Fetch backward citations (references)
-        refs = ss_client.get_references(paper_id)
         new_refs = 0
         existing_refs = 0
-        for ref_ext in refs:
-            ref_work = self._upsert_work(ref_ext)
-            created = self._ensure_citation(
-                citing_work_id=work.id,
-                cited_work_id=ref_work.id,
-                source="semantic_scholar",
-            )
-            if created:
-                new_refs += 1
-            else:
-                existing_refs += 1
-        self.db.commit()
+        raw_refs = 0
+        if direction in ("both", "backward"):
+            refs = ss_client.get_references(paper_id)
+            raw_refs = len(refs)
+            logger.info("S2 references for work=%d: %d items returned by API", work_id, raw_refs)
+            for ref_ext in refs:
+                ref_work = self._upsert_work(ref_ext)
+                created = self._ensure_citation(
+                    citing_work_id=work.id,
+                    cited_work_id=ref_work.id,
+                    source="semantic_scholar",
+                )
+                if created:
+                    new_refs += 1
+                else:
+                    existing_refs += 1
+            self.db.commit()
 
         # Fetch forward citations (papers citing this work)
-        citing_papers = ss_client.get_citations(paper_id)
         new_citing = 0
         existing_citing = 0
-        for cite_ext in citing_papers:
-            cite_work = self._upsert_work(cite_ext)
-            created = self._ensure_citation(
-                citing_work_id=cite_work.id,
-                cited_work_id=work.id,
-                source="semantic_scholar",
-            )
-            if created:
-                new_citing += 1
-            else:
-                existing_citing += 1
-        self.db.commit()
+        raw_citing = 0
+        if direction in ("both", "forward"):
+            citing_papers = ss_client.get_citations(paper_id)
+            raw_citing = len(citing_papers)
+            logger.info("S2 citing papers for work=%d: %d items returned by API", work_id, raw_citing)
+            for cite_ext in citing_papers:
+                cite_work = self._upsert_work(cite_ext)
+                created = self._ensure_citation(
+                    citing_work_id=cite_work.id,
+                    cited_work_id=work.id,
+                    source="semantic_scholar",
+                )
+                if created:
+                    new_citing += 1
+                else:
+                    existing_citing += 1
+            self.db.commit()
 
         logger.info(
-            "S2 enrichment work=%d: +%d refs (%d exist), +%d citing (%d exist)",
-            work_id, new_refs, existing_refs, new_citing, existing_citing,
+            "S2 enrichment work=%d: +%d refs (%d exist, %d raw), +%d citing (%d exist, %d raw)",
+            work_id, new_refs, existing_refs, raw_refs, new_citing, existing_citing, raw_citing,
         )
         return {
             "new_references": new_refs,
             "existing_references": existing_refs,
+            "raw_references": raw_refs,
             "new_citing": new_citing,
             "existing_citing": existing_citing,
+            "raw_citing": raw_citing,
         }
 
     # -- Cache helpers --------------------------------------------------------

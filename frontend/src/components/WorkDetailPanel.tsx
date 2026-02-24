@@ -929,36 +929,33 @@ export default function WorkDetailPanel({
               disabled={fetchBwd.isPending || isAutoEnriching}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
-              {fetchBwd.isPending ? 'Fetching...' : 'Fetch References'}
+              {fetchBwd.isPending ? 'Fetching...' : 'Fetch references (OA)'}
             </button>
             <button
               onClick={() => fetchFwd.mutate({ workId }, { onSettled: onEnrichComplete })}
               disabled={fetchFwd.isPending || isAutoEnriching}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
-              {fetchFwd.isPending ? 'Fetching...' : 'Fetch Citing Papers'}
+              {fetchFwd.isPending ? 'Fetching...' : 'Fetch citing papers (OA)'}
             </button>
-            {work.doi && (
-              <button
-                onClick={() => crossref.mutate(workId, { onSettled: onEnrichComplete })}
-                disabled={crossref.isPending || isAutoEnriching}
-                className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
-              >
-                {crossref.isPending ? 'Enriching...' : 'Enrich from Crossref'}
-              </button>
-            )}
             {(work.doi || work.semantic_scholar_id) && (
               <button
                 onClick={() => {
                   setSsEnrichMsg(null);
-                  enrichSS.mutate(workId, {
+                  enrichSS.mutate({ workId, direction: 'backward' }, {
                     onSuccess: (result) => {
-                      setSsEnrichMsg(
-                        `Added ${result.new_references} new references, ${result.new_citing} new citing papers` +
-                        (result.existing_references + result.existing_citing > 0
-                          ? ` (${result.existing_references + result.existing_citing} already existed)`
-                          : '')
-                      );
+                      if (result.raw_references === 0) {
+                        setSsEnrichMsg('S2 has no reference list for this paper');
+                      } else if (result.new_references === 0) {
+                        setSsEnrichMsg(`All ${result.existing_references} references already in library`);
+                      } else {
+                        setSsEnrichMsg(
+                          `Added ${result.new_references} new references` +
+                          (result.existing_references > 0
+                            ? ` (${result.existing_references} already existed)`
+                            : '')
+                        );
+                      }
                       onEnrichComplete?.();
                     },
                     onError: (err) => {
@@ -969,7 +966,47 @@ export default function WorkDetailPanel({
                 disabled={enrichSS.isPending || isAutoEnriching}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >
-                {enrichSS.isPending ? 'Fetching...' : 'Fetch from Semantic Scholar'}
+                {enrichSS.isPending ? 'Fetching...' : 'Fetch references (S2)'}
+              </button>
+            )}
+            {(work.doi || work.semantic_scholar_id) && (
+              <button
+                onClick={() => {
+                  setSsEnrichMsg(null);
+                  enrichSS.mutate({ workId, direction: 'forward' }, {
+                    onSuccess: (result) => {
+                      if (result.raw_citing === 0) {
+                        setSsEnrichMsg('S2 has no citing papers for this paper');
+                      } else if (result.new_citing === 0) {
+                        setSsEnrichMsg(`All ${result.existing_citing} citing papers already in library`);
+                      } else {
+                        setSsEnrichMsg(
+                          `Added ${result.new_citing} new citing papers` +
+                          (result.existing_citing > 0
+                            ? ` (${result.existing_citing} already existed)`
+                            : '')
+                        );
+                      }
+                      onEnrichComplete?.();
+                    },
+                    onError: (err) => {
+                      setSsEnrichMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                    },
+                  });
+                }}
+                disabled={enrichSS.isPending || isAutoEnriching}
+                className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                {enrichSS.isPending ? 'Fetching...' : 'Fetch citing papers (S2)'}
+              </button>
+            )}
+            {work.doi && (
+              <button
+                onClick={() => crossref.mutate(workId, { onSettled: onEnrichComplete })}
+                disabled={crossref.isPending || isAutoEnriching}
+                className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                {crossref.isPending ? 'Enriching...' : 'Enrich from Crossref'}
               </button>
             )}
             {!work.doi && (
@@ -995,7 +1032,7 @@ export default function WorkDetailPanel({
                 disabled={resolveDOI.isPending || isAutoEnriching}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >
-                {resolveDOI.isPending ? 'Resolving...' : 'Resolve DOI'}
+                {resolveDOI.isPending ? 'Resolving...' : 'Resolve DOI (CrossRef)'}
               </button>
             )}
           </div>

@@ -19,6 +19,7 @@ import type {
   CitationResult,
   CrossrefEnrichResult,
   SemanticScholarEnrichResult,
+  SearchImportCandidatesResult,
   DOIResolutionResult,
   AuthorOut,
   WorkLocationOut,
@@ -465,10 +466,11 @@ export function enrichFromCrossref(workId: number) {
   });
 }
 
-export function enrichFromSemanticScholar(workId: number) {
-  return apiFetch<SemanticScholarEnrichResult>(`/api/enrich/works/${workId}/semantic-scholar`, {
-    method: 'POST',
-  });
+export function enrichFromSemanticScholar(workId: number, direction: 'both' | 'backward' | 'forward' = 'both') {
+  return apiFetch<SemanticScholarEnrichResult>(
+    `/api/enrich/works/${workId}/semantic-scholar?direction=${direction}`,
+    { method: 'POST' },
+  );
 }
 
 // ---- DOI Resolution ----
@@ -490,5 +492,19 @@ export function resolveDOIBatch(workIds: number[]) {
   return apiFetch<DOIResolutionResult[]>('/api/enrich/works/resolve-doi/batch', {
     method: 'POST',
     body: JSON.stringify({ work_ids: workIds }),
+  });
+}
+
+export function searchImportCandidates(data: { title: string; authors?: string; year?: number }) {
+  return apiFetch<SearchImportCandidatesResult>('/api/enrich/search-import/candidates', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function searchImportConfirm(data: { doi?: string | null; semantic_scholar_id?: string | null }) {
+  return apiFetch<EnrichDOIResult>('/api/enrich/search-import/confirm', {
+    method: 'POST',
+    body: JSON.stringify(data),
   });
 }

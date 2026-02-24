@@ -2,9 +2,9 @@
 
 A local-first research literature dashboard for mapping the state of the art around a research topic.
 
-You build a library of papers (BibTeX import or DOI lookup), group them into topic lists, and LitExplorer fetches the citation graph from OpenAlex and Crossref. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years.
+You build a library of papers (BibTeX import, DOI lookup, or search-by-title), group them into topic lists, and LitExplorer fetches the citation graph from OpenAlex, Crossref, and Semantic Scholar. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years.
 
-Other features: venue tier list (tier 1 = top venue, tier 3 = exclude from timeline), venue aliases for year-to-year name variation, PDF upload with auto text extraction, per-paper notes with AI/user provenance tracking, library sanitization tools (duplicate detection, work merge).
+Other features: venue tier list (tier 1 = top venue, tier 3 = exclude from timeline), venue aliases for year-to-year name variation, PDF upload with auto text extraction, per-paper notes with AI/user provenance tracking, library sanitization tools (duplicate detection, work merge), SSL verification toggle for corporate proxy environments.
 
 External API calls (OpenAlex, Crossref) are cached locally. All data — SQLite database, PDFs, cache — lives under a single configurable directory.
 
@@ -14,7 +14,7 @@ External API calls (OpenAlex, Crossref) are cached locally. All data — SQLite 
 
 - **Backend**: Python 3.11+, FastAPI, SQLAlchemy 2.0, SQLite (WAL mode)
 - **Frontend**: React 18, TypeScript, Vite, TanStack React Query, D3.js
-- **HTTP client**: httpx (OpenAlex + Crossref)
+- **HTTP client**: httpx (OpenAlex, Crossref, Semantic Scholar)
 - **BibTeX**: bibtexparser 1.4
 - **PDF extraction**: pdfplumber
 
@@ -110,6 +110,8 @@ Most configuration is done through the **Settings page** in the UI (`/settings`)
 |---|---|
 | `api_contact_email` | E-mail sent to OpenAlex and Crossref for polite-pool access (better rate limits). Equivalent to the env vars below; the UI value takes precedence. |
 | `pdf_storage_path` | Where PDFs are stored. Defaults to `{data_dir}/pdfs/`. On a server, point this to a persistent directory outside the repo. |
+| `ssl_verify` | Set to `false` to disable SSL certificate verification for external API calls. Useful when behind a corporate proxy that uses a custom CA. Default: `true` (verification enabled). |
+| `s2_api_key` | Semantic Scholar API key (optional). Raises the rate limit from ~1 req/s to 10 req/s. Apply at https://www.semanticscholar.org/product/api. Without a key, 429 errors are common on shared/university networks. |
 
 Environment variables (all prefixed `LITEXPLORER_`) can be set in a shell or in the `env` file (see `env.example`):
 
@@ -137,7 +139,7 @@ cd ..
 ## Running tests
 
 ```bash
-# Backend (163 tests)
+# Backend (196 tests)
 python -m pytest tests/ -v
 
 # Frontend — TypeScript type check + production build (requires Node.js)
@@ -164,7 +166,7 @@ litexplorer/          Python package (FastAPI app, models, API routes, services)
   models/             SQLAlchemy ORM models
   api/                FastAPI routers
   services/           Business logic (enrichment, PDF extraction)
-  external/           OpenAlex and Crossref API clients
+  external/           OpenAlex, Crossref, and Semantic Scholar API clients
 frontend/
   src/                React + TypeScript source
   dist/               Pre-built frontend — served by FastAPI (committed to repo)

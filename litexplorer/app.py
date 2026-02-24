@@ -156,6 +156,12 @@ def _seed_default_settings() -> None:
             "Set to 'false' only if you are behind a corporate proxy that intercepts HTTPS traffic. "
             "The preferred fix is to install your corporate CA certificate into the system trust store.",
         ),
+        (
+            "s2_api_key",
+            "",
+            "Semantic Scholar API key (optional). Increases rate limits from 1 req/s to 10 req/s. "
+            "Obtain a key at https://www.semanticscholar.org/product/api",
+        ),
     ]
 
     db = SessionLocal()

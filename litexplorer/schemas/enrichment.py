@@ -68,6 +68,36 @@ class SemanticScholarEnrichResult(BaseModel):
     work: WorkOut
     new_references: int
     existing_references: int
+    raw_references: int = 0  # total items returned by S2 (before dedup)
     new_citing: int
     existing_citing: int
+    raw_citing: int = 0  # total items returned by S2 (before dedup)
+
+
+# -- Search-based import --
+
+class SearchImportRequest(BaseModel):
+    title: str
+    authors: str | None = None
+    year: int | None = None
+
+
+class SearchImportCandidate(BaseModel):
+    title: str
+    authors: list[str]
+    year: int | None
+    venue: str | None
+    doi: str | None
+    semantic_scholar_id: str | None
+    source: str  # "crossref" | "semantic_scholar"
+    score: float
+
+
+class SearchImportCandidatesResult(BaseModel):
+    candidates: list[SearchImportCandidate]
+
+
+class SearchImportConfirmRequest(BaseModel):
+    doi: str | None = None
+    semantic_scholar_id: str | None = None
 

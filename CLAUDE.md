@@ -32,22 +32,24 @@ Two distinct layers:
 
 ## External data sources
 
-Two APIs are actively integrated:
+Three APIs are actively integrated:
 
 | Source | Role |
 |---|---|
 | **OpenAlex** | Primary source: citation graph, forward citations, paper metadata, venue info, per-year citation counts |
-| **Crossref** | DOI resolution (including fuzzy search), authoritative venue metadata (ISSN, publisher) |
-
-Semantic Scholar is referenced in the schema (as a possible `source` value on Citation and ApiCache) but **has no client implementation yet**. It is reserved for future enrichment of influence scores.
+| **Crossref** | DOI resolution (including fuzzy search), authoritative venue metadata (ISSN, publisher), search-by-title candidates |
+| **Semantic Scholar** | Supplemental: on-demand citation enrichment, search-by-title fallback when Crossref returns no results |
 
 ### API authentication
-Both clients support a "polite pool" email for better rate limits. This email is configurable via:
+All clients support a "polite pool" email for better rate limits. This email is configurable via:
 1. A **database setting** (`api_contact_email`) editable from the Settings page (preferred)
 2. Environment variable fallback (`LITEXPLORER_OPENALEX_API_KEY`, `LITEXPLORER_CROSSREF_MAILTO`)
 If no email is configured, the clients still work but with lower rate limits.
 
 Note: OpenAlex uses `mailto` query parameter for polite pool access, not Bearer token auth.
+
+### SSL verification
+All external HTTP clients respect the `ssl_verify` database setting (default `"true"`). Setting it to `"false"` disables SSL certificate verification — useful for corporate proxies with custom CAs. A global `httpx.ConnectError` exception handler returns 503 with an `SSL_CERTIFICATE_ERROR:` prefix for frontend detection.
 
 ### Caching policy
 All API responses are cached in an `api_cache` table with source and query key.
@@ -132,8 +134,8 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - Citation timeline visualization with citation count y-axis and sliding window
 - Paper side panel with add/remove from topic list, mark uninteresting, citation browsing
 - K-hop connection visualization (1-3 hops)
-- Import: BibTeX file or list of DOIs
-- Settings page for API contact email and PDF storage path (stored in database)
+- Import: BibTeX file, list of DOIs, or **search by title** (Crossref with S2 fallback)
+- Settings page for API contact email, PDF storage path, and SSL verification toggle (stored in database)
 - Venue management UI: alias editing, reordering, tier assignment, field association
 - Venues page with Venues tab (sortable table) and Fields tab (CRUD with deletion)
 - PDF management: upload, serve inline, set primary, delete (moved to orphaned folder)
@@ -143,9 +145,12 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - Filesystem browser for configuring PDF storage path
 - Per-client timeline state persistence via localStorage
 - Deployment: `README.md`, `litexplorer.service` (optional systemd unit), `env.example`; pre-built frontend committed to `frontend/dist/` (no Node.js required to run)
+- **Semantic Scholar integration**: `SemanticScholarClient` (`external/semantic_scholar.py`); `Work.semantic_scholar_id` column; on-demand enrichment endpoint `POST /api/enrich/works/{id}/semantic-scholar?direction={both|backward|forward}` (fetches refs/citations by direction, returns new/existing/raw counts); editable S2 ID field in WorkDetailPanel; deduplication by S2 ID as 4th fallback after DOI/openalex_id/arxiv_id; `s2_api_key` DB setting (raises S2 rate limit from 1→10 req/s); `SemanticScholarEnrichResult` includes `raw_references` and `raw_citing` (items returned by S2 API before dedup, used by UI to distinguish "S2 has no data" from "already in library")
+- **SSL verify toggle**: `ssl_verify` DB setting (default `"true"`); passed as `verify=` to all httpx clients; checkbox in Settings with amber warning; `formatError()` in ImportDialog detects SSL errors; global 503 handler with `SSL_CERTIFICATE_ERROR:` prefix
+- **WorkDetailPanel enrichment buttons**: 5 buttons in Actions section: "Fetch references (OA)", "Fetch citing papers (OA)", "Fetch references (S2)", "Fetch citing papers (S2)", "Enrich from Crossref"; works without a DOI show "Resolve DOI (CrossRef)" instead of Crossref button; each S2 button calls the endpoint with appropriate direction param; status messages distinguish S2 returning 0 items ("S2 has no reference list for this paper") from all-already-existing case
 
 ### Not yet implemented from Phase 1 spec
-- Semantic Scholar integration
+- (All Phase 1 items are now implemented)
 
 ## Phase 2 scope (not started)
 
@@ -170,7 +175,7 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **Database**: SQLite via SQLAlchemy 2.0 ORM (WAL mode for concurrent access, foreign keys enforced)
 - **Frontend**: React 18 + TypeScript, Vite build, TanStack React Query for data fetching
 - **Visualization**: D3.js for the citation timeline
-- **HTTP client**: httpx (for OpenAlex and Crossref API calls)
+- **HTTP client**: httpx (for OpenAlex, Crossref, and Semantic Scholar API calls)
 - **BibTeX parsing**: bibtexparser 1.4
 - **Deployment target**: a Linux server on a local network, accessed by a small team of trusted collaborators via their browsers. No public internet exposure is assumed.
 - **Startup**: the app is launched via `uvicorn`. The FastAPI app serves the built frontend as static files (SPA fallback for client-side routing).
@@ -195,11 +200,14 @@ litexplorer/
 │   ├── cache.py          # ApiCache (permanent / timestamped)
 │   └── settings.py       # Setting (key-value store)
 ├── schemas/              # Pydantic v2 request/response models
-│   ├── works.py          # WorkOut, WorkDetail, WorkCreate, BibtexImportResult,
+│   ├── works.py          # WorkOut (with semantic_scholar_id), WorkDetail, WorkCreate, BibtexImportResult,
 │   │                     #   WorkPDFOut (with extraction_status: Literal[ready/failed/pending]), etc.
 │   ├── venues.py         # VenueOut, VenueDetail, VenueAliasOut, etc.
 │   ├── projects.py       # ProjectOut, ProjectDetail, TopicListOut, etc.
-│   ├── enrichment.py     # EnrichDOIResult, CitationResult, DOIResolutionResult, etc.
+│   ├── enrichment.py     # EnrichDOIResult, CitationResult, DOIResolutionResult,
+│   │                     #   SemanticScholarEnrichResult, SearchImportRequest,
+│   │                     #   SearchImportCandidate, SearchImportCandidatesResult,
+│   │                     #   SearchImportConfirmRequest
 │   ├── timeline.py       # TimelineResponse, TimelineSeedWork, TimelineNeighborWork
 │   │                     #   (seeds/neighbors include citations_by_year: list[dict] | None)
 │   ├── fields.py         # FieldOut (includes venue_count: int)
@@ -212,7 +220,8 @@ litexplorer/
 │   ├── venues.py         # /api/venues — CRUD, aliases, field associations, sortable (sort_by, sort_dir)
 │   ├── fields.py         # /api/fields — CRUD + DELETE /{field_id} (cascade deletes VenueField)
 │   ├── projects.py       # /api/projects — CRUD, topic lists, ignored works
-│   ├── enrichment.py     # /api/enrich — DOI import, citation fetching, Crossref, DOI resolution
+│   ├── enrichment.py     # /api/enrich — DOI import, citation fetching, Crossref, DOI resolution,
+│   │                     #   S2 enrichment, search-import/candidates, search-import/confirm
 │   ├── timeline.py       # /api/projects/{id}/timeline — timeline data aggregation
 │   ├── notes.py          # /api/projects/{id}/notes — project-scoped notes aggregation
 │   ├── settings.py       # /api/settings — key-value settings CRUD
@@ -220,14 +229,19 @@ litexplorer/
 ├── services/
 │   ├── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
 │   │                     #   DOI resolution, cache management, deduplication,
-│   │                     #   _refresh_work_metadata() on forward citation fetch
+│   │                     #   _refresh_work_metadata(), import_by_semantic_scholar_id(),
+│   │                     #   search_import_candidates() (Crossref-first with S2 fallback),
+│   │                     #   enrich_from_semantic_scholar()
 │   └── pdf.py            # extract_pdf_text(), _detect_two_column(), _words_to_text()
 │                         #   ExtractionError; two-column detection via x0 histogram heuristics
 └── external/
-    ├── base.py           # ExternalWork (with citations_by_year), ExternalVenue, ExternalAuthor, ExternalLocation
+    ├── base.py           # ExternalWork (with semantic_scholar_id, citations_by_year),
+    │                     #   ExternalVenue, ExternalAuthor, ExternalLocation
     ├── openalex.py       # OpenAlexClient — DOI lookup, batch fetch, forward citations
     │                     #   parse_work() extracts counts_by_year from OpenAlex responses
-    └── crossref.py       # CrossrefClient — DOI lookup, fuzzy search
+    ├── crossref.py       # CrossrefClient — DOI lookup, fuzzy search
+    └── semantic_scholar.py # SemanticScholarClient — paper lookup by DOI/S2 ID,
+                          #   get_references(), get_citations(), search_by_title()
 
 frontend/src/
 ├── App.tsx               # Routes: /projects, /projects/:id, /library, /venues, /settings
@@ -262,7 +276,8 @@ frontend/src/
     ├── WorkDetailPanel.tsx     # Side panel with collapsible sections, markers, actions, notes
     ├── TimelineControls.tsx    # Filter bar: citation window, direction, candidates, hops, year range
     ├── TimelineEnrichBar.tsx   # Enrichment progress for seed papers
-    ├── ImportDialog.tsx        # DOI list or BibTeX import with resolution
+    ├── ImportDialog.tsx        # 3-tab import: DOI list, BibTeX, Search by title
+    ├── SearchImportCandidateDialog.tsx # Radio-picker for search-by-title candidates (source badge)
     ├── SanitizeDialog.tsx      # Library cleanup tools
     ├── DOIResolutionDialog.tsx # DOI candidate selection
     ├── TopicListCard.tsx       # Expandable topic list with works
@@ -289,6 +304,9 @@ tests/
 ├── test_notes_api.py          # Note CRUD operations
 ├── test_filesystem_api.py     # Directory browsing and mkdir
 ├── test_extract.py            # PDF text extraction: two-column detection, ordering, ExtractionError
+├── test_settings_api.py       # ssl_verify setting: read, update, _get_ssl_verify() helper
+├── test_semantic_scholar_enrichment.py  # S2 enrichment endpoint (refs/citations, dedup, error cases)
+├── test_search_import.py      # Search-by-title candidates + confirm endpoints (12 tests)
 └── fixtures/
     ├── openalex_responses.py  # Sample API response fixtures
     ├── generate_fixtures.py   # One-off script to regenerate synthetic PDF fixtures (fpdf2 + matplotlib)
@@ -302,9 +320,9 @@ tests/
 ## Startup lifecycle (app.py lifespan)
 
 1. `init_db()` — create engine and tables
-2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs)
+2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works)
 3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
-4. `_seed_default_settings()` — create `api_contact_email` and `pdf_storage_path` settings
+4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, and `s2_api_key` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
 6. `_backfill_citations_by_year()` — populate `citations_by_year` from cached OpenAlex responses (scans `work:doi:*`, `backward_citations:*`, and `forward_citations:*` cache entries)
 
@@ -326,7 +344,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 ## Implementation notes and known pitfalls
 
 - Venue normalization in CS is messy. OpenAlex venue names are inconsistent across years for the same conference. The VenueAlias table handles this, with automatic normalization at startup and manual curation in the Venues UI.
-- The same work may appear under different DOIs (rare but real) or without a DOI (arXiv-only papers). The dedup logic checks DOI first, then arXiv ID, then OpenAlex ID.
+- The same work may appear under different DOIs (rare but real) or without a DOI (arXiv-only papers). The dedup logic checks DOI first, then openalex_id, then arxiv_id, then semantic_scholar_id (4th fallback).
 - Forward citation queries can return hundreds of results for well-cited papers. The candidate filter is applied before rendering, not after.
 - BibTeX entry keys follow AuthorYearKeyword convention but the internal unique key is always DOI or arXiv ID.
 - When transferring a UNIQUE field value between rows (e.g., during work merge), null out the field on the source row and `db.flush()` before setting it on the target — SQLAlchemy batches UPDATEs within a single flush with no guaranteed row ordering.
@@ -348,13 +366,25 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **PDF text extraction added**: auto-extraction on upload, re-extract endpoint, companion `.txt` file colocated with the PDF. Two-column layout handled by x0-histogram heuristics (gutter gap + right-column margin spike). Deleted PDFs move both the `.pdf` and `.txt` to `_orphaned/`.
 - **Pre-built frontend committed**: `frontend/dist/` is committed to the repo so users only need conda + pip to run the app. Node.js is only needed to rebuild after frontend source changes.
 - **Deployment docs added**: `README.md`, `litexplorer.service` (optional systemd), `env.example` (template for machine-specific env vars).
+- **SSL verification toggle added**: `ssl_verify` DB setting (default `"true"`), threaded to all httpx clients. Checkbox in Settings page. SSL errors return 503 with detectable `SSL_CERTIFICATE_ERROR:` prefix.
+- **Semantic Scholar integration added**: Full `SemanticScholarClient` implementation (was previously reserved as an enum value only). `Work.semantic_scholar_id` column (VARCHAR(128), nullable). On-demand enrichment endpoint. WorkDetailPanel shows editable S2 ID field and "Fetch from Semantic Scholar" button.
+- **Search-by-title import added**: "Search by Title" tab in ImportDialog. Backend searches Crossref first, falls back to S2 if Crossref returns nothing. `SearchImportCandidateDialog` shows radio-pick candidates with source badges (Crossref = green, Semantic Scholar = purple).
+- **S2 direction param**: `POST /api/enrich/works/{id}/semantic-scholar` accepts `?direction=backward|forward|both` (default `both`). WorkDetailPanel has separate "Fetch references (S2)" and "Fetch citing papers (S2)" buttons.
+
+---
+
+## Known issues / future work
+
+- **Semantic Scholar rate limits**: The unauthenticated S2 API allows ~1 req/s per IP. On shared/university networks the quota is easily exhausted by other users on the same IP, causing persistent 429 errors. Adding an S2 API key in Settings (`s2_api_key`) raises the limit to 10 req/s. Apply at https://www.semanticscholar.org/product/api. The search-by-title endpoint returns HTTP 429 with a user-readable message when S2 rate-limits us.
+- **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
+- **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 
 ---
 
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (163 tests)
+python -m pytest tests/ -v          # all tests (196 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 

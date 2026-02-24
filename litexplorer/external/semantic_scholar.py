@@ -96,6 +96,22 @@ class SemanticScholarClient:
         """Fetch a paper by its Semantic Scholar paper ID. Returns None if not found."""
         return self.get_paper(paper_id)
 
+    def search_by_title(self, query: str, limit: int = 5) -> list[dict]:
+        """Search for papers by title (or combined bibliographic query).
+
+        Returns raw Semantic Scholar paper dicts including paperId, externalIds,
+        title, year, and authors.  Returns an empty list on 400/404/429.
+        """
+        fields = "paperId,externalIds,title,year,authors"
+        resp = self._http.get(
+            "/paper/search",
+            params={"query": query, "fields": fields, "limit": limit},
+        )
+        if resp.status_code in (400, 404):
+            return []
+        resp.raise_for_status()
+        return resp.json().get("data") or []
+
     def get_references(self, paper_id: str) -> list[ExternalWork]:
         """Fetch all references (backward citations) for a paper, paginated."""
         results: list[ExternalWork] = []

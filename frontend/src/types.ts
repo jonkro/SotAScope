@@ -27,8 +27,10 @@ export interface SemanticScholarEnrichResult {
   work: WorkOut;
   new_references: number;
   existing_references: number;
+  raw_references: number;
   new_citing: number;
   existing_citing: number;
+  raw_citing: number;
 }
 
 export interface WorkLocationOut {
@@ -287,6 +289,23 @@ export interface CrossrefEnrichResult {
   work: WorkOut;
   venue_issn: string | null;
   venue_publisher: string | null;
+}
+
+// ---- Search Import ----
+
+export interface SearchImportCandidate {
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  semantic_scholar_id: string | null;
+  source: string;
+  score: number;
+}
+
+export interface SearchImportCandidatesResult {
+  candidates: SearchImportCandidate[];
 }
 
 // ---- DOI Resolution ----

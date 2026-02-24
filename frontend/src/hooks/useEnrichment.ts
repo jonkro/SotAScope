@@ -56,8 +56,9 @@ export function useEnrichFromCrossref() {
 export function useEnrichFromSemanticScholar() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: enrichFromSemanticScholar,
-    onSuccess: (_data, workId) => {
+    mutationFn: ({ workId, direction }: { workId: number; direction?: 'both' | 'backward' | 'forward' }) =>
+      enrichFromSemanticScholar(workId, direction ?? 'both'),
+    onSuccess: (_data, { workId }) => {
       qc.invalidateQueries({ queryKey: ['works', workId, 'citations'] });
       qc.invalidateQueries({ queryKey: ['works', workId] });
       qc.invalidateQueries({ queryKey: ['projects'] });

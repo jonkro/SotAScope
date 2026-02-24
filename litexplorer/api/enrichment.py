@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,9 @@ from litexplorer.schemas.enrichment import (
     EnrichDOIBatchResult,
     EnrichDOIRequest,
     EnrichDOIResult,
+    SearchImportCandidatesResult,
+    SearchImportConfirmRequest,
+    SearchImportRequest,
     SemanticScholarEnrichResult,
 )
 from litexplorer.schemas.works import WorkOut
@@ -53,12 +57,23 @@ def _get_ssl_verify(db: Session) -> bool:
     return val.lower() != "false"
 
 
+def _get_s2_api_key(db: Session) -> str | None:
+    """Read Semantic Scholar API key from DB setting."""
+    from litexplorer.api.settings import get_setting_value
+
+    val = get_setting_value(db, "s2_api_key")
+    return val or None
+
+
 def _get_ss_client(db: Session) -> SemanticScholarClient:
-    """Create a Semantic Scholar client, respecting the ssl_verify setting."""
+    """Create a Semantic Scholar client, respecting ssl_verify and s2_api_key settings."""
     ssl_verify = _get_ssl_verify(db)
+    api_key = _get_s2_api_key(db)
     if not ssl_verify:
         logger.warning("SSL certificate verification is disabled for Semantic Scholar requests")
-    return SemanticScholarClient(verify=ssl_verify)
+    if api_key:
+        logger.debug("Using Semantic Scholar API key for authenticated access")
+    return SemanticScholarClient(api_key=api_key, verify=ssl_verify)
 
 
 def _get_crossref_client(db: Session) -> CrossrefClient:
@@ -276,7 +291,11 @@ def resolve_doi_batch(body: BatchResolveDOIRequest, db: Session = Depends(get_db
 
 
 @router.post("/works/{work_id}/semantic-scholar", response_model=SemanticScholarEnrichResult)
-def enrich_from_semantic_scholar(work_id: int, db: Session = Depends(get_db)):
+def enrich_from_semantic_scholar(
+    work_id: int,
+    direction: str = Query("both"),
+    db: Session = Depends(get_db),
+):
     """Fetch backward and forward citations from Semantic Scholar.
 
     Looks up the work by DOI (preferred) or stored semantic_scholar_id.
@@ -287,8 +306,10 @@ def enrich_from_semantic_scholar(work_id: int, db: Session = Depends(get_db)):
     oa_client = _get_client(db)
     try:
         svc = EnrichmentService(db=db, client=oa_client)
+        if direction not in ("both", "backward", "forward"):
+            raise HTTPException(status_code=400, detail="direction must be 'both', 'backward', or 'forward'")
         try:
-            summary = svc.enrich_from_semantic_scholar(work_id, ss_client)
+            summary = svc.enrich_from_semantic_scholar(work_id, ss_client, direction=direction)
         except ValueError as e:
             raise HTTPException(status_code=404 if "not found" in str(e).lower() else 400, detail=str(e))
         except RuntimeError as e:
@@ -303,3 +324,83 @@ def enrich_from_semantic_scholar(work_id: int, db: Session = Depends(get_db)):
         work=WorkOut.model_validate(work),
         **summary,
     )
+
+
+@router.post("/search-import/candidates", response_model=SearchImportCandidatesResult)
+def search_import_candidates(body: SearchImportRequest, db: Session = Depends(get_db)):
+    """Search for papers by title (optionally authors/year).
+
+    Crossref is queried first; Semantic Scholar is used as fallback if Crossref
+    returns no results.  Returns up to 5 ranked candidates.
+    """
+    cr_client = _get_crossref_client(db)
+    ss_client = _get_ss_client(db)
+    oa_client = _get_client(db)
+    try:
+        svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+        candidates = svc.search_import_candidates(
+            title=body.title,
+            authors=body.authors,
+            year=body.year,
+            crossref_client=cr_client,
+            ss_client=ss_client,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Semantic Scholar rate limit reached — please wait a moment and try again. "
+                    "Adding a Semantic Scholar API key in Settings increases the rate limit."
+                ),
+            )
+        raise
+    finally:
+        cr_client.close()
+        ss_client.close()
+        oa_client.close()
+    return SearchImportCandidatesResult(candidates=candidates)
+
+
+@router.post("/search-import/confirm", response_model=EnrichDOIResult)
+def search_import_confirm(body: SearchImportConfirmRequest, db: Session = Depends(get_db)):
+    """Import a paper selected from search candidates.
+
+    Accepts either a DOI or a Semantic Scholar paper ID.  If a DOI is provided
+    it takes precedence and the standard OpenAlex-first import pipeline is used.
+    """
+    if not body.doi and not body.semantic_scholar_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Either doi or semantic_scholar_id must be provided",
+        )
+
+    if body.doi:
+        client = _get_client(db)
+        cr_client = _get_crossref_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
+            work = svc.import_by_doi(body.doi)
+        finally:
+            client.close()
+            cr_client.close()
+        if work is None:
+            raise HTTPException(status_code=404, detail=f"DOI not found: {body.doi}")
+        source = "openalex" if work.openalex_id else "crossref"
+        return EnrichDOIResult(work=WorkOut.model_validate(work), source=source)
+
+    # Semantic Scholar ID only
+    ss_client = _get_ss_client(db)
+    oa_client = _get_client(db)
+    try:
+        svc = EnrichmentService(db=db, client=oa_client)
+        work = svc.import_by_semantic_scholar_id(body.semantic_scholar_id, ss_client)
+    finally:
+        ss_client.close()
+        oa_client.close()
+    if work is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Paper not found on Semantic Scholar: {body.semantic_scholar_id}",
+        )
+    return EnrichDOIResult(work=WorkOut.model_validate(work), source="semantic_scholar")

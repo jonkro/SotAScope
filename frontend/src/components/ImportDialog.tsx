@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { enrichDOI, enrichDOIBatch, importBibtex, resolveDOIBatch } from '../api';
-import type { DOIResolutionResult } from '../types';
+import { enrichDOI, enrichDOIBatch, importBibtex, resolveDOIBatch, searchImportCandidates } from '../api';
+import type { DOIResolutionResult, SearchImportCandidate } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
+import SearchImportCandidateDialog from './SearchImportCandidateDialog';
 
-type Tab = 'doi' | 'bibtex';
+type Tab = 'doi' | 'bibtex' | 'search';
 
 function formatError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -18,6 +19,13 @@ function formatError(err: unknown): string {
       'You can disable SSL verification in Settings, or install your corporate CA certificate.'
     );
   }
+  // Extract detail from JSON API error bodies
+  try {
+    const parsed = JSON.parse(msg);
+    if (parsed.detail) return parsed.detail;
+  } catch {
+    // not JSON — fall through
+  }
   return `Error: ${msg}`;
 }
 
@@ -28,6 +36,14 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
   const [result, setResult] = useState<string | null>(null);
   const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
   const [isResolving, setIsResolving] = useState(false);
+
+  // Search tab state
+  const [searchTitle, setSearchTitle] = useState('');
+  const [searchAuthors, setSearchAuthors] = useState('');
+  const [searchYear, setSearchYear] = useState('');
+  const [searchCandidates, setSearchCandidates] = useState<SearchImportCandidate[] | null>(null);
+  const [importedTitle, setImportedTitle] = useState<string | null>(null);
+
   const qc = useQueryClient();
 
   const doiMutation = useMutation({
@@ -97,7 +113,30 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
     onError: (err) => setResult(formatError(err)),
   });
 
-  const isPending = doiMutation.isPending || bibtexMutation.isPending || isResolving;
+  const searchMutation = useMutation({
+    mutationFn: () => {
+      if (!searchTitle.trim()) throw new Error('Enter a title');
+      const yearNum = searchYear ? parseInt(searchYear, 10) : undefined;
+      return searchImportCandidates({
+        title: searchTitle,
+        authors: searchAuthors || undefined,
+        year: yearNum,
+      });
+    },
+    onSuccess: (data) => {
+      setSearchCandidates(data.candidates);
+      setImportedTitle(null);
+    },
+    onError: (err) => setResult(formatError(err)),
+  });
+
+  const isPending = doiMutation.isPending || bibtexMutation.isPending || isResolving || searchMutation.isPending;
+
+  function switchTab(t: Tab) {
+    setTab(t);
+    setResult(null);
+    setImportedTitle(null);
+  }
 
   return (
     <>
@@ -114,7 +153,7 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
           {/* Tabs */}
           <div className="flex border-b border-gray-200 px-6">
             <button
-              onClick={() => { setTab('doi'); setResult(null); }}
+              onClick={() => switchTab('doi')}
               className={`px-4 py-2 text-sm font-medium border-b-2 ${
                 tab === 'doi' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
@@ -122,12 +161,20 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
               DOI Import
             </button>
             <button
-              onClick={() => { setTab('bibtex'); setResult(null); }}
+              onClick={() => switchTab('bibtex')}
               className={`px-4 py-2 text-sm font-medium border-b-2 ${
                 tab === 'bibtex' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
             >
               BibTeX Import
+            </button>
+            <button
+              onClick={() => switchTab('search')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                tab === 'search' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Search by Title
             </button>
           </div>
 
@@ -174,6 +221,62 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
               </div>
             )}
 
+            {tab === 'search' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Title <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={searchTitle}
+                    onChange={(e) => setSearchTitle(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && searchTitle.trim()) searchMutation.mutate(); }}
+                    placeholder="e.g. Attention Is All You Need"
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Authors <span className="text-gray-400 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={searchAuthors}
+                    onChange={(e) => setSearchAuthors(e.target.value)}
+                    placeholder="e.g. Vaswani Shazeer"
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Year <span className="text-gray-400 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={searchYear}
+                    onChange={(e) => setSearchYear(e.target.value)}
+                    placeholder="e.g. 2017"
+                    min={1900}
+                    max={2100}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                  />
+                </div>
+                {importedTitle && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded text-sm text-green-700">
+                    Imported: &ldquo;{importedTitle}&rdquo;
+                  </div>
+                )}
+                <button
+                  onClick={() => searchMutation.mutate()}
+                  disabled={isPending || !searchTitle.trim()}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {searchMutation.isPending ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+            )}
+
             {result && (
               <pre className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded text-sm text-gray-700 whitespace-pre-wrap">
                 {result}
@@ -189,6 +292,17 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
           onClose={() => {
             setDoiResolutionResults(null);
             qc.invalidateQueries({ queryKey: ['works'] });
+          }}
+        />
+      )}
+
+      {searchCandidates !== null && (
+        <SearchImportCandidateDialog
+          candidates={searchCandidates}
+          onClose={() => setSearchCandidates(null)}
+          onImported={(title) => {
+            setSearchCandidates(null);
+            setImportedTitle(title);
           }}
         />
       )}
