@@ -710,6 +710,14 @@ class EnrichmentService:
         ss_paper = ss_client.get_paper_by_id(ss_id)
         if ss_paper is None:
             return None
+        # If S2 provided a DOI, run the full OA pipeline so we also get openalex_id.
+        if ss_paper.doi:
+            oa_work = self.import_by_doi(ss_paper.doi)
+            if oa_work is not None:
+                if oa_work.semantic_scholar_id is None and ss_paper.semantic_scholar_id:
+                    oa_work.semantic_scholar_id = ss_paper.semantic_scholar_id
+                    self.db.commit()
+                return oa_work
         return self._upsert_work(ss_paper)
 
     # -- Search-based import --------------------------------------------------
@@ -873,6 +881,15 @@ class EnrichmentService:
             logger.info("S2 references for work=%d: %d items returned by API", work_id, raw_refs)
             for ref_ext in refs:
                 ref_work = self._upsert_work(ref_ext)
+                # If S2 gave us a DOI but openalex_id is still missing, try OA
+                # enrichment so the work gets a proper openalex_id for future fetches.
+                if ref_ext.doi and ref_work.openalex_id is None:
+                    try:
+                        oa_work = self.import_by_doi(ref_ext.doi)
+                        if oa_work is not None:
+                            ref_work = oa_work
+                    except Exception:
+                        pass  # Best-effort; keep the S2 stub
                 created = self._ensure_citation(
                     citing_work_id=work.id,
                     cited_work_id=ref_work.id,
@@ -894,6 +911,14 @@ class EnrichmentService:
             logger.info("S2 citing papers for work=%d: %d items returned by API", work_id, raw_citing)
             for cite_ext in citing_papers:
                 cite_work = self._upsert_work(cite_ext)
+                # Same OA enrichment fallback as for references above.
+                if cite_ext.doi and cite_work.openalex_id is None:
+                    try:
+                        oa_work = self.import_by_doi(cite_ext.doi)
+                        if oa_work is not None:
+                            cite_work = oa_work
+                    except Exception:
+                        pass  # Best-effort; keep the S2 stub
                 created = self._ensure_citation(
                     citing_work_id=cite_work.id,
                     cited_work_id=work.id,

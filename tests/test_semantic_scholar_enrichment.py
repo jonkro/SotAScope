@@ -309,3 +309,48 @@ def test_existing_work_matched_by_ss_id(db_session, client, mock_ss_client):
     # No new works created — total works in DB should still be 2 (seed + existing_ref)
     total = db_session.execute(select(Work)).scalars().all()
     assert len(total) == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression: S2 refs/citations with DOI should get openalex_id via OA pipeline
+# ---------------------------------------------------------------------------
+
+
+def test_s2_ref_with_doi_gets_openalex_id(db_session, client, mock_ss_client, mock_oa_client):
+    """Regression: when S2 returns a reference paper with a known DOI, the resulting
+    DB work should have openalex_id populated (via the OA import pipeline), not left
+    as None.  A work with openalex_id=None cannot use 'Fetch references (OA)'."""
+    from tests.fixtures.openalex_responses import SAMPLE_WORK_RAW
+    from litexplorer.external.openalex import OpenAlexClient
+
+    work = _make_work(db_session, doi="10.1234/seed", title="Seed Paper")
+
+    seed_ext = _ext_work("Seed Paper", doi="10.1234/seed", ss_id="seed-ss-id")
+    mock_ss_client.get_paper_by_doi.return_value = seed_ext
+
+    # S2 returns one reference with a DOI that OA knows about
+    ref_doi = "10.1145/3230543.3230563"
+    mock_ss_client.get_references.return_value = [
+        _ext_work("Ref with DOI", doi=ref_doi, ss_id="ref-ss-id"),
+    ]
+    mock_ss_client.get_citations.return_value = []
+
+    # OA mock: set a spec so that get_work_by_doi_raw returns a proper dict
+    mock_oa_client.__class__ = OpenAlexClient
+    mock_oa_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW
+
+    resp = client.post(f"/api/enrich/works/{work.id}/semantic-scholar")
+    assert resp.status_code == 200, resp.text
+
+    data = resp.json()
+    assert data["new_references"] == 1
+
+    # The ref work in the DB must have openalex_id populated (OA pipeline ran)
+    all_works = db_session.execute(select(Work)).scalars().all()
+    ref_work = next((w for w in all_works if w.doi == ref_doi), None)
+    assert ref_work is not None, "Reference work not found in DB"
+    assert ref_work.openalex_id is not None, (
+        "openalex_id should be populated via OA pipeline when S2 ref has a DOI"
+    )
+    # No duplicate works (one seed + one ref)
+    assert len(all_works) == 2

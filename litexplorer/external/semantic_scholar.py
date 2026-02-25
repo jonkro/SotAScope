@@ -7,6 +7,8 @@ backward citations (references) and forward citations with cursor pagination.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 import httpx
 
@@ -23,6 +25,30 @@ _PAGE_SIZE = 500
 _PAPER_FIELDS = "paperId,externalIds,title,year,citationCount,abstract"
 # Fields requested for bulk citation/reference lists (skip abstract to reduce payload)
 _CITATION_FIELDS = "paperId,externalIds,title,year,citationCount"
+
+# ---------------------------------------------------------------------------
+# Process-level rate limiter — shared across all SemanticScholarClient instances
+# so that concurrent requests from different endpoint handlers don't exceed S2
+# rate limits.  Unauthenticated: 1 req/s.  Authenticated (API key): 10 req/s.
+# ---------------------------------------------------------------------------
+_RATE_LOCK = threading.Lock()
+_LAST_CALL_TIME: float = 0.0
+
+# Minimum interval defaults (seconds between consecutive S2 HTTP requests)
+_UNAUTH_MIN_INTERVAL: float = 1.0   # 1 req/s  (no API key)
+_AUTH_MIN_INTERVAL: float = 0.1     # 10 req/s (with API key)
+
+
+def _throttle(min_interval: float) -> None:
+    """Block the calling thread until the minimum interval since the last S2
+    call has elapsed, then record the new call time.  Thread-safe."""
+    global _LAST_CALL_TIME
+    with _RATE_LOCK:
+        now = time.monotonic()
+        wait = min_interval - (now - _LAST_CALL_TIME)
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_CALL_TIME = time.monotonic()
 
 
 def _normalize_doi(raw: str | None) -> str | None:
@@ -53,7 +79,13 @@ def _parse_paper(raw: dict) -> ExternalWork:
 
 
 class SemanticScholarClient:
-    """Synchronous Semantic Scholar Academic Graph API client."""
+    """Synchronous Semantic Scholar Academic Graph API client.
+
+    All outgoing HTTP calls are throttled via the module-level ``_throttle()``
+    function to stay within S2 rate limits: 1 req/s without an API key,
+    10 req/s with one.  The throttle is process-global so concurrent calls
+    from different request handlers are serialised correctly.
+    """
 
     def __init__(
         self,
@@ -70,9 +102,15 @@ class SemanticScholarClient:
             timeout=30.0,
             verify=verify,
         )
+        self._min_interval = _AUTH_MIN_INTERVAL if api_key else _UNAUTH_MIN_INTERVAL
 
     def close(self) -> None:
         self._http.close()
+
+    def _call(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Throttled HTTP call through the shared process-level rate limiter."""
+        _throttle(self._min_interval)
+        return self._http.request(method, path, **kwargs)
 
     # -- Public API -----------------------------------------------------------
 
@@ -82,7 +120,7 @@ class SemanticScholarClient:
         Use "DOI:{doi}" or "ARXIV:{arxiv_id}" as paper_id for lookup by
         external identifier.  Returns None if not found.
         """
-        resp = self._http.get(f"/paper/{paper_id}", params={"fields": _PAPER_FIELDS})
+        resp = self._call("GET", f"/paper/{paper_id}", params={"fields": _PAPER_FIELDS})
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -103,7 +141,8 @@ class SemanticScholarClient:
         title, year, and authors.  Returns an empty list on 400/404/429.
         """
         fields = "paperId,externalIds,title,year,authors"
-        resp = self._http.get(
+        resp = self._call(
+            "GET",
             "/paper/search",
             params={"query": query, "fields": fields, "limit": limit},
         )
@@ -117,7 +156,8 @@ class SemanticScholarClient:
         results: list[ExternalWork] = []
         offset = 0
         while True:
-            resp = self._http.get(
+            resp = self._call(
+                "GET",
                 f"/paper/{paper_id}/references",
                 params={"fields": _CITATION_FIELDS, "limit": _PAGE_SIZE, "offset": offset},
             )
@@ -137,7 +177,8 @@ class SemanticScholarClient:
         results: list[ExternalWork] = []
         offset = 0
         while True:
-            resp = self._http.get(
+            resp = self._call(
+                "GET",
                 f"/paper/{paper_id}/citations",
                 params={"fields": _CITATION_FIELDS, "limit": _PAGE_SIZE, "offset": offset},
             )

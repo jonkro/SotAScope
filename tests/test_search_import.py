@@ -289,3 +289,43 @@ class TestSearchImportConfirm:
             json={"semantic_scholar_id": "nonexistent-ss-id"},
         )
         assert resp.status_code == 404
+
+    def test_confirm_ss_id_with_doi_runs_oa_pipeline(
+        self, client, mock_ss_client, mock_oa_client, db_session
+    ):
+        """Regression: importing by S2 ID when the paper HAS a DOI should run the
+        OA pipeline so the resulting work gets both doi and openalex_id set.
+        Previously, import_by_semantic_scholar_id called _upsert_work directly and
+        bypassed OpenAlex, leaving openalex_id=None."""
+        from tests.fixtures.openalex_responses import SAMPLE_WORK_RAW
+        from sqlalchemy import select
+
+        # S2 returns a paper that has a known DOI
+        ss_paper = ExternalWork(
+            title="Restructuring endpoint congestion control",
+            doi="10.1145/3230543.3230563",
+            semantic_scholar_id="ss-doi-paper",
+            publication_year=2018,
+        )
+        mock_ss_client.get_paper_by_id.return_value = ss_paper
+        # OA knows this paper
+        mock_oa_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW
+
+        resp = client.post(
+            "/api/enrich/search-import/confirm",
+            json={"semantic_scholar_id": "ss-doi-paper"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        # The work must have doi AND openalex_id populated (OA pipeline was used)
+        assert data["work"]["doi"] == "10.1145/3230543.3230563"
+        assert data["work"]["openalex_id"] is not None
+
+        # Exactly one work in the database (no duplicates)
+        works = db_session.execute(select(Work)).scalars().all()
+        assert len(works) == 1
+        assert works[0].doi == "10.1145/3230543.3230563"
+        assert works[0].openalex_id is not None
+        # S2 ID should also be stored
+        assert works[0].semantic_scholar_id == "ss-doi-paper"
