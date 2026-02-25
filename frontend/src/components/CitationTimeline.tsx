@@ -580,9 +580,25 @@ function showTooltip(
   tooltip: d3.Selection<HTMLDivElement | null, unknown, null, undefined>,
 ) {
   const label = d.type === 'seed' ? 'Seed' : d.type === 'backward' ? 'Reference' : 'Cited by';
+
+  const tooltipEl = tooltip.node();
+  const containerRect = tooltipEl?.parentElement?.getBoundingClientRect();
+  const containerLeft = containerRect?.left ?? 0;
+  const containerTop = containerRect?.top ?? 0;
+
+  // Position relative to the container div (which is position:relative)
+  const xInContainer = event.clientX - containerLeft;
+  const yInContainer = event.clientY - containerTop;
+
+  // Flip to the left of the cursor if the tooltip would overflow the viewport right edge
+  const TOOLTIP_WIDTH = 280;
+  const OFFSET = 12;
+  const fitsRight = event.clientX + OFFSET + TOOLTIP_WIDTH <= window.innerWidth;
+  const left = fitsRight ? xInContainer + OFFSET : xInContainer - TOOLTIP_WIDTH - OFFSET;
+
   tooltip
-    .style('left', `${event.offsetX + 12}px`)
-    .style('top', `${event.offsetY - 10}px`)
+    .style('left', `${left}px`)
+    .style('top', `${yInContainer - 10}px`)
     .classed('hidden', false)
     .html(
       `<div style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px">${escapeHtml(d.title)}</div>` +
