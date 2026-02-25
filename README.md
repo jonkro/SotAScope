@@ -2,7 +2,7 @@
 
 A local-first research literature dashboard for mapping the state of the art around a research topic.
 
-You build a library of papers (BibTeX import, DOI lookup, or search-by-title), group them into topic lists, and LitExplorer fetches the citation graph from OpenAlex, Crossref, and Semantic Scholar. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years.
+You build a library of papers (BibTeX import, DOI lookup, or search-by-title), group them into topic lists, and LitExplorer fetches the citation graph from OpenAlex, Crossref, and Semantic Scholar. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years. Topic lists in the legend are clickable to toggle their visibility — hiding seeds, updating multi-topic-list color stripes, and removing candidates connected only to hidden lists.
 
 Other features: venue tier list (tier 1 = top venue, tier 3 = exclude from timeline), venue aliases for year-to-year name variation, PDF upload with auto text extraction, per-paper notes with AI/user provenance tracking, library sanitization tools (duplicate detection, work merge), SSL verification toggle for corporate proxy environments.
 
@@ -139,7 +139,7 @@ cd ..
 ## Running tests
 
 ```bash
-# Backend (196 tests)
+# Backend (198 tests)
 python -m pytest tests/ -v
 
 # Frontend — TypeScript type check + production build (requires Node.js)

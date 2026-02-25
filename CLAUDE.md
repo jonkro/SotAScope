@@ -144,6 +144,7 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - Project notes tab: aggregated view of all notes for a project, sortable by paper or label
 - Filesystem browser for configuring PDF storage path
 - Per-client timeline state persistence via localStorage
+- **Topic list visibility toggle**: clicking a TL legend entry in the citation timeline hides/shows its seeds (and candidates connected only to that TL). Multi-TL seeds lose the deactivated color stripe. Toggle state persists in `localStorage` alongside other timeline settings. Implemented entirely client-side — no backend changes required.
 - Deployment: `README.md`, `litexplorer.service` (optional systemd unit), `env.example`; pre-built frontend committed to `frontend/dist/` (no Node.js required to run)
 - **Semantic Scholar integration**: `SemanticScholarClient` (`external/semantic_scholar.py`); `Work.semantic_scholar_id` column; on-demand enrichment endpoint `POST /api/enrich/works/{id}/semantic-scholar?direction={both|backward|forward}` (fetches refs/citations by direction, returns new/existing/raw counts); editable S2 ID field in WorkDetailPanel; deduplication by S2 ID as 4th fallback after DOI/openalex_id/arxiv_id; `s2_api_key` DB setting (raises S2 rate limit from 1→10 req/s); `SemanticScholarEnrichResult` includes `raw_references` and `raw_citing` (items returned by S2 API before dedup, used by UI to distinguish "S2 has no data" from "already in library")
 - **SSL verify toggle**: `ssl_verify` DB setting (default `"true"`); passed as `verify=` to all httpx clients; checkbox in Settings with amber warning; `formatError()` in ImportDialog detects SSL errors; global 503 handler with `SSL_CERTIFICATE_ERROR:` prefix
@@ -152,11 +153,22 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 ### Not yet implemented from Phase 1 spec
 - (All Phase 1 items are now implemented)
 
-## Phase 2 scope (not started)
+## Phase 2 scope (not yet started)
 
 - LLM integration: user provides an API key for a provider (Anthropic, OpenAI, etc.)
   - a) Per-paper chat: discuss a paper to accelerate understanding
   - b) Structured extraction: user defines a custom schema of questions (e.g., "method used", "datasets used", "evaluation metric"). The LLM answers each question per paper, succinctly. Results are stored locally and can be exported as a table (CSV or similar). This is designed to support systematic literature review tables.
+
+### Phase 2 design notes (pre-work already in place)
+
+- **PDF text is ready for LLM use**: `WorkPDF.extraction_status='ready'` works have a companion `.txt` at `{pdf_root}/{work_id}/{stem}.txt`. Serve via `GET /api/works/{id}/pdfs/{id}/text`. This is the primary per-paper LLM input.
+- **WorkNote table is LLM-ready**: `provenance` ("user"/"ai"/"ai_reviewed") and `model_id` fields already exist. Per-paper chat turns or LLM summaries can be stored as WorkNotes. `project_id` scoping allows associating results with a specific project.
+- **New DB settings needed**: `llm_provider` (e.g., `"anthropic"` / `"openai"`) and `llm_api_key` — same pattern as `s2_api_key`. Add via `_seed_default_settings()` in `app.py` and expose in the Settings page.
+- **Structured extraction needs new tables**: `ExtractionSchema` (user-defined list of questions, per-project) + `ExtractionResult` (per-work answers as JSON, keyed by schema+work). Export as CSV via a new endpoint (e.g., `GET /api/projects/{id}/extraction/{schema_id}/export`).
+- **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
+- **Model selection**: `claude-sonnet-4-6` (ID: `claude-sonnet-4-6`) for general chat; `claude-haiku-4-5-20251001` for cost-sensitive bulk extraction. Both have 200k context windows — sufficient for most full-text PDFs.
+- **Context window strategy**: typical extracted PDF text is 5k–40k tokens. Send abstract+title first; include full text only when available. For very long papers, consider truncating to the first N tokens or chunking by section.
+- **Anthropic SDK**: add `anthropic` Python package as a dependency in `pyproject.toml`. Use the messages API (`client.messages.create()`). Streaming is available via `client.messages.stream()`.
 
 ---
 
@@ -370,6 +382,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Semantic Scholar integration added**: Full `SemanticScholarClient` implementation (was previously reserved as an enum value only). `Work.semantic_scholar_id` column (VARCHAR(128), nullable). On-demand enrichment endpoint. WorkDetailPanel shows editable S2 ID field and "Fetch from Semantic Scholar" button.
 - **Search-by-title import added**: "Search by Title" tab in ImportDialog. Backend searches Crossref first, falls back to S2 if Crossref returns nothing. `SearchImportCandidateDialog` shows radio-pick candidates with source badges (Crossref = green, Semantic Scholar = purple).
 - **S2 direction param**: `POST /api/enrich/works/{id}/semantic-scholar` accepts `?direction=backward|forward|both` (default `both`). WorkDetailPanel has separate "Fetch references (S2)" and "Fetch citing papers (S2)" buttons.
+- **Topic list visibility toggle added**: Clicking a topic list entry in the citation timeline legend toggles it inactive (40% opacity, pointer cursor). `inactiveTopicListIds: Set<number>` state in `ProjectDetailPage`, serialized as `number[]` in localStorage. Derived memos: `activeTopicListIds`, `activeSeedIds`, `filteredSeeds`, `filteredSeedCitations`. `filteredNeighbors` excludes neighbors whose connections are all to inactive seeds. `CitationTimeline` receives `activeTopicListIds` + `onToggleTopicList` props; legend items carry optional `topicListId`. Storing **inactive** IDs (not active) is intentional: empty set = all active, so new topic lists are automatically visible.
 
 ---
 
@@ -378,13 +391,15 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Semantic Scholar rate limits**: The unauthenticated S2 API allows ~1 req/s per IP. On shared/university networks the quota is easily exhausted by other users on the same IP, causing persistent 429 errors. Adding an S2 API key in Settings (`s2_api_key`) raises the limit to 10 req/s. Apply at https://www.semanticscholar.org/product/api. The search-by-title endpoint returns HTTP 429 with a user-readable message when S2 rate-limits us.
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
+- **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
+- **LLM integration (Phase 2) not yet started**: see design notes in the Phase 2 scope section above. Key pre-work already in place: PDF text extraction, WorkNote table with `provenance`/`model_id` fields. Priority order: (1) new DB settings for provider/key, (2) per-paper chat using WorkNotes, (3) structured extraction with new tables.
 
 ---
 
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (196 tests)
+python -m pytest tests/ -v          # all tests (198 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 
