@@ -169,6 +169,31 @@ def _seed_default_settings() -> None:
             "Semantic Scholar API key (optional). Increases rate limits from 1 req/s to 10 req/s. "
             "Obtain a key at https://www.semanticscholar.org/product/api",
         ),
+        (
+            "llm_provider",
+            "",
+            "LLM provider for paper chat and structured extraction. "
+            "Supported values: 'anthropic', 'openai'. Leave empty to disable LLM features.",
+        ),
+        (
+            "llm_api_key",
+            "",
+            "API key for the configured LLM provider. "
+            "May be left blank when using a local inference server (e.g. Ollama).",
+        ),
+        (
+            "llm_model_id",
+            "",
+            "Model ID to use for LLM requests. "
+            "Select from the available models listed by your provider.",
+        ),
+        (
+            "llm_base_url",
+            "",
+            "Optional base URL to override the provider's default cloud endpoint. "
+            "Use this to point to a local inference server such as Ollama "
+            "(e.g. http://localhost:11434/v1). Leave empty to use the provider's cloud API.",
+        ),
     ]
 
     db = SessionLocal()
@@ -427,6 +452,7 @@ from litexplorer.api.timeline import router as timeline_router  # noqa: E402
 from litexplorer.api.settings import router as settings_router  # noqa: E402
 from litexplorer.api.filesystem import router as filesystem_router  # noqa: E402
 from litexplorer.api.notes import project_notes_router  # noqa: E402
+from litexplorer.api.llm import router as llm_router  # noqa: E402
 
 app.include_router(works_router)
 app.include_router(authors_router)
@@ -438,6 +464,7 @@ app.include_router(timeline_router)
 app.include_router(settings_router)
 app.include_router(filesystem_router)
 app.include_router(project_notes_router)
+app.include_router(llm_router)
 
 # Serve built frontend (only when frontend/dist exists)
 if _frontend_dist.is_dir():
