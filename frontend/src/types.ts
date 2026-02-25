@@ -249,6 +249,13 @@ export interface SettingOut {
   description: string | null;
 }
 
+// ---- LLM ----
+
+export interface LLMModelsResult {
+  models: string[];
+  error?: string;
+}
+
 // ---- Filesystem ----
 
 export interface BrowseResult {

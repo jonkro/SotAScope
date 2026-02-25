@@ -25,6 +25,7 @@ import type {
   WorkLocationOut,
   TimelineResponse,
   SettingOut,
+  LLMModelsResult,
   WorkNote,
   ProjectNote,
   BrowseResult,
@@ -407,6 +408,10 @@ export function updateSetting(key: string, value: string) {
     method: 'PATCH',
     body: JSON.stringify({ value }),
   });
+}
+
+export function fetchLLMModels() {
+  return apiFetch<LLMModelsResult>('/api/llm/models');
 }
 
 // ---- Filesystem ----
