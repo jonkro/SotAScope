@@ -16,6 +16,8 @@ interface CitationTimelineProps {
   showForward: boolean;
   tier1VenueIds: Set<number>;
   hops: number;
+  activeTopicListIds: Set<number>;
+  onToggleTopicList: (id: number) => void;
 }
 
 interface DotDatum {
@@ -51,6 +53,8 @@ export default function CitationTimeline({
   showForward,
   tier1VenueIds,
   hops,
+  activeTopicListIds,
+  onToggleTopicList,
 }: CitationTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -78,7 +82,9 @@ export default function CitationTimeline({
     for (const s of seeds) {
       if (s.publication_year == null) continue;
       if (startYear != null && s.publication_year < startYear) continue;
-      const colors = s.topic_list_ids.map((id) => tlColorMap.get(id) ?? '#6b7280');
+      const activeIds = s.topic_list_ids.filter((id) => activeTopicListIds.has(id));
+      const colors = (activeIds.length > 0 ? activeIds : s.topic_list_ids)
+        .map((id) => tlColorMap.get(id) ?? '#6b7280');
       const citCount = computeCitationCount(s.citation_count, s.citations_by_year, citationsSinceYears);
       result.push({
         id: s.id, title: s.title, year: s.publication_year, type: 'seed',
@@ -99,7 +105,7 @@ export default function CitationTimeline({
       });
     }
     return result;
-  }, [seeds, neighbors, topicLists, seedCitations, citationsSinceYears, startYear, showBackward, showForward]);
+  }, [seeds, neighbors, topicLists, seedCitations, citationsSinceYears, startYear, showBackward, showForward, activeTopicListIds]);
 
   // Build adjacency map over rendered dots (recomputed when dot set changes, not on click)
   const adjacencyMap = useMemo(() => {
@@ -500,9 +506,9 @@ export default function CitationTimeline({
     }
 
     // --- Legend (below x-axis, never overlaps data) ---
-    const legendItems: { shape: 'square' | 'circle' | 'diamond' | 'top-venue'; color: string; label: string }[] = [];
+    const legendItems: { shape: 'square' | 'circle' | 'diamond' | 'top-venue'; color: string; label: string; topicListId?: number }[] = [];
     for (const tl of topicLists) {
-      legendItems.push({ shape: 'square', color: tl.color, label: tl.name });
+      legendItems.push({ shape: 'square', color: tl.color, label: tl.name, topicListId: tl.id });
     }
     legendItems.push({ shape: 'circle', color: '#9ca3af', label: 'Candidate' });
     legendItems.push({ shape: 'top-venue', color: 'none', label: 'Top venue' });
@@ -513,7 +519,15 @@ export default function CitationTimeline({
     const lr = BASE_RADIUS;
     let lx = 0;
     for (const item of legendItems) {
-      const itemG = legendG.append('g').attr('transform', `translate(${lx},0)`);
+      const isActive = item.topicListId == null || activeTopicListIds.has(item.topicListId);
+      const itemG = legendG.append('g')
+        .attr('transform', `translate(${lx},0)`)
+        .attr('opacity', isActive ? 1 : 0.4);
+
+      if (item.topicListId != null) {
+        itemG.style('cursor', 'pointer')
+          .on('click', () => onToggleTopicList(item.topicListId!));
+      }
 
       if (item.shape === 'square') {
         itemG.append('rect')
@@ -552,7 +566,7 @@ export default function CitationTimeline({
     }
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimensions, dots, selectedWorkId, seedCitations, topicLists, tier1VenueIds, kHopResult]);
+  }, [dimensions, dots, selectedWorkId, seedCitations, topicLists, tier1VenueIds, kHopResult, activeTopicListIds, onToggleTopicList]);
 
   useEffect(() => {
     render();

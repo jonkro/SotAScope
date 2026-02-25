@@ -33,6 +33,7 @@ interface ProjectViewSettings {
   startYear?: number | null;
   candidateFilter?: CandidateFilter;
   hops?: number;
+  inactiveTopicListIds?: number[];
 }
 
 function loadProjectSettings(projectId: number): ProjectViewSettings {
@@ -66,15 +67,19 @@ export default function ProjectDetailPage() {
   const [startYear, setStartYear] = useState<number | null>(saved.startYear ?? null);
   const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>(saved.candidateFilter ?? 'all');
   const [hops, setHops] = useState(saved.hops ?? 1);
+  const [inactiveTopicListIds, setInactiveTopicListIds] = useState<Set<number>>(
+    () => new Set(saved.inactiveTopicListIds ?? []),
+  );
 
   // Persist view settings to localStorage
   useEffect(() => {
     const settings: ProjectViewSettings = {
       activeTab, citationsSinceYears, showBackward, showForward,
       startYear, candidateFilter, hops,
+      inactiveTopicListIds: [...inactiveTopicListIds],
     };
     localStorage.setItem(`litexplorer:project:${projectId}:view`, JSON.stringify(settings));
-  }, [projectId, activeTab, citationsSinceYears, showBackward, showForward, startYear, candidateFilter, hops]);
+  }, [projectId, activeTab, citationsSinceYears, showBackward, showForward, startYear, candidateFilter, hops, inactiveTopicListIds]);
 
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
@@ -154,6 +159,40 @@ export default function ProjectDetailPage() {
     [timeline?.ignored_venue_ids],
   );
 
+  // IDs of topic lists that are currently active
+  const activeTopicListIds = useMemo(() => {
+    if (!timeline) return new Set<number>();
+    return new Set(
+      timeline.topic_lists.map((tl) => tl.id).filter((id) => !inactiveTopicListIds.has(id)),
+    );
+  }, [timeline, inactiveTopicListIds]);
+
+  // Seeds that have at least one active topic list
+  const activeSeedIds = useMemo(() => {
+    if (!timeline) return new Set<number>();
+    return new Set(
+      timeline.seeds
+        .filter((s) => s.topic_list_ids.some((id) => activeTopicListIds.has(id)))
+        .map((s) => s.id),
+    );
+  }, [timeline, activeTopicListIds]);
+
+  // Seeds filtered to active only
+  const filteredSeeds = useMemo(() => {
+    if (!timeline) return [];
+    if (inactiveTopicListIds.size === 0) return timeline.seeds;
+    return timeline.seeds.filter((s) => activeSeedIds.has(s.id));
+  }, [timeline, activeSeedIds, inactiveTopicListIds]);
+
+  // Seed citations between active seeds only
+  const filteredSeedCitations = useMemo(() => {
+    if (!timeline) return [];
+    if (inactiveTopicListIds.size === 0) return timeline.seed_citations;
+    return timeline.seed_citations.filter(
+      (sc) => activeSeedIds.has(sc.citing_seed_id) && activeSeedIds.has(sc.cited_seed_id),
+    );
+  }, [timeline, activeSeedIds, inactiveTopicListIds]);
+
   // Compute year range from all timeline data (seeds + neighbors)
   const yearRange = useMemo(() => {
     if (!timeline) return { min: null, max: null };
@@ -177,22 +216,34 @@ export default function ProjectDetailPage() {
     if (candidateFilter === 'top-venues') {
       result = result.filter((n) => n.venue_id != null && tier1Set.has(n.venue_id));
     }
+    if (inactiveTopicListIds.size > 0) {
+      result = result.filter((n) => n.connected_seed_ids.some((sid) => activeSeedIds.has(sid)));
+    }
     return result;
-  }, [timeline, tier1Set, ignoredSet, showBackward, showForward, candidateFilter]);
+  }, [timeline, tier1Set, ignoredSet, showBackward, showForward, candidateFilter, activeSeedIds, inactiveTopicListIds]);
 
-  // Seed color map: seed work ID → array of topic list colors
+  // Seed color map: seed work ID → array of topic list colors (active TLs only)
   const seedColorMap = useMemo(() => {
     if (!timeline) return new Map<number, string[]>();
     const tlColorMap = new Map(timeline.topic_lists.map((tl) => [tl.id, tl.color]));
     const map = new Map<number, string[]>();
     for (const seed of timeline.seeds) {
       const colors = seed.topic_list_ids
+        .filter((tlId) => activeTopicListIds.has(tlId))
         .map((tlId) => tlColorMap.get(tlId))
         .filter((c): c is string => c != null);
       map.set(seed.id, colors.length > 0 ? colors : ['#6b7280']);
     }
     return map;
-  }, [timeline]);
+  }, [timeline, activeTopicListIds]);
+
+  const handleToggleTopicList = useCallback((tlId: number) => {
+    setInactiveTopicListIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(tlId)) next.delete(tlId); else next.add(tlId);
+      return next;
+    });
+  }, []);
 
   // All work IDs rendered in the timeline (seeds + filtered neighbors)
   const renderedWorkIds = useMemo(() => {
@@ -348,10 +399,10 @@ export default function ProjectDetailPage() {
             />
             <div className="flex-1 min-h-0">
               <CitationTimeline
-                seeds={timeline?.seeds ?? []}
+                seeds={filteredSeeds}
                 neighbors={filteredNeighbors}
                 topicLists={timeline?.topic_lists ?? project.topic_lists}
-                seedCitations={timeline?.seed_citations ?? []}
+                seedCitations={filteredSeedCitations}
                 selectedWorkId={selectedWorkId}
                 onSelectWork={setSelectedWorkId}
                 citationsSinceYears={citationsSinceYears}
@@ -360,6 +411,8 @@ export default function ProjectDetailPage() {
                 showForward={showForward}
                 tier1VenueIds={tier1Set}
                 hops={hops}
+                activeTopicListIds={activeTopicListIds}
+                onToggleTopicList={handleToggleTopicList}
               />
             </div>
           </div>
