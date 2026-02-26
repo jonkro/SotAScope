@@ -331,3 +331,10 @@ export interface DOIResolutionResult {
   auto_resolved_doi: string | null;
   candidates: DOICandidate[];
 }
+
+// ---- LLM Chat ----
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'error';
+  content: string;
+}

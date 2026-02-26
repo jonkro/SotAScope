@@ -326,6 +326,12 @@ export default function ProjectDetailPage() {
             To project overview
           </button>
           <button
+            onClick={() => navigate(`/projects/${projectId}/discuss`)}
+            className="px-3 py-1.5 text-sm font-medium text-indigo-700 border border-indigo-300 rounded hover:bg-indigo-50"
+          >
+            Discuss
+          </button>
+          <button
             onClick={() => setShowCreateList(true)}
             className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
           >

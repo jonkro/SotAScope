@@ -5,6 +5,7 @@ import ProjectDetailPage from './pages/ProjectDetailPage'
 import LibraryPage from './pages/LibraryPage'
 import VenuesPage from './pages/VenuesPage'
 import SettingsPage from './pages/SettingsPage'
+import DiscussionPage from './pages/DiscussionPage'
 
 export default function App() {
   return (
@@ -13,7 +14,9 @@ export default function App() {
         <Route index element={<Navigate to="/projects" replace />} />
         <Route path="projects" element={<ProjectsPage />} />
         <Route path="projects/:projectId" element={<ProjectDetailPage />} />
+        <Route path="projects/:projectId/discuss" element={<DiscussionPage />} />
         <Route path="library" element={<LibraryPage />} />
+        <Route path="works/:workId/discuss" element={<DiscussionPage />} />
         <Route path="venues" element={<VenuesPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

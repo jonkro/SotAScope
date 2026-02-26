@@ -925,6 +925,12 @@ export default function WorkDetailPanel({
         >
           <div className="flex flex-wrap gap-2">
             <button
+              onClick={() => navigate(`/works/${workId}/discuss`)}
+              className="px-2 py-1 text-xs border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50"
+            >
+              Discuss
+            </button>
+            <button
               onClick={() => fetchBwd.mutate(workId, { onSettled: onEnrichComplete })}
               disabled={fetchBwd.isPending || isAutoEnriching}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"

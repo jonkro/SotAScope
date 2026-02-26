@@ -375,7 +375,7 @@ export function fetchWorkNotes(workId: number, projectId?: number) {
   return apiFetch<WorkNote[]>(`/api/works/${workId}/notes?${sp}`);
 }
 
-export function createWorkNote(workId: number, data: { content: string; note_type?: string | null; project_id?: number | null }) {
+export function createWorkNote(workId: number, data: { content: string; note_type?: string | null; project_id?: number | null; provenance?: string; model_id?: string | null }) {
   return apiFetch<WorkNote>(`/api/works/${workId}/notes`, {
     method: 'POST',
     body: JSON.stringify(data),
@@ -509,6 +509,18 @@ export function searchImportCandidates(data: { title: string; authors?: string; 
 
 export function searchImportConfirm(data: { doi?: string | null; semantic_scholar_id?: string | null }) {
   return apiFetch<EnrichDOIResult>('/api/enrich/search-import/confirm', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function postLLMChat(data: {
+  project_id?: number | null;
+  papers: { work_id: number; use_pdf: boolean; remark?: string | null }[];
+  history: { role: string; content: string }[];
+  message: string;
+}) {
+  return apiFetch<{ reply: string }>('/api/llm/chat', {
     method: 'POST',
     body: JSON.stringify(data),
   });
