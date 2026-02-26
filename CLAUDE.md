@@ -149,30 +149,33 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **Semantic Scholar integration**: `SemanticScholarClient` (`external/semantic_scholar.py`); `Work.semantic_scholar_id` column; on-demand enrichment endpoint `POST /api/enrich/works/{id}/semantic-scholar?direction={both|backward|forward}` (fetches refs/citations by direction, returns new/existing/raw counts); editable S2 ID field in WorkDetailPanel; deduplication by S2 ID as 4th fallback after DOI/openalex_id/arxiv_id; `s2_api_key` DB setting (raises S2 rate limit from 1→10 req/s); `SemanticScholarEnrichResult` includes `raw_references` and `raw_citing` (items returned by S2 API before dedup, used by UI to distinguish "S2 has no data" from "already in library")
 - **SSL verify toggle**: `ssl_verify` DB setting (default `"true"`); passed as `verify=` to all httpx clients; checkbox in Settings with amber warning; `formatError()` in ImportDialog detects SSL errors; global 503 handler with `SSL_CERTIFICATE_ERROR:` prefix
 - **WorkDetailPanel enrichment buttons**: 5 buttons in Actions section: "Fetch references (OA)", "Fetch citing papers (OA)", "Fetch references (S2)", "Fetch citing papers (S2)", "Enrich from Crossref"; works without a DOI show "Resolve DOI (CrossRef)" instead of Crossref button; each S2 button calls the endpoint with appropriate direction param; status messages distinguish S2 returning 0 items ("S2 has no reference list for this paper") from all-already-existing case
+- **LLM provider configuration (Phase 2 pre-work)**: four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`) seeded in `_seed_default_settings()`; `litexplorer/external/llm_client.py` — `ContextDocument` dataclass, abstract `LLMClient`, `AnthropicLLMClient`, `OpenAILLMClient`, `make_llm_client()` factory; `GET /api/llm/models` endpoint (reads DB settings, returns model list or soft error); `anthropic` and `openai` added as required dependencies in `pyproject.toml`; Settings page `/settings` has a dedicated **LLM Configuration** section: provider dropdown, API key (password, save on blur), base URL (save on blur, triggers model list re-fetch), model picker (loading spinner → populated dropdown or free-text fallback on error/empty), "Test connection" button, PDF vision note for Anthropic
 
 ### Not yet implemented from Phase 1 spec
 - (All Phase 1 items are now implemented)
 
-## Phase 2 scope (not yet started)
+## Phase 2 scope
 
-- LLM integration: user provides an API key for a provider (Anthropic, OpenAI, etc.)
-  - a) Per-paper chat: discuss a paper to accelerate understanding
-  - b) Structured extraction: user defines a custom schema of questions (e.g., "method used", "datasets used", "evaluation metric"). The LLM answers each question per paper, succinctly. Results are stored locally and can be exported as a table (CSV or similar). This is designed to support systematic literature review tables.
+### Implemented
 
-### Phase 2 design notes (pre-work already in place)
+- **LLM provider configuration**: `LLMClient` abstraction with `AnthropicLLMClient` and `OpenAILLMClient`; four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`); `GET /api/llm/models` endpoint; Settings page UI with model picker, test connection, and PDF vision note
 
-- **PDF text is ready for LLM use**: `WorkPDF.extraction_status='ready'` works have a companion `.txt` at `{pdf_root}/{work_id}/{stem}.txt`. Serve via `GET /api/works/{id}/pdfs/{id}/text`. This is the primary per-paper LLM input. PDF text extraction is **fully implemented** — no additional backend work is needed to support LLM text input.
+### Not yet started
+
+- **Per-paper chat**: discuss a paper with an LLM to accelerate understanding
+- **Structured extraction**: user defines a custom schema of questions (e.g., "method used", "datasets used", "evaluation metric"). The LLM answers each question per paper, succinctly. Results stored locally, exportable as CSV. Designed for systematic literature review tables.
+
+### Phase 2 design notes
+
+- **PDF text is ready for LLM use**: `WorkPDF.extraction_status='ready'` works have a companion `.txt` at `{pdf_root}/{work_id}/{stem}.txt`. Serve via `GET /api/works/{id}/pdfs/{id}/text`. This is the primary per-paper LLM input.
 - **WorkNote table is LLM-ready**: `provenance` ("user"/"ai"/"ai_reviewed") and `model_id` fields already exist. Per-paper chat turns or LLM summaries can be stored as WorkNotes. `project_id` scoping allows associating results with a specific project.
-- **New DB settings needed**: four settings — `llm_provider` (e.g., `"anthropic"` / `"openai"`), `llm_api_key`, `llm_model_id`, and `llm_base_url` — same pattern as `s2_api_key`. Add all four via `_seed_default_settings()` in `app.py` and expose in the Settings page.
-- **`llm_base_url`**: optional. When set, overrides the provider's default cloud endpoint. Enables local inference servers (Ollama, vLLM, LM Studio, llama.cpp) that expose an OpenAI-compatible API (e.g., `http://localhost:11434/v1`). `llm_api_key` may be left blank when using a local endpoint. The OpenAI Python SDK supports this via `openai.OpenAI(base_url=..., api_key=...)`.
-- **LLMClient abstraction**: implement a thin provider-agnostic `LLMClient` interface so the rest of the codebase is not coupled to any specific SDK. Concrete implementations: `AnthropicLLMClient` and `OpenAILLMClient`. Instantiated from `llm_provider` + `llm_api_key` + `llm_base_url` DB settings.
-- **Model selection via API**: model IDs are **not hardcoded**. The Settings page queries the provider's model list API and renders a dropdown of available models; the selected model is persisted as `llm_model_id`. When `llm_base_url` is set, the dropdown queries `{llm_base_url}/models` (the OpenAI-compatible `/v1/models` endpoint, which Ollama and most local servers expose). Reference model strings: Anthropic — `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`; OpenAI — `gpt-4o`.
+- **`llm_base_url`**: optional. When set, overrides the provider's default cloud endpoint. Enables local inference servers (Ollama, vLLM, LM Studio, llama.cpp) that expose an OpenAI-compatible API (e.g., `http://localhost:11434/v1`). `llm_api_key` may be left blank when using a local endpoint.
 - **PDF vision mode (Anthropic-only)**: sending the PDF binary directly to the model (vision input) is only supported when `llm_provider = "anthropic"`. When any other provider is configured — including local OpenAI-compatible servers — the "use PDF" toggle in the per-paper chat UI is disabled and the fallback is extracted `.txt` text.
 - **Conversation history — stateless backend**: full conversation history is sent with every chat request; the backend does not persist conversation turns. Conversations are lost on page refresh. This is intentional for Phase 2.
 - **Structured extraction needs new tables**: `ExtractionSchema` (user-defined list of questions, per-project) + `ExtractionResult` (per-work answers as JSON, keyed by schema+work). Export as CSV via a new endpoint (e.g., `GET /api/projects/{id}/extraction/{schema_id}/export`).
 - **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
 - **Context window strategy**: typical extracted PDF text is 5k–40k tokens. Send abstract+title first; include full text only when available. For very long papers, consider truncating to the first N tokens or chunking by section.
-- **Anthropic SDK**: add `anthropic` Python package as a dependency in `pyproject.toml`. Use the messages API (`client.messages.create()`). Streaming is available via `client.messages.stream()`.
+- **Anthropic SDK**: `anthropic` Python package; `client.messages.create()` for standard calls, `client.messages.stream()` for streaming. Already a required dependency in `pyproject.toml`.
 
 ---
 

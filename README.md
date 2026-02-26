@@ -4,7 +4,7 @@ A local-first research literature dashboard for mapping the state of the art aro
 
 You build a library of papers (BibTeX import, DOI lookup, or search-by-title), group them into topic lists, and LitExplorer fetches the citation graph from OpenAlex, Crossref, and Semantic Scholar. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years. Topic lists in the legend are clickable to toggle their visibility — hiding seeds, updating multi-topic-list color stripes, and removing candidates connected only to hidden lists.
 
-Other features: venue tier list (tier 1 = top venue, tier 3 = exclude from timeline), venue aliases for year-to-year name variation, PDF upload with auto text extraction, per-paper notes with AI/user provenance tracking, library sanitization tools (duplicate detection, work merge), SSL verification toggle for corporate proxy environments.
+Other features: venue tier list (tier 1 = top venue, tier 3 = exclude from timeline), venue aliases for year-to-year name variation, PDF upload with auto text extraction, per-paper notes with AI/user provenance tracking, library sanitization tools (duplicate detection, work merge), SSL verification toggle for corporate proxy environments. LLM provider configuration (Anthropic, OpenAI, or any local OpenAI-compatible server such as Ollama) is available in Settings as pre-work for the upcoming per-paper chat and structured extraction features.
 
 External API calls (OpenAlex, Crossref) are cached locally. All data — SQLite database, PDFs, cache — lives under a single configurable directory.
 
@@ -15,6 +15,7 @@ External API calls (OpenAlex, Crossref) are cached locally. All data — SQLite 
 - **Backend**: Python 3.11+, FastAPI, SQLAlchemy 2.0, SQLite (WAL mode)
 - **Frontend**: React 18, TypeScript, Vite, TanStack React Query, D3.js
 - **HTTP client**: httpx (OpenAlex, Crossref, Semantic Scholar)
+- **LLM SDKs**: anthropic, openai (optional — only needed when LLM provider is configured)
 - **BibTeX**: bibtexparser 1.4
 - **PDF extraction**: pdfplumber
 
@@ -112,6 +113,10 @@ Most configuration is done through the **Settings page** in the UI (`/settings`)
 | `pdf_storage_path` | Where PDFs are stored. Defaults to `{data_dir}/pdfs/`. On a server, point this to a persistent directory outside the repo. |
 | `ssl_verify` | Set to `false` to disable SSL certificate verification for external API calls. Useful when behind a corporate proxy that uses a custom CA. Default: `true` (verification enabled). |
 | `s2_api_key` | Semantic Scholar API key (optional). Raises the rate limit from ~1 req/s to 10 req/s. Apply at https://www.semanticscholar.org/product/api. Without a key, 429 errors are common on shared/university networks. |
+| `llm_provider` | LLM provider: `anthropic` or `openai`. Leave blank to disable LLM features. |
+| `llm_api_key` | API key for the selected provider. Optional when `llm_base_url` points to a local server. |
+| `llm_model_id` | Model to use (e.g. `claude-sonnet-4-6`, `gpt-4o`). The Settings page loads available models from the provider API and shows a dropdown. |
+| `llm_base_url` | Override the provider's default API endpoint. Use this to point to a local inference server (e.g. `http://localhost:11434/v1` for Ollama). |
 
 Environment variables (all prefixed `LITEXPLORER_`) can be set in a shell or in the `env` file (see `env.example`):
 
@@ -139,7 +144,7 @@ cd ..
 ## Running tests
 
 ```bash
-# Backend (198 tests)
+# Backend (209 tests)
 python -m pytest tests/ -v
 
 # Frontend — TypeScript type check + production build (requires Node.js)
