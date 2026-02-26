@@ -42,12 +42,14 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
 
-  // Model list query — only enabled when a provider is selected.
+  // Model list query — enabled only when there is something to authenticate with:
+  // an API key for cloud providers, or a base URL for local servers (key optional there).
+  const canFetchModels = !!llmProvider && (!!sm['llm_api_key'] || !!sm['llm_base_url']);
   const {
     data: modelsData,
     isLoading: modelsLoading,
     refetch: refetchModels,
-  } = useLLMModels(!!llmProvider);
+  } = useLLMModels(canFetchModels);
 
   // Test-connection status (auto-clears success messages after 3 s).
   const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
@@ -106,6 +108,14 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
       return (
         <select disabled className={`${inputCls} bg-gray-50 text-gray-400 cursor-not-allowed`}>
           <option>Select a provider first</option>
+        </select>
+      );
+    }
+
+    if (!canFetchModels) {
+      return (
+        <select disabled className={`${inputCls} bg-gray-50 text-gray-400 cursor-not-allowed`}>
+          <option>Enter an API key above to load models</option>
         </select>
       );
     }
@@ -256,7 +266,7 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
       {/* Test connection */}
       <div className="flex items-center gap-3">
         <button
-          disabled={!llmProvider}
+          disabled={!canFetchModels}
           onClick={handleTestConnection}
           className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
