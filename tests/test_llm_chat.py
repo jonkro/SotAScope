@@ -184,7 +184,8 @@ def test_chat_model_not_configured(client, db_session):
 
 
 def test_chat_paper_no_extracted_text(client, db_session):
-    """Work with pending/failed extraction is included with text=None; reply still returned."""
+    """Work with pending/failed extraction gets text=None; frontend prevents sending such papers
+    but backend still handles it gracefully (LLMClient reports 'No content available')."""
     _seed_llm_settings(db_session)
     work = _make_work(db_session)
     _make_pdf(db_session, work.id, filename="paper.pdf", extraction_status="pending")

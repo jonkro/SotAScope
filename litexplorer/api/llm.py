@@ -178,7 +178,7 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
                 txt_path = pdf_root / str(entry.work_id) / Path(ready_pdf.filename).with_suffix(".txt")
                 if txt_path.is_file():
                     text = txt_path.read_text(encoding="utf-8")
-            # else: no ready PDF — text stays None, LLMClient will note "No content available"
+            # No ready PDF → text stays None; frontend prevents sending such papers
 
         context_documents.append(
             ContextDocument(
