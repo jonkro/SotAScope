@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchWorks, fetchWork, createWork, updateWork, deleteWork, importBibtex,
-         fetchForwardCitations, fetchBackwardCitations, mergeWorks, fetchDuplicates } from '../api';
+         fetchForwardCitations, fetchBackwardCitations, mergeWorks, fetchDuplicates,
+         addWorkDOIAlias, removeWorkDOIAlias } from '../api';
 
 export function useWorks(params: { offset?: number; limit?: number; q?: string; venue_id?: number; year?: number }) {
   return useQuery({
@@ -46,6 +47,28 @@ export function useUpdateWork() {
   return useMutation({
     mutationFn: ({ workId, data }: { workId: number; data: Record<string, unknown> }) => updateWork(workId, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['works'] }),
+  });
+}
+
+export function useAddWorkDOIAlias() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workId, doi }: { workId: number; doi: string }) =>
+      addWorkDOIAlias(workId, doi),
+    onSuccess: (_data, { workId }) => {
+      qc.invalidateQueries({ queryKey: ['works', workId] });
+    },
+  });
+}
+
+export function useRemoveWorkDOIAlias() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workId, doi }: { workId: number; doi: string }) =>
+      removeWorkDOIAlias(workId, doi),
+    onSuccess: (_data, { workId }) => {
+      qc.invalidateQueries({ queryKey: ['works', workId] });
+    },
   });
 }
 

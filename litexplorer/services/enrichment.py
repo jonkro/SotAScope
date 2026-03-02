@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -39,6 +40,20 @@ _PROCEEDINGS_PREFIX_RE = re.compile(
     r'^proceedings\s+of\s+the\s+|^proceedings\s+of\s+|^proceedings\s+on\s+|^proceedings\s+',
     re.IGNORECASE,
 )
+
+
+def _normalize_title_for_cmp(title: str) -> str:
+    """Normalize a paper title for fuzzy comparison.
+
+    Lowercases, decomposes unicode (handles fancy quotes, dashes, accented
+    chars), replaces all non-alphanumeric characters with spaces, and
+    collapses whitespace.  This makes comparisons robust against typesetting
+    differences like em-dash vs hyphen, curly vs straight apostrophes, etc.
+    """
+    # NFKD decomposes ligatures, fancy quotes, etc.
+    title = unicodedata.normalize("NFKD", title).lower()
+    title = re.sub(r"[^a-z0-9]", " ", title)
+    return re.sub(r"\s+", " ", title).strip()
 
 
 def normalize_venue_name(name: str) -> str:
@@ -855,6 +870,18 @@ class EnrichmentService:
             ss_paper = ss_client.get_paper_by_doi(work.doi)
         if ss_paper is None and work.semantic_scholar_id:
             ss_paper = ss_client.get_paper_by_id(work.semantic_scholar_id)
+        if ss_paper is None and work.title:
+            # Title-based fallback: handles cases where the DOI in our DB
+            # differs from the one S2 knows, or the S2 ID is a CorpusId that
+            # the /paper/{id} endpoint doesn't accept directly.
+            norm_local = _normalize_title_for_cmp(work.title)
+            candidates = ss_client.search_by_title(work.title, limit=5)
+            for cand in candidates:
+                if _normalize_title_for_cmp(cand.get("title") or "") == norm_local:
+                    paper_id = cand.get("paperId")
+                    if paper_id:
+                        ss_paper = ss_client.get_paper_by_id(paper_id)
+                        break
 
         if ss_paper is None:
             raise RuntimeError(

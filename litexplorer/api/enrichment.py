@@ -18,6 +18,7 @@ from litexplorer.schemas.enrichment import (
     CitationResult,
     ConfirmDOIRequest,
     CrossrefEnrichResult,
+    DOIInfoResult,
     DOIResolutionResult,
     EnrichDOIBatchRequest,
     EnrichDOIBatchResult,
@@ -149,6 +150,63 @@ def enrich_by_doi_batch(body: EnrichDOIBatchRequest, db: Session = Depends(get_d
         cr_client.close()
 
     return EnrichDOIBatchResult(results=results, errors=errors)
+
+
+@router.get("/doi/info", response_model=DOIInfoResult)
+def doi_info(doi: str = Query(...), db: Session = Depends(get_db)):
+    """Look up a DOI and return its title/year without importing the work.
+
+    Checks the OpenAlex cache first; falls back to a live API call if not
+    cached.  Returns ``found=False`` (with ``title=None``) when the DOI is
+    not found on either OpenAlex or Crossref.  Never persists anything.
+    """
+    import json as _json
+
+    from litexplorer.external.openalex import parse_work as _parse_oa
+    from litexplorer.models.cache import ApiCache
+
+    doi = doi.strip().lower().removeprefix("https://doi.org/")
+
+    # 1. Check local cache (OpenAlex)
+    from sqlalchemy import select as _select
+
+    cache_key = f"work:doi:{doi}"
+    cached = db.execute(
+        _select(ApiCache).where(ApiCache.source == "openalex", ApiCache.query_key == cache_key)
+    ).scalar_one_or_none()
+    if cached:
+        try:
+            raw = _json.loads(cached.response_json)
+            ext = _parse_oa(raw)
+            return DOIInfoResult(doi=doi, title=ext.title, year=ext.publication_year, found=True)
+        except Exception:
+            pass  # fall through to live lookup
+
+    # 2. Live OpenAlex lookup
+    client = _get_client(db)
+    try:
+        raw = client.get_work_by_doi_raw(doi)
+        if raw is not None:
+            ext = _parse_oa(raw)
+            return DOIInfoResult(doi=doi, title=ext.title, year=ext.publication_year, found=True)
+    except Exception:
+        pass
+    finally:
+        client.close()
+
+    # 3. Crossref fallback
+    cr_client = _get_crossref_client(db)
+    try:
+        raw_cr = cr_client.get_work_by_doi_raw(doi)
+        if raw_cr is not None:
+            ext = parse_crossref_work(raw_cr)
+            return DOIInfoResult(doi=doi, title=ext.title, year=ext.publication_year, found=True)
+    except Exception:
+        pass
+    finally:
+        cr_client.close()
+
+    return DOIInfoResult(doi=doi, found=False)
 
 
 @router.post("/works/{work_id}/citations/backward", response_model=CitationResult)

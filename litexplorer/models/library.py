@@ -79,9 +79,38 @@ class Work(Base):
     notes: Mapped[list["WorkNote"]] = relationship(
         back_populates="work", cascade="all, delete-orphan"
     )
+    doi_aliases: Mapped[list["WorkDOI"]] = relationship(
+        back_populates="work", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Work id={self.id} doi={self.doi!r} title={self.title[:60]!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Work DOI aliases
+# ---------------------------------------------------------------------------
+
+class WorkDOI(Base):
+    """A secondary/alternative DOI for a work.
+
+    The primary DOI lives on ``Work.doi``.  Additional known DOIs (e.g., a
+    publisher DOI and an open-access mirror DOI for the same paper) are stored
+    here to aid S2/OA lookups and provide a more complete record.
+    """
+
+    __tablename__ = "work_dois"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_id: Mapped[int] = mapped_column(
+        ForeignKey("works.id", ondelete="CASCADE"), nullable=False
+    )
+    doi: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    work: Mapped["Work"] = relationship(back_populates="doi_aliases")
+
+    def __repr__(self) -> str:
+        return f"<WorkDOI id={self.id} work_id={self.work_id} doi={self.doi!r}>"
 
 
 # ---------------------------------------------------------------------------

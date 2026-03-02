@@ -21,6 +21,7 @@ export interface WorkOut {
   author_count: number;
   venue_display_name: string | null;
   venue_tier: number | null;
+  doi_aliases: string[];
 }
 
 export interface SemanticScholarEnrichResult {
@@ -60,6 +61,7 @@ export interface WorkDetail extends WorkOut {
   venue_name: string | null;
   locations: WorkLocationOut[];
   authors: WorkAuthorOut[];
+  doi_aliases: string[];
 }
 
 export interface CitationWorkBrief {
@@ -330,6 +332,13 @@ export interface DOIResolutionResult {
   work_id: number;
   auto_resolved_doi: string | null;
   candidates: DOICandidate[];
+}
+
+export interface DOIInfoResult {
+  doi: string;
+  title: string | null;
+  year: number | null;
+  found: boolean;
 }
 
 // ---- LLM Chat ----

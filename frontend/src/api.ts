@@ -21,6 +21,7 @@ import type {
   SemanticScholarEnrichResult,
   SearchImportCandidatesResult,
   DOIResolutionResult,
+  DOIInfoResult,
   AuthorOut,
   WorkLocationOut,
   TimelineResponse,
@@ -86,6 +87,20 @@ export function updateWork(workId: number, data: Record<string, unknown>) {
   return apiFetch<WorkDetail>(`/api/works/${workId}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
+  });
+}
+
+export function addWorkDOIAlias(workId: number, doi: string) {
+  return apiFetch<string[]>(`/api/works/${workId}/doi-aliases`, {
+    method: 'POST',
+    body: JSON.stringify({ doi }),
+  });
+}
+
+export function removeWorkDOIAlias(workId: number, doi: string) {
+  return apiFetch<string[]>(`/api/works/${workId}/doi-aliases`, {
+    method: 'DELETE',
+    body: JSON.stringify({ doi }),
   });
 }
 
@@ -437,6 +452,10 @@ export function migratePDFStorage(newPath: string) {
 }
 
 // ---- Enrichment ----
+
+export function getDOIInfo(doi: string) {
+  return apiFetch<DOIInfoResult>(`/api/enrich/doi/info?doi=${encodeURIComponent(doi)}`);
+}
 
 export function enrichDOI(doi: string) {
   return apiFetch<EnrichDOIResult>('/api/enrich/doi', {

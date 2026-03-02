@@ -22,6 +22,7 @@ from litexplorer.models.library import (
     VenueAlias,
     Work,
     WorkAuthor,
+    WorkDOI,
     WorkLocation,
     WorkNote,
     WorkPDF,
@@ -910,6 +911,56 @@ def get_pdf_text(work_id: int, pdf_id: int, db: Session = Depends(get_db)):
         )
 
     return PlainTextResponse(txt_path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# DOI aliases
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{work_id}/doi-aliases")
+def list_doi_aliases(work_id: int, db: Session = Depends(get_db)) -> list[str]:
+    """Return the list of secondary DOIs for a work."""
+    work = _get_work(db, work_id)
+    return [a.doi for a in work.doi_aliases]
+
+
+@router.post("/{work_id}/doi-aliases", status_code=201)
+def add_doi_alias(
+    work_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+) -> list[str]:
+    """Add a secondary DOI to a work. Body: {"doi": "10.1234/..."}"""
+    work = _get_work(db, work_id)
+    doi = (body.get("doi") or "").strip().lower()
+    if not doi:
+        raise HTTPException(status_code=422, detail="doi is required")
+    # Avoid adding the same DOI as the primary or a duplicate alias
+    if doi == (work.doi or "").lower():
+        raise HTTPException(status_code=409, detail="DOI is already the primary DOI for this work")
+    if any(a.doi.lower() == doi for a in work.doi_aliases):
+        raise HTTPException(status_code=409, detail="DOI already in alias list")
+    work.doi_aliases.append(WorkDOI(work_id=work_id, doi=doi))
+    db.commit()
+    return [a.doi for a in work.doi_aliases]
+
+
+@router.delete("/{work_id}/doi-aliases")
+def remove_doi_alias(
+    work_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+) -> list[str]:
+    """Remove a secondary DOI from a work. Body: {"doi": "10.1234/..."}"""
+    work = _get_work(db, work_id)
+    doi = (body.get("doi") or "").strip().lower()
+    alias = next((a for a in work.doi_aliases if a.doi.lower() == doi), None)
+    if alias is None:
+        raise HTTPException(status_code=404, detail="DOI alias not found")
+    db.delete(alias)
+    db.commit()
+    return [a.doi for a in work.doi_aliases]
 
 
 # ---------------------------------------------------------------------------

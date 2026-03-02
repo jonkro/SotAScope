@@ -1,11 +1,12 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useEnrichFromSemanticScholar, useResolveDOI } from '../hooks/useEnrichment';
-import { useUpdateWork } from '../hooks/useWorks';
+import { useUpdateWork, useAddWorkDOIAlias, useRemoveWorkDOIAlias } from '../hooks/useWorks';
 import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF, useExtractWorkPDFText } from '../hooks/useWorkPDFs';
 import { useWorkNotes, useCreateWorkNote, useUpdateWorkNote, useDeleteWorkNote } from '../hooks/useWorkNotes';
-import { serveWorkPDFUrl, workPDFTextUrl } from '../api';
+import { serveWorkPDFUrl, workPDFTextUrl, getDOIInfo } from '../api';
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 import ConfirmDialog from './ConfirmDialog';
@@ -74,6 +75,24 @@ function ForwardMarker() {
       <rect x={1.17} y={1.17} width={5.66} height={5.66} fill="#9ca3af" transform="rotate(45,4,4)" />
     </svg>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Title similarity helper (for DOI verification warning)             */
+/* ------------------------------------------------------------------ */
+
+function normTitle(t: string): string[] {
+  return t.toLowerCase().replace(/[^a-z0-9]/g, ' ').split(/\s+/).filter(Boolean);
+}
+
+/** Returns a 0–1 Jaccard similarity between two title strings. */
+function titleSimilarity(a: string, b: string): number {
+  const wa = new Set(normTitle(a));
+  const wb = new Set(normTitle(b));
+  if (wa.size === 0 && wb.size === 0) return 1;
+  let intersection = 0;
+  for (const w of wa) if (wb.has(w)) intersection++;
+  return intersection / (wa.size + wb.size - intersection);
 }
 
 /* ------------------------------------------------------------------ */
@@ -326,6 +345,28 @@ export default function WorkDetailPanel({
   const [ssEnrichMsg, setSsEnrichMsg] = useState<string | null>(null);
   const [editSsId, setEditSsId] = useState(false);
   const [ssIdDraft, setSsIdDraft] = useState('');
+  const [editDoi, setEditDoi] = useState(false);
+  const [doiDraft, setDoiDraft] = useState('');
+  // Fetch remote title for the drafted DOI to show a similarity warning
+  const doiLookupEnabled = editDoi && doiDraft.trim().length > 5;
+  const { data: doiInfo, isFetching: doiInfoFetching } = useQuery({
+    queryKey: ['doi-info', doiDraft.trim()],
+    queryFn: () => getDOIInfo(doiDraft.trim()),
+    enabled: doiLookupEnabled,
+    staleTime: 5 * 60 * 1000,
+  });
+  const addDOIAlias = useAddWorkDOIAlias();
+  const removeDOIAlias = useRemoveWorkDOIAlias();
+  const [addingDOIAlias, setAddingDOIAlias] = useState(false);
+  const [doiAliasDraft, setDoiAliasDraft] = useState('');
+  // Fetch remote title for the alias draft
+  const doiAliasLookupEnabled = addingDOIAlias && doiAliasDraft.trim().length > 5;
+  const { data: doiAliasInfo, isFetching: doiAliasInfoFetching } = useQuery({
+    queryKey: ['doi-info', doiAliasDraft.trim()],
+    queryFn: () => getDOIInfo(doiAliasDraft.trim()),
+    enabled: doiAliasLookupEnabled,
+    staleTime: 5 * 60 * 1000,
+  });
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleteMutation = useDeleteWork();
   const navigate = useNavigate();
@@ -398,24 +439,191 @@ export default function WorkDetailPanel({
               )}
             </>
           )}
-          {work.doi && (
-            <>
-              <span className="text-gray-500">DOI</span>
-              <span className="flex items-center gap-1">
-                <a
-                  href={`https://doi.org/${work.doi}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:underline truncate"
-                >
-                  {work.doi}
-                </a>
-                {work.doi_auto_resolved && (
-                  <span className="text-[10px] text-amber-600 whitespace-nowrap">(auto-resolved)</span>
+          <>
+            <span className="text-gray-500">DOI</span>
+            {editDoi ? (
+              <span className="flex flex-col gap-1">
+                <span className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={doiDraft}
+                    onChange={(e) => setDoiDraft(e.target.value)}
+                    placeholder="e.g. 10.1234/example"
+                    className="flex-1 border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => {
+                      updateWork.mutate(
+                        { workId, data: { doi: doiDraft.trim() || null } },
+                        { onSettled: () => setEditDoi(false) },
+                      );
+                    }}
+                    disabled={updateWork.isPending}
+                    className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setEditDoi(false)}
+                    className="text-xs text-gray-500 hover:underline"
+                  >
+                    Cancel
+                  </button>
+                </span>
+                {/* Title similarity warning */}
+                {doiLookupEnabled && !doiInfoFetching && doiInfo && work && (() => {
+                  if (!doiInfo.found) {
+                    return (
+                      <span className="text-[10px] text-red-600">
+                        DOI not found on OpenAlex or Crossref.
+                      </span>
+                    );
+                  }
+                  if (doiInfo.title) {
+                    const sim = titleSimilarity(work.title, doiInfo.title);
+                    if (sim < 0.7) {
+                      return (
+                        <span className="text-[10px] text-amber-700 leading-tight">
+                          ⚠ Remote title differs significantly ({Math.round(sim * 100)}% match):<br />
+                          <em>{doiInfo.title}</em>
+                        </span>
+                      );
+                    }
+                    return (
+                      <span className="text-[10px] text-green-700">
+                        ✓ Title matches: <em>{doiInfo.title}</em>
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
+                {doiLookupEnabled && doiInfoFetching && (
+                  <span className="text-[10px] text-gray-400">Looking up DOI…</span>
                 )}
               </span>
-            </>
-          )}
+            ) : (
+              <span className="flex flex-col gap-0.5">
+                {/* Primary DOI */}
+                <span className="flex items-center gap-1">
+                  {work.doi ? (
+                    <>
+                      <a
+                        href={`https://doi.org/${work.doi}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline truncate"
+                      >
+                        {work.doi}
+                      </a>
+                      {work.doi_auto_resolved && (
+                        <span className="text-[10px] text-amber-600 whitespace-nowrap">(auto-resolved)</span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-gray-400 text-xs">Not set</span>
+                  )}
+                  <button
+                    onClick={() => { setDoiDraft(work.doi ?? ''); setEditDoi(true); }}
+                    className="text-[10px] text-gray-400 hover:text-blue-600 underline ml-1"
+                  >
+                    {work.doi ? 'Edit' : 'Set'}
+                  </button>
+                </span>
+                {/* Secondary DOIs */}
+                {work.doi_aliases?.map((alias) => (
+                  <span key={alias} className="flex items-center gap-1">
+                    <a
+                      href={`https://doi.org/${alias}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:underline truncate text-xs"
+                    >
+                      {alias}
+                    </a>
+                    <button
+                      onClick={() => removeDOIAlias.mutate({ workId, doi: alias })}
+                      disabled={removeDOIAlias.isPending}
+                      className="text-[10px] text-red-400 hover:text-red-600 ml-1 disabled:opacity-50"
+                      title="Remove this DOI"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {/* Add DOI alias form or button */}
+                {addingDOIAlias ? (
+                  <span className="flex flex-col gap-1 mt-0.5">
+                    <span className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        value={doiAliasDraft}
+                        onChange={(e) => setDoiAliasDraft(e.target.value)}
+                        placeholder="e.g. 10.1234/example"
+                        className="flex-1 border border-gray-300 rounded px-1 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        autoFocus
+                      />
+                      <button
+                        onClick={() => {
+                          addDOIAlias.mutate(
+                            { workId, doi: doiAliasDraft.trim() },
+                            { onSettled: () => { setAddingDOIAlias(false); setDoiAliasDraft(''); } },
+                          );
+                        }}
+                        disabled={addDOIAlias.isPending || !doiAliasDraft.trim()}
+                        className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                      >
+                        Add
+                      </button>
+                      <button
+                        onClick={() => { setAddingDOIAlias(false); setDoiAliasDraft(''); }}
+                        className="text-xs text-gray-500 hover:underline"
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                    {/* Title similarity warning for alias */}
+                    {doiAliasLookupEnabled && !doiAliasInfoFetching && doiAliasInfo && work && (() => {
+                      if (!doiAliasInfo.found) {
+                        return (
+                          <span className="text-[10px] text-red-600">
+                            DOI not found on OpenAlex or Crossref.
+                          </span>
+                        );
+                      }
+                      if (doiAliasInfo.title) {
+                        const sim = titleSimilarity(work.title, doiAliasInfo.title);
+                        if (sim < 0.7) {
+                          return (
+                            <span className="text-[10px] text-amber-700 leading-tight">
+                              ⚠ Remote title differs ({Math.round(sim * 100)}% match):<br />
+                              <em>{doiAliasInfo.title}</em>
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="text-[10px] text-green-700">
+                            ✓ Title matches: <em>{doiAliasInfo.title}</em>
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {doiAliasLookupEnabled && doiAliasInfoFetching && (
+                      <span className="text-[10px] text-gray-400">Looking up DOI…</span>
+                    )}
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => { setDoiAliasDraft(''); setAddingDOIAlias(true); }}
+                    className="text-[10px] text-gray-400 hover:text-blue-600 text-left"
+                  >
+                    + Add DOI
+                  </button>
+                )}
+              </span>
+            )}
+          </>
           {work.arxiv_id && (
             <>
               <span className="text-gray-500">arXiv</span>

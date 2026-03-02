@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +127,15 @@ class WorkOut(BaseModel):
     created_by: str | None
     created_at: datetime
     updated_at: datetime
+
+    doi_aliases: list[str] = []
+
+    @field_validator('doi_aliases', mode='before')
+    @classmethod
+    def _coerce_doi_aliases(cls, v):
+        if not v:
+            return []
+        return [x.doi if hasattr(x, 'doi') else x for x in v]
 
     # Display fields (populated by list_works)
     first_author_name: str | None = None

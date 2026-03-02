@@ -101,3 +101,12 @@ class SearchImportConfirmRequest(BaseModel):
     doi: str | None = None
     semantic_scholar_id: str | None = None
 
+
+# -- DOI info (read-only title lookup, no import) --
+
+class DOIInfoResult(BaseModel):
+    doi: str
+    title: str | None = None
+    year: int | None = None
+    found: bool
+

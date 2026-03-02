@@ -120,6 +120,17 @@ def _migrate_schema() -> None:
                 db.execute(text("INSERT INTO sqlite_sequence (name, seq) VALUES ('works', :seq)"),
                            {"seq": max_id})
                 db.commit()
+        # Create work_dois table if it doesn't exist
+        if "work_dois" not in existing_tables:
+            db.execute(text(
+                "CREATE TABLE work_dois ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,"
+                "  doi VARCHAR(255) NOT NULL"
+                ")"
+            ))
+            db.commit()
+
     finally:
         db.close()
 

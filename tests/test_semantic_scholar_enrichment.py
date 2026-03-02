@@ -50,6 +50,7 @@ def mock_ss_client():
     # Default: return None (paper not found)
     client.get_paper_by_doi.return_value = None
     client.get_paper_by_id.return_value = None
+    client.search_by_title.return_value = []
     client.get_references.return_value = []
     client.get_citations.return_value = []
     return client
@@ -354,3 +355,79 @@ def test_s2_ref_with_doi_gets_openalex_id(db_session, client, mock_ss_client, mo
     )
     # No duplicate works (one seed + one ref)
     assert len(all_works) == 2
+
+
+# ---------------------------------------------------------------------------
+# Title-based fallback when DOI and S2 ID lookups both fail
+# ---------------------------------------------------------------------------
+
+
+def test_enrichment_title_fallback(db_session, client, mock_ss_client):
+    """When DOI and S2 ID lookups fail, enrich_from_semantic_scholar falls back
+    to a title search and uses the first result whose normalized title matches."""
+    # Work has a DOI that S2 doesn't recognize + a numeric S2 ID that the
+    # /paper/{id} endpoint doesn't accept (CorpusId format issue)
+    work = _make_work(
+        db_session,
+        doi="10.52202/different-doi",
+        semantic_scholar_id="266844130",
+        title="Deep Learning for Network Intrusion Detection",
+    )
+
+    # DOI lookup fails
+    mock_ss_client.get_paper_by_doi.return_value = None
+
+    # get_paper_by_id: fails for the stored numeric ID, succeeds for the hex ID from search
+    seed_ext = _ext_work(
+        "Deep Learning for Network Intrusion Detection",
+        doi="10.52202/real-doi",
+        ss_id="abc123def456",
+    )
+    mock_ss_client.get_paper_by_id.side_effect = lambda pid: (
+        seed_ext if pid == "abc123def456" else None
+    )
+
+    # Title search returns a candidate with a matching (but differently cased) title
+    # and a valid hex paper ID
+    mock_ss_client.search_by_title.return_value = [
+        {
+            "paperId": "abc123def456",
+            "title": "Deep Learning for Network Intrusion Detection",
+            "year": 2023,
+            "externalIds": {"DOI": "10.52202/real-doi"},
+        }
+    ]
+
+    mock_ss_client.get_references.return_value = [
+        _ext_work("Some Reference", doi="10.1111/ref", ss_id="ref-id"),
+    ]
+    mock_ss_client.get_citations.return_value = []
+
+    resp = client.post(f"/api/enrich/works/{work.id}/semantic-scholar")
+    assert resp.status_code == 200, resp.text
+
+    data = resp.json()
+    assert data["new_references"] == 1
+
+    # Title search was called with the work's title
+    mock_ss_client.search_by_title.assert_called_once_with(
+        "Deep Learning for Network Intrusion Detection", limit=5
+    )
+
+
+def test_enrichment_title_fallback_no_match(db_session, client, mock_ss_client):
+    """Title fallback with no matching result → 503."""
+    work = _make_work(
+        db_session,
+        doi="10.99999/not-on-s2",
+        title="A Very Obscure Paper Title",
+    )
+    mock_ss_client.get_paper_by_doi.return_value = None
+    # search returns a candidate with a different title — no match
+    mock_ss_client.search_by_title.return_value = [
+        {"paperId": "xyz", "title": "Something Completely Different", "year": 2020}
+    ]
+
+    resp = client.post(f"/api/enrich/works/{work.id}/semantic-scholar")
+    assert resp.status_code == 503
+    assert "semantic scholar" in resp.json()["detail"].lower()
