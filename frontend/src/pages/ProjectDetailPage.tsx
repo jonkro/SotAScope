@@ -12,7 +12,7 @@ import TimelineControls, { type CandidateFilter } from '../components/TimelineCo
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
 import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
-  useAddIgnoredWork, useRemoveIgnoredWork, useRemoveWorkFromTopicList,
+  useAddIgnoredWork, useRemoveIgnoredWork, useRemoveWorkFromTopicList, useTopicList,
 } from '../hooks/useProjects';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorks } from '../hooks/useWorks';
@@ -101,10 +101,21 @@ export default function ProjectDetailPage() {
   // Work search for adding to lists
   const [showWorkSearch, setShowWorkSearch] = useState<number | null>(null);
   const [workSearch, setWorkSearch] = useState('');
+  const [expandedListId, setExpandedListId] = useState<number | null>(null);
   const { data: searchedWorks } = useWorks({
     q: workSearch || undefined,
     limit: 10,
   });
+  // Fetch the works already in the list being searched so we can exclude them from candidates
+  const { data: activeSearchListDetail } = useTopicList(projectId, showWorkSearch);
+  const activeListWorkIds = useMemo(
+    () => new Set((activeSearchListDetail as { works?: { work: { id: number } }[] } | undefined)?.works?.map((tw) => tw.work.id) ?? []),
+    [activeSearchListDetail],
+  );
+  const filteredSearchedWorks = useMemo(
+    () => searchedWorks?.filter((w) => !activeListWorkIds.has(w.id)),
+    [searchedWorks, activeListWorkIds],
+  );
 
   // Timeline data
   const qc = useQueryClient();
@@ -125,6 +136,7 @@ export default function ProjectDetailPage() {
   const handleAddWorkToList = useCallback((topicListId: number, workId: number) => {
     addWork.mutate({ projectId, topicListId, workId }, {
       onSuccess: async () => {
+        setExpandedListId(topicListId);
         setEnrichingWorkIds((prev) => new Set(prev).add(workId));
         try {
           // Auto-enrich: fetch references, citing papers, and crossref in parallel
@@ -444,6 +456,7 @@ export default function ProjectDetailPage() {
                     onEdit={() => setEditList({ id: tl.id, name: tl.name, color: tl.color })}
                     onDelete={() => setDeleteListId(tl.id)}
                     onSelectWork={(wid) => setSelectedWorkId(wid)}
+                    forceExpand={expandedListId === tl.id}
                   />
                   <div className="mt-2 ml-8">
                     {showWorkSearch === tl.id ? (
@@ -457,7 +470,7 @@ export default function ProjectDetailPage() {
                             Cancel
                           </button>
                         </div>
-                        {searchedWorks?.map((w) => (
+                        {filteredSearchedWorks?.map((w) => (
                           <button
                             key={w.id}
                             onClick={() => {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { TopicListOut, TopicListDetail } from '../types';
 import { useTopicList, useRemoveWorkFromTopicList } from '../hooks/useProjects';
 import Badge from './Badge';
@@ -9,14 +9,20 @@ export default function TopicListCard({
   onEdit,
   onDelete,
   onSelectWork,
+  forceExpand,
 }: {
   topicList: TopicListOut;
   projectId: number;
   onEdit: () => void;
   onDelete: () => void;
   onSelectWork: (workId: number) => void;
+  forceExpand?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (forceExpand) setExpanded(true);
+  }, [forceExpand]);
   const { data: detail } = useTopicList(projectId, expanded ? topicList.id : null);
   const removeWork = useRemoveWorkFromTopicList();
 
