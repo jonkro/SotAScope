@@ -188,6 +188,9 @@ export default function CitationTimeline({
   // Radius: sqrt scaling proportional to area
   const rScale = (connectivity: number) => BASE_RADIUS * Math.sqrt(connectivity);
 
+  // Track previous selectedWorkId to fire ripple only when selection changes
+  const prevSelectedWorkIdRef = useRef<number | null>(null);
+
   // Observe container size
   useEffect(() => {
     const el = containerRef.current;
@@ -502,6 +505,33 @@ export default function CitationTimeline({
             .attr('stroke-width', isIntermediate ? 1.5 : 1)
             .attr('opacity', (hopDist ?? 1) === 1 ? 0.5 : 0.3);
         }
+      }
+    }
+
+    // --- Ripple on newly selected dot ---
+    const selectionChanged = selectedWorkId !== prevSelectedWorkIdRef.current;
+    prevSelectedWorkIdRef.current = selectedWorkId;
+
+    if (selectedWorkId != null && selectionChanged) {
+      const selPos = dotPositions.get(selectedWorkId);
+      const selDot = dots.find((d) => d.id === selectedWorkId);
+      if (selPos && selDot) {
+        const r = rScale(selDot.connectivity);
+        g.append('circle')
+          .attr('cx', selPos.x)
+          .attr('cy', selPos.y)
+          .attr('r', r + 2)
+          .attr('fill', 'none')
+          .attr('stroke', '#6366f1')
+          .attr('stroke-width', 2)
+          .attr('opacity', 0.7)
+          .attr('pointer-events', 'none')
+          .transition()
+          .duration(650)
+          .ease(d3.easeCubicOut)
+          .attr('r', r + 18)
+          .attr('opacity', 0)
+          .remove();
       }
     }
 

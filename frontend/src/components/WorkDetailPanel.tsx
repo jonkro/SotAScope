@@ -236,7 +236,7 @@ function CitationList({
                   {clickable ? (
                     <button
                       onClick={() => onSelectWork(c.id)}
-                      className={`text-left hover:text-blue-600 ${isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}`}
+                      className={`text-left cursor-pointer hover:text-blue-600 hover:underline ${isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}`}
                     >
                       {label}
                     </button>
