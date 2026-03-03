@@ -147,6 +147,7 @@ class OpenAILLMClient(LLMClient):
                 "openai package is required for the OpenAI provider: "
                 "pip install openai"
             )
+        self._real_api_key = api_key  # original; empty = no auth for local servers
         # Local servers don't validate the key, but the SDK requires a non-empty string.
         effective_key = api_key if api_key else "local"
         kwargs: dict = {"api_key": effective_key}
@@ -194,14 +195,25 @@ class OpenAILLMClient(LLMClient):
     def list_models(self) -> list[str]:
         """Return available model IDs.
 
-        For OpenAI cloud (no base_url), filters to IDs containing ``"gpt"``.
-        For local servers (base_url set), returns all IDs unfiltered.
+        For OpenAI cloud (no base_url), uses the SDK (requires a real API key)
+        and filters to IDs containing ``"gpt"``.
+
+        For local servers (base_url set), uses httpx directly so that no
+        ``Authorization`` header is sent when ``api_key`` is empty. Sending
+        ``Bearer local`` (the SDK's non-empty placeholder) causes 401 errors on
+        servers that actually validate auth headers.
         """
+        if self._base_url is not None:
+            base = self._base_url.rstrip("/")
+            headers: dict[str, str] = {}
+            if self._real_api_key:
+                headers["Authorization"] = f"Bearer {self._real_api_key}"
+            resp = httpx.get(f"{base}/models", headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            return [m["id"] for m in data.get("data", [])]
         models = self._client.models.list()
-        all_ids = [m.id for m in models]
-        if self._base_url is None:
-            return [mid for mid in all_ids if "gpt" in mid]
-        return all_ids
+        return [m.id for m in models if "gpt" in m.id]
 
 
 def make_llm_client(

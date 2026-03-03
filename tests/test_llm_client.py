@@ -298,15 +298,21 @@ def test_openai_list_models_cloud_filters_gpt():
 
 
 def test_openai_list_models_local_returns_all():
-    """list_models() for a local server (base_url set) returns all model IDs unfiltered."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
-        mock_instance = MagicMock()
-        mock_mod.OpenAI.return_value = mock_instance
-        mock_instance.models.list.return_value = [
-            MagicMock(id="llama3.2"),
-            MagicMock(id="mistral-7b"),
-            MagicMock(id="phi-3"),
+    """list_models() for a local server uses httpx directly (no Bearer token when
+    api_key is empty) and returns all model IDs unfiltered."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "data": [
+            {"id": "llama3.2"},
+            {"id": "mistral-7b"},
+            {"id": "phi-3"},
         ]
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("litexplorer.external.llm_client.openai") as mock_mod, \
+         patch("litexplorer.external.llm_client.httpx.get", return_value=mock_response) as mock_get:
+        mock_mod.OpenAI.return_value = MagicMock()
 
         c = OpenAILLMClient(
             api_key="",
@@ -316,6 +322,34 @@ def test_openai_list_models_local_returns_all():
         models = c.list_models()
 
     assert models == ["llama3.2", "mistral-7b", "phi-3"]
+    # Verify no Authorization header was sent (empty api_key)
+    mock_get.assert_called_once_with(
+        "http://localhost:11434/v1/models", headers={}
+    )
+
+
+def test_openai_list_models_local_with_key_sends_bearer():
+    """list_models() for a local server with a real api_key sends Bearer auth."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"data": [{"id": "my-model"}]}
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("litexplorer.external.llm_client.openai") as mock_mod, \
+         patch("litexplorer.external.llm_client.httpx.get", return_value=mock_response) as mock_get:
+        mock_mod.OpenAI.return_value = MagicMock()
+
+        c = OpenAILLMClient(
+            api_key="sk-local-key",
+            model_id="my-model",
+            base_url="http://localhost:11434/v1",
+        )
+        models = c.list_models()
+
+    assert models == ["my-model"]
+    mock_get.assert_called_once_with(
+        "http://localhost:11434/v1/models",
+        headers={"Authorization": "Bearer sk-local-key"},
+    )
 
 
 # ---------------------------------------------------------------------------
