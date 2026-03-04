@@ -115,3 +115,23 @@ class ExtractionBatchResult(BaseModel):
 
     results: list[ExtractionWorkResult]
     errors: list[dict] = []
+
+
+# ---------------------------------------------------------------------------
+# Existing-note lookup (results table)
+# ---------------------------------------------------------------------------
+
+
+class ExtractionCellResult(BaseModel):
+    """Existing extraction notes for a single (work_id, column_id) cell."""
+
+    work_id: int
+    column_id: int
+    answer_note: WorkNoteOut
+    reasoning_note: Optional[WorkNoteOut] = None
+
+
+class ExtractionResultsResponse(BaseModel):
+    """All extraction note cells for a set of works against a schema."""
+
+    cells: list[ExtractionCellResult]

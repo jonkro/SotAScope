@@ -35,6 +35,7 @@ import type {
   ExtractionColumn,
   ExtractionWorkResult,
   ExtractionBatchResult,
+  ExtractionResultsResponse,
 } from './types';
 
 class ApiError extends Error {
@@ -401,7 +402,7 @@ export function createWorkNote(workId: number, data: { content: string; note_typ
   });
 }
 
-export function updateWorkNote(workId: number, noteId: number, data: { content?: string; note_type?: string | null; is_outdated?: boolean }) {
+export function updateWorkNote(workId: number, noteId: number, data: { content?: string; note_type?: string | null; is_outdated?: boolean; provenance?: string }) {
   return apiFetch<WorkNote>(`/api/works/${workId}/notes/${noteId}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
@@ -640,4 +641,10 @@ export function runBatchExtraction(schemaId: number, workIds: number[]) {
     method: 'POST',
     body: JSON.stringify({ work_ids: workIds }),
   });
+}
+
+export function getExtractionResults(schemaId: number, workIds: number[]) {
+  const sp = new URLSearchParams();
+  if (workIds.length > 0) sp.set('work_ids', workIds.join(','));
+  return apiFetch<ExtractionResultsResponse>(`/api/extraction/schemas/${schemaId}/results?${sp}`);
 }

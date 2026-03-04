@@ -244,7 +244,10 @@ def run_extraction_for_work(
 ) -> list[dict]:
     """Run structured extraction for one work against a schema.
 
-    Creates ``WorkNote`` records for each column (answer + reasoning).
+    Creates or replaces ``WorkNote`` records for each column (answer + reasoning).
+    Columns that already have an ``ai_reviewed`` or ``user`` note are **skipped**
+    to preserve human edits.  Existing ``ai`` notes are deleted before new ones
+    are created so that re-running extraction doesn't accumulate duplicates.
 
     Args:
         db: SQLAlchemy session.
@@ -256,7 +259,7 @@ def run_extraction_for_work(
         system_prefix: Optional user-supplied prefix for the system prompt.
 
     Returns:
-        A list of dicts, one per column:
+        A list of dicts, one per **extracted** column (skipped columns omitted):
         ``{"column_id": int, "column_name": str, "answer": str, "reasoning": str, "note": WorkNote}``
 
     Raises:
@@ -270,15 +273,60 @@ def run_extraction_for_work(
     if work is None:
         raise ValueError(f"Work {work_id} not found")
 
-    columns = list(schema.columns)
-    if not columns:
+    all_columns = sorted(schema.columns, key=lambda c: c.sort_order)
+    if not all_columns:
         return []
+
+    # Determine which columns to extract vs. skip (preserve reviewed/user notes).
+    cols_to_extract: list[ExtractionColumn] = []
+    for col in all_columns:
+        answer_note_type = _truncate_note_type(f"{schema.title} / {col.name}")
+        existing = db.scalars(
+            select(WorkNote)
+            .where(
+                WorkNote.work_id == work_id,
+                WorkNote.note_type == answer_note_type,
+                WorkNote.project_id == schema.project_id,
+            )
+            .limit(1)
+        ).one_or_none()
+
+        if existing and existing.provenance in ("ai_reviewed", "user"):
+            logger.debug(
+                "Skipping column %r for work %d — note has provenance=%r",
+                col.name, work_id, existing.provenance,
+            )
+            continue
+
+        # Delete any stale "ai" answer + reasoning notes before re-creating.
+        if existing:
+            db.delete(existing)
+            reasoning_type = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+            old_reasoning = db.scalars(
+                select(WorkNote)
+                .where(
+                    WorkNote.work_id == work_id,
+                    WorkNote.note_type == reasoning_type,
+                    WorkNote.project_id == schema.project_id,
+                )
+                .limit(1)
+            ).one_or_none()
+            if old_reasoning:
+                db.delete(old_reasoning)
+
+        cols_to_extract.append(col)
+
+    if not cols_to_extract:
+        return []
+
+    # Flush deletes before inserts so UNIQUE constraints aren't violated.
+    db.flush()
 
     paper_text = _get_primary_text(db, work_id, pdf_root)
 
     system_text, user_message = assemble_extraction_prompt(
         schema=schema,
-        columns=columns,
+        columns=cols_to_extract,
         paper_text=paper_text,
         paper_title=work.title,
         paper_year=work.publication_year,
@@ -295,10 +343,10 @@ def run_extraction_for_work(
         context_documents=[],
     )
 
-    parsed = parse_extraction_response(reply, columns)
+    parsed = parse_extraction_response(reply, cols_to_extract)
 
     results: list[dict] = []
-    for col in columns:
+    for col in cols_to_extract:
         cell = parsed.get(col.id, {"answer": "", "reasoning": ""})
         answer = cell["answer"]
         reasoning = cell["reasoning"]

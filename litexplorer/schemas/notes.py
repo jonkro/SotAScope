@@ -15,6 +15,7 @@ class WorkNoteUpdate(BaseModel):
     content: str | None = None
     note_type: str | None = None
     is_outdated: bool | None = None
+    provenance: str | None = None  # explicit override (e.g. "ai_reviewed")
 
 
 class WorkNoteOut(BaseModel):

@@ -9,6 +9,10 @@ import {
   updateExtractionColumn,
   deleteExtractionColumn,
   reorderExtractionColumns,
+  runExtraction,
+  runBatchExtraction,
+  getExtractionResults,
+  updateWorkNote,
 } from '../api';
 
 export function useExtractionSchemas(projectId?: number) {
@@ -121,6 +125,59 @@ export function useReorderExtractionColumns(schemaId: number) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['extraction', 'schema', schemaId] });
       qc.invalidateQueries({ queryKey: ['extraction', 'schemas'] });
+    },
+  });
+}
+
+export function useExtractionResults(schemaId: number | undefined, workIds: number[]) {
+  const key = workIds.slice().sort((a, b) => a - b).join(',');
+  return useQuery({
+    queryKey: ['extraction', 'results', schemaId, key],
+    queryFn: () => getExtractionResults(schemaId!, workIds),
+    enabled: schemaId != null && workIds.length > 0,
+  });
+}
+
+export function useRunBatchExtraction(schemaId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (workIds: number[]) => runBatchExtraction(schemaId, workIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
+    },
+  });
+}
+
+export function useRunSingleExtraction(schemaId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (workId: number) => runExtraction(schemaId, workId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
+    },
+  });
+}
+
+export function useAcceptExtractionNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workId, noteId }: { workId: number; noteId: number }) =>
+      updateWorkNote(workId, noteId, { provenance: 'ai_reviewed' }),
+    onSuccess: (_data, { workId }) => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'results'] });
+      qc.invalidateQueries({ queryKey: ['workNotes', workId] });
+    },
+  });
+}
+
+export function useEditExtractionNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workId, noteId, content }: { workId: number; noteId: number; content: string }) =>
+      updateWorkNote(workId, noteId, { content }),
+    onSuccess: (_data, { workId }) => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'results'] });
+      qc.invalidateQueries({ queryKey: ['workNotes', workId] });
     },
   });
 }

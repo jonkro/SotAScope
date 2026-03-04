@@ -15,10 +15,12 @@ from litexplorer.schemas.extraction import (
     ColumnReorderRequest,
     ExtractionBatchRequest,
     ExtractionBatchResult,
+    ExtractionCellResult,
     ExtractionColumnCreate,
     ExtractionColumnOut,
     ExtractionColumnResult,
     ExtractionColumnUpdate,
+    ExtractionResultsResponse,
     ExtractionSchemaCreate,
     ExtractionSchemaOut,
     ExtractionSchemaUpdate,
@@ -213,6 +215,95 @@ def reorder_columns(
     db.commit()
     db.refresh(schema)
     return [ExtractionColumnOut.model_validate(c) for c in schema.columns]
+
+
+# ---------------------------------------------------------------------------
+# Extraction results lookup
+# ---------------------------------------------------------------------------
+
+
+@router.get("/schemas/{schema_id}/results", response_model=ExtractionResultsResponse)
+def get_extraction_results(
+    schema_id: int,
+    work_ids: str = "",
+    db: Session = Depends(get_db),
+):
+    """Return existing extraction notes for a schema + set of works.
+
+    ``work_ids`` is a comma-separated list of work IDs, e.g. ``?work_ids=1,2,3``.
+    Returns a flat list of :class:`ExtractionCellResult` objects, one per
+    (work_id, column_id) pair that already has an answer note.
+    """
+    from litexplorer.models.library import WorkNote
+    from sqlalchemy import select
+
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+
+    if not work_ids.strip():
+        return ExtractionResultsResponse(cells=[])
+
+    try:
+        wids = [int(x.strip()) for x in work_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="work_ids must be comma-separated integers")
+
+    if not wids:
+        return ExtractionResultsResponse(cells=[])
+
+    columns = sorted(schema.columns, key=lambda c: c.sort_order)
+
+    # Build note_type → column mappings
+    answer_type_map: dict[str, ExtractionColumn] = {}
+    reasoning_type_map: dict[str, ExtractionColumn] = {}
+    for col in columns:
+        from litexplorer.services.extraction import _truncate_note_type
+        at = _truncate_note_type(f"{schema.title} / {col.name}")
+        rt = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+        answer_type_map[at] = col
+        reasoning_type_map[rt] = col
+
+    all_note_types = list(answer_type_map.keys()) + list(reasoning_type_map.keys())
+
+    stmt = (
+        select(WorkNote)
+        .where(
+            WorkNote.work_id.in_(wids),
+            WorkNote.note_type.in_(all_note_types),
+        )
+    )
+    if schema.project_id is not None:
+        stmt = stmt.where(
+            (WorkNote.project_id == schema.project_id) | (WorkNote.project_id == None)  # noqa: E711
+        )
+
+    notes = db.scalars(stmt).all()
+
+    # Group by (work_id, column_id)
+    cells_map: dict[tuple[int, int], dict] = {}
+    for note in notes:
+        if note.note_type in answer_type_map:
+            col = answer_type_map[note.note_type]
+            key = (note.work_id, col.id)
+            cells_map.setdefault(key, {})["answer"] = note
+        elif note.note_type in reasoning_type_map:
+            col = reasoning_type_map[note.note_type]
+            key = (note.work_id, col.id)
+            cells_map.setdefault(key, {})["reasoning"] = note
+
+    cells = [
+        ExtractionCellResult(
+            work_id=work_id,
+            column_id=col_id,
+            answer_note=WorkNoteOut.model_validate(data["answer"]),
+            reasoning_note=WorkNoteOut.model_validate(data["reasoning"]) if "reasoning" in data else None,
+        )
+        for (work_id, col_id), data in cells_map.items()
+        if "answer" in data
+    ]
+
+    return ExtractionResultsResponse(cells=cells)
 
 
 # ---------------------------------------------------------------------------

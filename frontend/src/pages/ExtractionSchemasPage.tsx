@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -12,8 +12,513 @@ import {
   useUpdateExtractionColumn,
   useDeleteExtractionColumn,
   useReorderExtractionColumns,
+  useExtractionResults,
+  useRunSingleExtraction,
+  useAcceptExtractionNote,
+  useEditExtractionNote,
 } from '../hooks/useExtraction';
-import type { ExtractionColumn, ExtractionSchema } from '../types';
+import { useTimeline } from '../hooks/useTimeline';
+import type { ExtractionColumn, ExtractionSchema, ExtractionCellResult } from '../types';
+
+// ---------------------------------------------------------------------------
+// Provenance badge
+// ---------------------------------------------------------------------------
+
+function ProvenanceBadge({ provenance }: { provenance: string }) {
+  const cls =
+    provenance === 'ai_reviewed'
+      ? 'bg-purple-100 text-purple-700'
+      : provenance === 'user'
+        ? 'bg-green-100 text-green-700'
+        : 'bg-blue-100 text-blue-700';
+  const label =
+    provenance === 'ai_reviewed' ? 'reviewed' : provenance === 'user' ? 'user' : 'ai';
+  return (
+    <span className={`inline-block px-1.5 py-0.5 text-[10px] rounded font-medium leading-none ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Single extraction table cell
+// ---------------------------------------------------------------------------
+
+interface ExtractionCellProps {
+  cell: ExtractionCellResult | null;
+  workId: number;
+  schemaId: number;
+  column: ExtractionColumn;
+  isRunningGlobal: boolean;
+  onExtractSingle: (workId: number) => void;
+}
+
+function ExtractionCell({
+  cell,
+  workId,
+  schemaId: _schemaId,
+  column,
+  isRunningGlobal,
+  onExtractSingle,
+}: ExtractionCellProps) {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const [showReasoning, setShowReasoning] = useState(false);
+
+  const accept = useAcceptExtractionNote();
+  const editNote = useEditExtractionNote();
+
+  if (!cell) {
+    return (
+      <td className="px-3 py-2 text-center align-top border-r border-gray-100 last:border-r-0">
+        <button
+          onClick={() => onExtractSingle(workId)}
+          disabled={isRunningGlobal}
+          title="Extract this cell"
+          className="text-xs text-gray-400 hover:text-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          ⚡
+        </button>
+      </td>
+    );
+  }
+
+  const { answer_note, reasoning_note } = cell;
+
+  if (editing) {
+    const hasAllowedValues = column.allowed_values && column.allowed_values.length > 0;
+
+    const handleSave = () => {
+      editNote.mutate({ workId, noteId: answer_note.id, content: editValue });
+      setEditing(false);
+    };
+
+    return (
+      <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 min-w-[180px]">
+        {hasAllowedValues ? (
+          <select
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            className="w-full text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {column.allowed_values!.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <textarea
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            rows={3}
+            className="w-full text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+          />
+        )}
+        <div className="flex gap-1.5 mt-1.5">
+          <button
+            onClick={handleSave}
+            disabled={editNote.isPending}
+            className="px-2 py-0.5 text-xs text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {editNote.isPending ? '…' : 'Save'}
+          </button>
+          <button
+            onClick={() => setEditing(false)}
+            className="px-2 py-0.5 text-xs border border-gray-300 rounded hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+        </div>
+      </td>
+    );
+  }
+
+  const truncated =
+    answer_note.content.length > 80
+      ? answer_note.content.slice(0, 80) + '…'
+      : answer_note.content;
+
+  return (
+    <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 min-w-[160px] max-w-[240px]">
+      <div className="text-xs text-gray-800 leading-snug mb-1" title={answer_note.content}>
+        {truncated || <span className="text-gray-400 italic">empty</span>}
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <ProvenanceBadge provenance={answer_note.provenance} />
+        {reasoning_note && (
+          <button
+            onClick={() => setShowReasoning((v) => !v)}
+            title="Show/hide reasoning"
+            className="text-[10px] text-gray-400 hover:text-gray-700 leading-none"
+          >
+            {showReasoning ? '▾ hide' : 'ⓘ'}
+          </button>
+        )}
+        {answer_note.provenance === 'ai' && (
+          <button
+            onClick={() => accept.mutate({ workId, noteId: answer_note.id })}
+            disabled={accept.isPending}
+            title="Accept — mark as reviewed"
+            className="text-[10px] text-green-600 hover:text-green-800 disabled:opacity-50 leading-none"
+          >
+            ✓
+          </button>
+        )}
+        <button
+          onClick={() => {
+            setEditValue(answer_note.content);
+            setEditing(true);
+          }}
+          title="Edit"
+          className="text-[10px] text-blue-500 hover:text-blue-700 leading-none"
+        >
+          ✎
+        </button>
+      </div>
+      {showReasoning && reasoning_note && (
+        <div className="mt-1.5 p-2 bg-gray-50 rounded text-[11px] text-gray-600 leading-snug border border-gray-200">
+          {reasoning_note.content}
+        </div>
+      )}
+    </td>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Extraction run & review panel
+// ---------------------------------------------------------------------------
+
+interface ExtractionRunViewProps {
+  schema: ExtractionSchema;
+}
+
+function ExtractionRunView({ schema }: ExtractionRunViewProps) {
+  const projectId = schema.project_id;
+
+  const { data: timeline, isLoading: timelineLoading } = useTimeline(projectId ?? 0);
+  const seeds = useMemo(
+    () =>
+      (timeline?.seeds ?? []).slice().sort((a, b) =>
+        (a.publication_year ?? 0) !== (b.publication_year ?? 0)
+          ? (b.publication_year ?? 0) - (a.publication_year ?? 0)
+          : a.title.localeCompare(b.title),
+      ),
+    [timeline],
+  );
+
+  // Work selection state
+  const [searchQ, setSearchQ] = useState('');
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const initializedRef = useRef(false);
+
+  // Default: select all seeds on first load
+  useEffect(() => {
+    if (!initializedRef.current && seeds.length > 0) {
+      setSelectedIds(new Set(seeds.map((s) => s.id)));
+      initializedRef.current = true;
+    }
+  }, [seeds]);
+
+  const filteredSeeds = useMemo(() => {
+    if (!searchQ.trim()) return seeds;
+    const q = searchQ.toLowerCase();
+    return seeds.filter((s) => s.title.toLowerCase().includes(q));
+  }, [seeds, searchQ]);
+
+  // Existing results
+  const allSeedIds = useMemo(() => seeds.map((s) => s.id), [seeds]);
+  const { data: resultsData, refetch: refetchResults } = useExtractionResults(
+    schema.id,
+    allSeedIds,
+  );
+
+  // Index cells by "workId:columnId"
+  const cellsMap = useMemo(() => {
+    const map = new Map<string, ExtractionCellResult>();
+    for (const cell of resultsData?.cells ?? []) {
+      map.set(`${cell.work_id}:${cell.column_id}`, cell);
+    }
+    return map;
+  }, [resultsData]);
+
+  // Check if any selected work already has notes
+  const hasExistingNotes = useMemo(() => {
+    if (!resultsData) return false;
+    return resultsData.cells.some((c) => selectedIds.has(c.work_id));
+  }, [resultsData, selectedIds]);
+
+  // Extraction progress state
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractProgress, setExtractProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+  const [extractErrors, setExtractErrors] = useState<{ workId: number; msg: string }[]>([]);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const runSingle = useRunSingleExtraction(schema.id);
+
+  const doExtract = async (ids: number[]) => {
+    setIsExtracting(true);
+    setExtractProgress({ done: 0, total: ids.length });
+    const errs: { workId: number; msg: string }[] = [];
+
+    for (let i = 0; i < ids.length; i++) {
+      try {
+        await runSingle.mutateAsync(ids[i]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errs.push({ workId: ids[i], msg });
+      }
+      setExtractProgress({ done: i + 1, total: ids.length });
+    }
+
+    setExtractErrors(errs);
+    setIsExtracting(false);
+    refetchResults();
+  };
+
+  const handleExtractClick = () => {
+    if (hasExistingNotes) {
+      setShowConfirm(true);
+    } else {
+      doExtract(Array.from(selectedIds));
+    }
+  };
+
+  const handleExtractSingle = async (workId: number) => {
+    setIsExtracting(true);
+    try {
+      await runSingle.mutateAsync(workId);
+    } catch {
+      // shown via error state if needed
+    }
+    setIsExtracting(false);
+    refetchResults();
+  };
+
+  const sortedColumns = useMemo(
+    () => [...schema.columns].sort((a, b) => a.sort_order - b.sort_order),
+    [schema.columns],
+  );
+
+  const toggleId = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelectedIds(new Set(filteredSeeds.map((s) => s.id)));
+  const deselectAll = () => setSelectedIds(new Set());
+
+  // --- Render ---
+
+  if (projectId == null) {
+    return (
+      <div className="p-6 text-sm text-gray-500">
+        This schema is not associated with a project. To use Extract &amp; Review, create a
+        project-scoped schema from a project page.
+      </div>
+    );
+  }
+
+  if (timelineLoading) {
+    return <div className="p-6 text-sm text-gray-400">Loading project papers…</div>;
+  }
+
+  if (seeds.length === 0) {
+    return (
+      <div className="p-6 text-sm text-gray-500">
+        No seed papers found in this project. Add papers to a topic list first.
+      </div>
+    );
+  }
+
+  if (sortedColumns.length === 0) {
+    return (
+      <div className="p-6 text-sm text-gray-500">
+        This schema has no columns yet. Go to the{' '}
+        <strong>Schema</strong> tab to add columns first.
+      </div>
+    );
+  }
+
+  const selectedCount = selectedIds.size;
+  const isDone =
+    !isExtracting && extractProgress !== null && extractProgress.done === extractProgress.total;
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Top action bar */}
+      <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-3 flex items-center gap-3 flex-wrap">
+        <input
+          type="text"
+          value={searchQ}
+          onChange={(e) => setSearchQ(e.target.value)}
+          placeholder="Search papers…"
+          className="border border-gray-300 rounded px-2.5 py-1.5 text-sm w-52 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          onClick={selectAll}
+          className="text-xs text-blue-600 hover:underline"
+        >
+          Select all
+        </button>
+        <button
+          onClick={deselectAll}
+          className="text-xs text-gray-500 hover:underline"
+        >
+          Deselect all
+        </button>
+        <span className="text-xs text-gray-500">
+          {selectedCount} of {seeds.length} selected
+        </span>
+        <div className="flex-1" />
+        {isExtracting && extractProgress && (
+          <span className="text-xs text-gray-500 flex items-center gap-1.5">
+            <svg className="animate-spin h-3.5 w-3.5 text-blue-500" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            Processing {extractProgress.done} of {extractProgress.total}…
+          </span>
+        )}
+        {isDone && extractErrors.length === 0 && (
+          <span className="text-xs text-green-600">
+            ✓ Done — {extractProgress!.done} paper{extractProgress!.done !== 1 ? 's' : ''} extracted
+          </span>
+        )}
+        {isDone && extractErrors.length > 0 && (
+          <span className="text-xs text-amber-600">
+            Done with {extractErrors.length} error{extractErrors.length !== 1 ? 's' : ''}
+          </span>
+        )}
+        <button
+          onClick={handleExtractClick}
+          disabled={selectedCount === 0 || isExtracting}
+          className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isExtracting ? 'Extracting…' : `Extract ${selectedCount > 0 ? selectedCount : ''} paper${selectedCount !== 1 ? 's' : ''} →`}
+        </button>
+      </div>
+
+      {/* Error summary */}
+      {extractErrors.length > 0 && (
+        <div className="shrink-0 px-4 py-2 bg-red-50 border-b border-red-100 text-xs text-red-700">
+          {extractErrors.map((e) => {
+            const work = seeds.find((s) => s.id === e.workId);
+            return (
+              <div key={e.workId}>
+                <strong>{work?.title ?? `Work #${e.workId}`}:</strong> {e.msg}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Results table */}
+      <div className="flex-1 overflow-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead className="bg-gray-50 sticky top-0 z-10">
+            <tr>
+              <th className="w-6 px-3 py-2 text-left border-b border-r border-gray-200">
+                <input
+                  type="checkbox"
+                  checked={
+                    filteredSeeds.length > 0 &&
+                    filteredSeeds.every((s) => selectedIds.has(s.id))
+                  }
+                  onChange={(e) => (e.target.checked ? selectAll() : deselectAll())}
+                  className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
+                />
+              </th>
+              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20 min-w-[200px] max-w-[280px]">
+                Paper
+              </th>
+              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 whitespace-nowrap">
+                Year
+              </th>
+              {sortedColumns.map((col) => (
+                <th
+                  key={col.id}
+                  className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0 min-w-[160px] max-w-[240px]"
+                  title={col.prompt}
+                >
+                  {col.name}
+                  {col.allowed_values && col.allowed_values.length > 0 && (
+                    <span className="ml-1 font-normal text-gray-400">
+                      ({col.allowed_values.length})
+                    </span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filteredSeeds.map((seed) => (
+              <tr
+                key={seed.id}
+                className={selectedIds.has(seed.id) ? 'bg-white' : 'bg-gray-50 opacity-60'}
+              >
+                <td className="px-3 py-2 text-center align-top border-r border-gray-100">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(seed.id)}
+                    onChange={() => toggleId(seed.id)}
+                    className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
+                  />
+                </td>
+                <td
+                  className="px-3 py-2 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] min-w-[200px] max-w-[280px]"
+                >
+                  <p className="text-xs font-medium text-gray-900 line-clamp-2">{seed.title}</p>
+                </td>
+                <td className="px-3 py-2 align-top border-r border-gray-100 text-xs text-gray-500 whitespace-nowrap">
+                  {seed.publication_year ?? '—'}
+                </td>
+                {sortedColumns.map((col) => (
+                  <ExtractionCell
+                    key={col.id}
+                    cell={cellsMap.get(`${seed.id}:${col.id}`) ?? null}
+                    workId={seed.id}
+                    schemaId={schema.id}
+                    column={col}
+                    isRunningGlobal={isExtracting}
+                    onExtractSingle={handleExtractSingle}
+                  />
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {filteredSeeds.length === 0 && searchQ && (
+          <div className="p-6 text-center text-sm text-gray-400">
+            No papers match &ldquo;{searchQ}&rdquo;
+          </div>
+        )}
+      </div>
+
+      {/* Re-extraction confirmation */}
+      {showConfirm && (
+        <ConfirmDialog
+          title="Re-extract papers?"
+          message={`${resultsData?.cells.filter((c) => selectedIds.has(c.work_id)).length ?? 0} paper(s) already have extraction notes for this schema. Running extraction will overwrite AI-generated notes. User-reviewed notes will be preserved.`}
+          confirmLabel="Extract"
+          onConfirm={() => {
+            setShowConfirm(false);
+            doExtract(Array.from(selectedIds));
+          }}
+          onCancel={() => setShowConfirm(false)}
+        />
+      )}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Column form modal (create or edit a column)
@@ -197,7 +702,7 @@ function ColumnFormModal({ schemaId, initial, nextSortOrder, onClose }: ColumnFo
 }
 
 // ---------------------------------------------------------------------------
-// Schema editor (title/description + column management)
+// Schema editor (title/description + column management + extract/review)
 // ---------------------------------------------------------------------------
 
 interface SchemaEditorProps {
@@ -205,8 +710,12 @@ interface SchemaEditorProps {
   onBack: () => void;
 }
 
+type EditorTab = 'schema' | 'review';
+
 function SchemaEditor({ schemaId, onBack }: SchemaEditorProps) {
   const { data: schema, isLoading } = useExtractionSchema(schemaId);
+
+  const [activeTab, setActiveTab] = useState<EditorTab>('schema');
 
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [descDraft, setDescDraft] = useState<string | null>(null);
@@ -226,7 +735,6 @@ function SchemaEditor({ schemaId, onBack }: SchemaEditorProps) {
 
   const sortedColumns = [...schema.columns].sort((a, b) => a.sort_order - b.sort_order);
 
-  // Use drafts if set, else fall back to schema values
   const titleValue = titleDraft ?? schema.title;
   const descValue = descDraft ?? (schema.description ?? '');
   const hasMetaChanges =
@@ -265,7 +773,7 @@ function SchemaEditor({ schemaId, onBack }: SchemaEditorProps) {
   const nextSortOrder = sortedColumns.length;
 
   return (
-    <div className="flex-1 flex flex-col min-w-0">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0">
       <PageHeader title="Edit Extraction Schema">
         <button
           onClick={onBack}
@@ -275,134 +783,155 @@ function SchemaEditor({ schemaId, onBack }: SchemaEditorProps) {
         </button>
       </PageHeader>
 
-      <div className="p-6 max-w-2xl space-y-6">
-        {/* Metadata */}
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Title <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              value={titleValue}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              placeholder="e.g. Study Design Analysis"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-            <textarea
-              value={descValue}
-              onChange={(e) => setDescDraft(e.target.value)}
-              rows={3}
-              placeholder="Describe the goal of this extraction schema (optional — sent to the LLM as context)"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              This description is included in the LLM prompt as additional context.
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleSaveMeta}
-              disabled={!titleValue.trim() || !hasMetaChanges || updateSchema.isPending}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {updateSchema.isPending ? 'Saving…' : 'Save'}
-            </button>
-            {metaSaved && <span className="text-sm text-green-600">Saved</span>}
-          </div>
-        </div>
-
-        {/* Columns */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
-              Columns
-              {sortedColumns.length > 0 && (
-                <span className="ml-1 font-normal text-gray-400">
-                  ({sortedColumns.length})
-                </span>
-              )}
-            </h2>
-            <button
-              onClick={() => setAddingColumn(true)}
-              className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
-            >
-              + Add Column
-            </button>
-          </div>
-
-          {sortedColumns.length === 0 ? (
-            <div className="border border-dashed border-gray-300 rounded-lg p-8 text-center text-sm text-gray-400">
-              No columns yet. Add a column to define what the LLM should extract.
-            </div>
-          ) : (
-            <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
-              {sortedColumns.map((col, idx) => (
-                <div key={col.id} className="flex items-start gap-3 px-4 py-3">
-                  {/* Reorder buttons */}
-                  <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
-                    <button
-                      onClick={() => handleMoveUp(idx)}
-                      disabled={idx === 0 || reorder.isPending}
-                      className="p-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
-                      aria-label="Move up"
-                    >
-                      ▲
-                    </button>
-                    <button
-                      onClick={() => handleMoveDown(idx)}
-                      disabled={idx === sortedColumns.length - 1 || reorder.isPending}
-                      className="p-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
-                      aria-label="Move down"
-                    >
-                      ▼
-                    </button>
-                  </div>
-
-                  {/* Column info */}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900">{col.name}</p>
-                    <p className="text-xs text-gray-500 truncate mt-0.5">
-                      {col.prompt.length > 80 ? col.prompt.slice(0, 80) + '…' : col.prompt}
-                    </p>
-                    {col.allowed_values && col.allowed_values.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {col.allowed_values.map((v) => (
-                          <span
-                            key={v}
-                            className="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-600"
-                          >
-                            {v}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex gap-2 shrink-0">
-                    <button
-                      onClick={() => setEditColumn(col)}
-                      className="text-xs text-blue-600 hover:underline"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => setDeleteColId(col.id)}
-                      className="text-xs text-red-500 hover:underline"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+      {/* Tab bar */}
+      <div className="shrink-0 border-b border-gray-200 px-6 flex gap-0">
+        {(['schema', 'review'] as EditorTab[]).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === tab
+                ? 'border-blue-600 text-blue-700'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            {tab === 'schema' ? 'Schema' : 'Extract & Review'}
+          </button>
+        ))}
       </div>
+
+      {activeTab === 'schema' ? (
+        <div className="p-6 max-w-2xl space-y-6 overflow-y-auto">
+          {/* Metadata */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Title <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={titleValue}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                placeholder="e.g. Study Design Analysis"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+              <textarea
+                value={descValue}
+                onChange={(e) => setDescDraft(e.target.value)}
+                rows={3}
+                placeholder="Describe the goal of this extraction schema (optional — sent to the LLM as context)"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                This description is included in the LLM prompt as additional context.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleSaveMeta}
+                disabled={!titleValue.trim() || !hasMetaChanges || updateSchema.isPending}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {updateSchema.isPending ? 'Saving…' : 'Save'}
+              </button>
+              {metaSaved && <span className="text-sm text-green-600">Saved</span>}
+            </div>
+          </div>
+
+          {/* Columns */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
+                Columns
+                {sortedColumns.length > 0 && (
+                  <span className="ml-1 font-normal text-gray-400">
+                    ({sortedColumns.length})
+                  </span>
+                )}
+              </h2>
+              <button
+                onClick={() => setAddingColumn(true)}
+                className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
+              >
+                + Add Column
+              </button>
+            </div>
+
+            {sortedColumns.length === 0 ? (
+              <div className="border border-dashed border-gray-300 rounded-lg p-8 text-center text-sm text-gray-400">
+                No columns yet. Add a column to define what the LLM should extract.
+              </div>
+            ) : (
+              <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+                {sortedColumns.map((col, idx) => (
+                  <div key={col.id} className="flex items-start gap-3 px-4 py-3">
+                    {/* Reorder buttons */}
+                    <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
+                      <button
+                        onClick={() => handleMoveUp(idx)}
+                        disabled={idx === 0 || reorder.isPending}
+                        className="p-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                        aria-label="Move up"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        onClick={() => handleMoveDown(idx)}
+                        disabled={idx === sortedColumns.length - 1 || reorder.isPending}
+                        className="p-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                        aria-label="Move down"
+                      >
+                        ▼
+                      </button>
+                    </div>
+
+                    {/* Column info */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">{col.name}</p>
+                      <p className="text-xs text-gray-500 truncate mt-0.5">
+                        {col.prompt.length > 80 ? col.prompt.slice(0, 80) + '…' : col.prompt}
+                      </p>
+                      {col.allowed_values && col.allowed_values.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {col.allowed_values.map((v) => (
+                            <span
+                              key={v}
+                              className="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-600"
+                            >
+                              {v}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        onClick={() => setEditColumn(col)}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => setDeleteColId(col.id)}
+                        className="text-xs text-red-500 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <ExtractionRunView schema={schema} />
+      )}
 
       {/* Column form modal */}
       {(addingColumn || editColumn) && (

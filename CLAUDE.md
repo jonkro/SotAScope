@@ -164,12 +164,12 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 
 - **LLM provider configuration**: `LLMClient` abstraction with `AnthropicLLMClient` and `OpenAILLMClient`; four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`); `GET /api/llm/models` endpoint; Settings page UI with model picker, test connection, and PDF vision note
 - **Structured extraction (backend)**: `ExtractionSchema` + `ExtractionColumn` models; `litexplorer/services/extraction.py` with `assemble_extraction_prompt()`, `parse_extraction_response()`, `run_extraction_for_work()`; full CRUD + extraction API at `/api/extraction`; new `llm_system_prompt_prefix` DB setting. Extraction results stored as `WorkNote` rows (`provenance="ai"`), two per column (answer + reasoning). 34 tests in `tests/test_extraction.py`.
-- **Structured extraction frontend**: `ExtractionSchemasPage` at `/projects/:projectId/extraction`; schema list view → new-schema form → schema editor; `ColumnFormModal` with tag-style allowed-values input; up/down column reordering; `useExtraction.ts` hooks; "Extraction Tables" button in `ProjectDetailPage` header; `ExtractionSchema`, `ExtractionColumn`, `ExtractionWorkResult`, `ExtractionBatchResult` types; all extraction API functions in `api.ts`.
+- **Structured extraction frontend**: `ExtractionSchemasPage` at `/projects/:projectId/extraction`; schema list view → new-schema form → schema editor with two tabs: **Schema** (edit title/description/columns) and **Extract & Review** (run extraction + results table). `ColumnFormModal` with tag-style allowed-values input; up/down column reordering; `useExtraction.ts` hooks; "Extraction Tables" button in `ProjectDetailPage` header.
+- **Structured extraction run & review UI**: `ExtractionRunView` component in `ExtractionSchemasPage`; seed paper selector (searchable checkboxes from `useTimeline`); Extract button with per-paper progress indicator; confirmation dialog when re-running on papers with existing notes; results table (rows = papers, columns = schema columns). `ExtractionCell` component: answer text + `ProvenanceBadge` (ai=blue, ai_reviewed=purple, user=green) + ✓ Accept button (ai notes only, sets provenance to `ai_reviewed`) + ✎ Edit (inline — dropdown for constrained columns, textarea for free-form) + ⓘ reasoning toggle + ⚡ single-paper extract for empty cells. Re-extraction skips `ai_reviewed`/`user` notes and deletes+replaces `ai` notes (no duplicates). New endpoint: `GET /api/extraction/schemas/{id}/results?work_ids=1,2,3` → `ExtractionResultsResponse({cells: ExtractionCellResult[]})`. `WorkNoteUpdate` now accepts `provenance` field; explicit provenance overrides auto-upgrade logic. New types: `ExtractionCellResult`, `ExtractionResultsResponse`. New hooks: `useExtractionResults`, `useRunSingleExtraction`, `useRunBatchExtraction`, `useAcceptExtractionNote`, `useEditExtractionNote`.
 
 ### Not yet started
 
 - **Per-paper chat**: discuss a paper with an LLM to accelerate understanding
-- **Structured extraction run UI**: trigger extraction for specific papers, review results table
 - **CSV export**: `GET /api/extraction/schemas/{id}/export?project_id=N` — export extraction results as CSV
 
 ### Phase 2 design notes
@@ -239,10 +239,11 @@ litexplorer/
 │   ├── timeline.py       # TimelineResponse, TimelineSeedWork, TimelineNeighborWork
 │   │                     #   (seeds/neighbors include citations_by_year: list[dict] | None)
 │   ├── fields.py         # FieldOut (includes venue_count: int)
-│   ├── notes.py          # WorkNoteCreate, WorkNoteUpdate, WorkNoteOut, ProjectNoteOut
+│   ├── notes.py          # WorkNoteCreate, WorkNoteUpdate (+ provenance field), WorkNoteOut, ProjectNoteOut
 │   ├── extraction.py     # ExtractionSchemaCreate/Update/Out, ExtractionColumnCreate/Update/Out,
 │   │                     #   ColumnReorderRequest, ExtractionColumnResult, ExtractionWorkResult,
-│   │                     #   ExtractionBatchRequest, ExtractionBatchResult
+│   │                     #   ExtractionBatchRequest, ExtractionBatchResult,
+│   │                     #   ExtractionCellResult, ExtractionResultsResponse
 │   └── settings.py       # SettingOut, SettingUpdate
 ├── api/
 │   ├── deps.py           # get_db dependency
@@ -259,7 +260,8 @@ litexplorer/
 │   ├── notes.py          # /api/projects/{id}/notes — project-scoped notes aggregation
 │   ├── settings.py       # /api/settings — key-value settings CRUD
 │   ├── filesystem.py     # /api/filesystem — directory browser + mkdir
-│   └── extraction.py     # /api/extraction — schema/column CRUD + extraction execution
+│   └── extraction.py     # /api/extraction — schema/column CRUD, extraction execution,
+│                         #   GET /schemas/{id}/results?work_ids=... (ExtractionResultsResponse)
 ├── services/
 │   ├── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
 │   │                     #   DOI resolution, cache management, deduplication,
@@ -270,7 +272,8 @@ litexplorer/
 │   │                     #   ExtractionError; two-column detection via x0 histogram heuristics
 │   └── extraction.py     # assemble_extraction_prompt(), parse_extraction_response(),
 │                         #   run_extraction_for_work() — builds LLM prompt, parses JSON response,
-│                         #   creates WorkNote rows (answer + reasoning per column)
+│                         #   creates WorkNote rows (answer + reasoning per column);
+│                         #   skips ai_reviewed/user notes; deletes stale ai notes before re-creating
 └── external/
     ├── base.py           # ExternalWork (with semantic_scholar_id, citations_by_year),
     │                     #   ExternalVenue, ExternalAuthor, ExternalLocation
@@ -284,7 +287,8 @@ frontend/src/
 ├── App.tsx               # Routes: /projects, /projects/:id, /library, /venues, /settings
 ├── api.ts                # All fetch functions (works, venues, projects, enrichment, PDFs, notes, fields, etc.)
 ├── types.ts              # TypeScript interfaces matching backend schemas
-│                         #   (includes CitationsByYearEntry, WorkNote, ProjectNote, WorkPDFOut, etc.)
+│                         #   (includes CitationsByYearEntry, WorkNote, ProjectNote, WorkPDFOut,
+│                         #    ExtractionCellResult, ExtractionResultsResponse, etc.)
 ├── queryClient.ts        # TanStack React Query client configuration
 ├── lib/
 │   └── timelineFilter.ts # computeCitationCount(), filterNeighbors()
@@ -304,13 +308,15 @@ frontend/src/
 │                         #   useCreateExtractionSchema(), useUpdateExtractionSchema(),
 │                         #   useDeleteExtractionSchema(), useCreateExtractionColumn(),
 │                         #   useUpdateExtractionColumn(), useDeleteExtractionColumn(),
-│                         #   useReorderExtractionColumns()
+│                         #   useReorderExtractionColumns(), useExtractionResults(),
+│                         #   useRunBatchExtraction(), useRunSingleExtraction(),
+│                         #   useAcceptExtractionNote(), useEditExtractionNote()
 ├── pages/
 │   ├── ProjectsPage.tsx         # Project listing with create/delete
 │   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes tabs, localStorage persistence
 │   │                            #   "Extraction Tables" button → /projects/:id/extraction
-│   ├── ExtractionSchemasPage.tsx # Schema list / new-schema form / schema editor views
-│   │                            #   ColumnFormModal with tag-style allowed-values input
+│   ├── ExtractionSchemasPage.tsx # Schema list / new-schema form / schema editor (Schema + Extract & Review tabs)
+│   │                            #   ExtractionRunView, ExtractionCell, ProvenanceBadge, ColumnFormModal
 │   ├── LibraryPage.tsx          # Work listing with search, pagination, venue filter
 │   ├── VenuesPage.tsx           # Venues tab (sortable table) + Fields tab (CRUD with delete)
 │   └── SettingsPage.tsx         # Database-stored settings editor + PDF folder browser
@@ -418,7 +424,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 direction param**: `POST /api/enrich/works/{id}/semantic-scholar` accepts `?direction=backward|forward|both` (default `both`). WorkDetailPanel has separate "Fetch references (S2)" and "Fetch citing papers (S2)" buttons.
 - **Topic list visibility toggle added**: Clicking a topic list entry in the citation timeline legend toggles it inactive (40% opacity, pointer cursor). `inactiveTopicListIds: Set<number>` state in `ProjectDetailPage`, serialized as `number[]` in localStorage. Derived memos: `activeTopicListIds`, `activeSeedIds`, `filteredSeeds`, `filteredSeedCitations`. `filteredNeighbors` excludes neighbors whose connections are all to inactive seeds. `CitationTimeline` receives `activeTopicListIds` + `onToggleTopicList` props; legend items carry optional `topicListId`. Storing **inactive** IDs (not active) is intentional: empty set = all active, so new topic lists are automatically visible.
 - **Multi-DOI support added**: A work can have multiple valid DOIs. Primary DOI stays on `Work.doi`; secondary DOIs use the new `WorkDOI` table. `doi_aliases` included in `WorkOut`. WorkDetailPanel allows editing the primary DOI and managing secondary DOIs, with a Jaccard title-similarity check against the DOI's resolved title to warn about mismatches.
-- **Structured extraction backend added**: `ExtractionSchema` + `ExtractionColumn` models, full CRUD API at `/api/extraction`, and `litexplorer/services/extraction.py`. Results stored as `WorkNote` rows rather than a separate `ExtractionResult` table (leveraging the existing provenance tracking). Frontend and CSV export not yet implemented.
+- **Structured extraction added**: `ExtractionSchema` + `ExtractionColumn` models, full CRUD API at `/api/extraction`, and `litexplorer/services/extraction.py`. Results stored as `WorkNote` rows (provenance tracking built-in). Frontend `ExtractionSchemasPage` provides schema management and an Extract & Review tab for running extraction against project seed papers and reviewing/accepting/editing results. CSV export not yet implemented.
 
 ---
 
@@ -428,7 +434,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 - **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
-- **LLM integration (Phase 2) not yet started**: design decisions documented in the Phase 2 scope section above. Key pre-work in place: PDF text extraction (fully implemented), WorkNote table with `provenance`/`model_id` fields. Architecture decisions: thin `LLMClient` abstraction (provider-agnostic), `llm_base_url` for local inference servers (Ollama etc.), PDF vision mode Anthropic-only, model IDs via provider API dropdown (not hardcoded), stateless conversation history. Priority order: (1) new DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`), (2) per-paper chat stored as WorkNotes, (3) structured extraction with new tables.
+- **LLM Phase 2 remaining work**: structured extraction run UI is complete. Remaining: per-paper chat (store conversation turns as WorkNotes) and CSV export (`GET /api/extraction/schemas/{id}/export`). Design constraints: stateless backend (full history sent per request), PDF vision Anthropic-only, local server auth (most local servers accept `Bearer local` from the openai SDK).
 - **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 
 ---
@@ -436,7 +442,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (222 tests)
+python -m pytest tests/ -v          # all tests (256 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 

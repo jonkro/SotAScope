@@ -388,3 +388,14 @@ export interface ExtractionBatchResult {
   results: ExtractionWorkResult[];
   errors: { work_id: number; error: string }[];
 }
+
+export interface ExtractionCellResult {
+  work_id: number;
+  column_id: number;
+  answer_note: WorkNote;
+  reasoning_note: WorkNote | null;
+}
+
+export interface ExtractionResultsResponse {
+  cells: ExtractionCellResult[];
+}

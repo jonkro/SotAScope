@@ -1036,8 +1036,11 @@ def update_note(
     if body.is_outdated is not None:
         note.is_outdated = body.is_outdated
 
-    # If provenance is AI, any user edit implies review
-    if note.provenance == "ai":
+    # Explicit provenance override (e.g. "Accept" button sets "ai_reviewed")
+    if body.provenance is not None:
+        note.provenance = body.provenance
+    elif body.content is not None and note.provenance == "ai":
+        # Editing AI content implies review
         note.provenance = "ai_reviewed"
 
     db.commit()
