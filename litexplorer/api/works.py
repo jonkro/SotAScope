@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import delete as sa_delete, exists, func, or_, select
+from sqlalchemy import delete as sa_delete, exists, func, or_, select, update as sa_update
 from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
@@ -193,6 +193,77 @@ def detect_duplicates(db: Session = Depends(get_db)):
         _add_group(f"Same title + year ({year})", list(works))
 
     return groups
+
+
+@router.get("/integrity")
+def pdf_integrity_check(db: Session = Depends(get_db)) -> dict:
+    """Report PDF data integrity issues: missing files, orphaned files, mismatched rows.
+
+    Returns a dict with four lists:
+    - ``pdf_rows_missing_file``: WorkPDF rows whose physical .pdf is not on disk.
+    - ``work_dirs_without_rows``: Work-ID directories on disk with no WorkPDF rows.
+    - ``orphaned_txt_files``: .txt companion files on disk with no matching .pdf.
+    - ``pdf_rows_missing_txt``: WorkPDF rows with extraction_status='ready' but
+      whose companion .txt is absent on disk.
+    """
+    pdf_root = _get_pdf_root(db)
+
+    all_pdfs = db.scalars(select(WorkPDF)).all()
+    pdf_rows_by_work: dict[int, list[WorkPDF]] = {}
+    for pdf in all_pdfs:
+        pdf_rows_by_work.setdefault(pdf.work_id, []).append(pdf)
+
+    pdf_rows_missing_file: list[dict] = []
+    pdf_rows_missing_txt: list[dict] = []
+    for pdf in all_pdfs:
+        pdf_path = pdf_root / str(pdf.work_id) / pdf.filename
+        if not pdf_path.is_file():
+            pdf_rows_missing_file.append({
+                "pdf_id": pdf.id,
+                "work_id": pdf.work_id,
+                "filename": pdf.filename,
+                "expected_path": str(pdf_path),
+            })
+        if pdf.extraction_status == "ready":
+            txt_path = _txt_path_for(pdf_root, pdf.work_id, pdf.filename)
+            if not txt_path.is_file():
+                pdf_rows_missing_txt.append({
+                    "pdf_id": pdf.id,
+                    "work_id": pdf.work_id,
+                    "filename": pdf.filename,
+                    "expected_txt": str(txt_path),
+                })
+
+    work_dirs_without_rows: list[dict] = []
+    orphaned_txt_files: list[str] = []
+    if pdf_root.is_dir():
+        for work_dir in pdf_root.iterdir():
+            if not work_dir.is_dir() or work_dir.name.startswith("_"):
+                continue
+            try:
+                work_id = int(work_dir.name)
+            except ValueError:
+                continue
+            pdf_files = list(work_dir.glob("*.pdf"))
+            txt_files = list(work_dir.glob("*.txt"))
+            if pdf_files and work_id not in pdf_rows_by_work:
+                work_dirs_without_rows.append({
+                    "work_id": work_id,
+                    "path": str(work_dir),
+                    "pdf_count": len(pdf_files),
+                })
+            # .txt files without a matching .pdf in the same directory
+            pdf_stems = {f.stem for f in pdf_files}
+            for txt in txt_files:
+                if txt.stem not in pdf_stems:
+                    orphaned_txt_files.append(str(txt))
+
+    return {
+        "pdf_rows_missing_file": pdf_rows_missing_file,
+        "work_dirs_without_rows": work_dirs_without_rows,
+        "orphaned_txt_files": orphaned_txt_files,
+        "pdf_rows_missing_txt": pdf_rows_missing_txt,
+    }
 
 
 @router.get("", response_model=list[WorkOut])
@@ -689,6 +760,84 @@ def _fill_metadata(db: Session, source: Work, target: Work) -> None:
         target.citation_count = source.citation_count
 
 
+def _merge_pdfs(db: Session, source: Work, target: Work, pdf_root: Path) -> None:
+    """Move source's PDF records and physical files to target work.
+
+    Uses raw SQL UPDATE (not ORM attribute assignment) so the moved rows are
+    not visible in source.pdfs and therefore not cascade-deleted when source
+    is deleted.  Physical .pdf and .txt companion files are moved from
+    {pdf_root}/{source.id}/ to {pdf_root}/{target.id}/, renaming on collision.
+    """
+    source_pdfs = db.scalars(
+        select(WorkPDF).where(WorkPDF.work_id == source.id).order_by(WorkPDF.id)
+    ).all()
+    if not source_pdfs:
+        return
+
+    target_has_primary = bool(db.scalar(
+        select(func.count()).select_from(WorkPDF).where(
+            WorkPDF.work_id == target.id, WorkPDF.is_primary == True  # noqa: E712
+        )
+    ))
+
+    source_dir = pdf_root / str(source.id)
+    target_dir = pdf_root / str(target.id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    for pdf in source_pdfs:
+        new_filename = pdf.filename
+        dst_pdf = target_dir / new_filename
+
+        # Resolve filename collision in target directory
+        counter = 1
+        while dst_pdf.exists():
+            stem = Path(pdf.filename).stem
+            suffix = Path(pdf.filename).suffix
+            new_filename = f"{stem}_{counter}{suffix}"
+            dst_pdf = target_dir / new_filename
+            counter += 1
+
+        # Move physical PDF file
+        src_pdf = source_dir / pdf.filename
+        if src_pdf.is_file():
+            shutil.move(str(src_pdf), str(dst_pdf))
+
+        # Move companion .txt file
+        src_txt = _txt_path_for(pdf_root, source.id, pdf.filename)
+        if src_txt.is_file():
+            dst_txt = _txt_path_for(pdf_root, target.id, new_filename)
+            shutil.move(str(src_txt), str(dst_txt))
+
+        # If target already has a primary PDF, clear this one's flag.
+        new_is_primary = pdf.is_primary and not target_has_primary
+        if new_is_primary:
+            target_has_primary = True  # first transferred primary takes the slot
+
+        # Use raw SQL UPDATE so the row's work_id changes in the DB without
+        # touching the in-memory ORM object (which stays in source.pdfs).
+        # db.expire(source) before db.delete(source) then forces a fresh load
+        # of source.pdfs from DB (empty), preventing cascade deletion.
+        db.execute(
+            sa_update(WorkPDF)
+            .where(WorkPDF.id == pdf.id)
+            .values(work_id=target.id, filename=new_filename, is_primary=new_is_primary)
+        )
+
+    db.flush()
+
+
+def _merge_notes(db: Session, source: Work, target: Work) -> None:
+    """Move source's notes to target work.
+
+    Uses raw SQL UPDATE so the moved rows are not cascade-deleted when
+    source is deleted (same rationale as _merge_pdfs).
+    """
+    db.execute(
+        sa_update(WorkNote).where(WorkNote.work_id == source.id).values(work_id=target.id)
+    )
+    db.flush()
+
+
 @router.post("/{target_id}/merge/{source_id}", response_model=WorkDetail)
 def merge_works(target_id: int, source_id: int, db: Session = Depends(get_db)):
     """Merge source work into target work, then delete source."""
@@ -698,13 +847,22 @@ def merge_works(target_id: int, source_id: int, db: Session = Depends(get_db)):
     target = _get_work(db, target_id)
     source = _get_work(db, source_id)
 
+    pdf_root = _get_pdf_root(db)
+
     _repoint_citations_citing(db, source.id, target.id)
     _repoint_citations_cited(db, source.id, target.id)
     _repoint_topic_list_works(db, source.id, target.id)
     _repoint_project_ignored_works(db, source.id, target.id)
     _merge_authors(db, source, target)
     _merge_locations(db, source, target)
+    _merge_pdfs(db, source, target, pdf_root)
+    _merge_notes(db, source, target)
     _fill_metadata(db, source, target)
+
+    # Expire source so that db.delete(source)'s cascade processing re-queries
+    # each relationship from DB (all children have been repointed to target,
+    # so the fresh queries return empty — nothing gets cascade-deleted).
+    db.expire(source)
 
     db.delete(source)
     db.flush()
