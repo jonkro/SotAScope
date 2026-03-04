@@ -166,11 +166,11 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **Structured extraction (backend)**: `ExtractionSchema` + `ExtractionColumn` models; `litexplorer/services/extraction.py` with `assemble_extraction_prompt()`, `parse_extraction_response()`, `run_extraction_for_work()`; full CRUD + extraction API at `/api/extraction`; new `llm_system_prompt_prefix` DB setting. Extraction results stored as `WorkNote` rows (`provenance="ai"`), two per column (answer + reasoning). 34 tests in `tests/test_extraction.py`.
 - **Structured extraction frontend**: `ExtractionSchemasPage` at `/projects/:projectId/extraction`; schema list view → new-schema form → schema editor with two tabs: **Schema** (edit title/description/columns) and **Extract & Review** (run extraction + results table). `ColumnFormModal` with tag-style allowed-values input; up/down column reordering; `useExtraction.ts` hooks; "Extraction Tables" button in `ProjectDetailPage` header.
 - **Structured extraction run & review UI**: `ExtractionRunView` component in `ExtractionSchemasPage`; seed paper selector (searchable checkboxes from `useTimeline`); Extract button with per-paper progress indicator; confirmation dialog when re-running on papers with existing notes; results table (rows = papers, columns = schema columns). `ExtractionCell` component: answer text + `ProvenanceBadge` (ai=blue, ai_reviewed=purple, user=green) + ✓ Accept button (ai notes only, sets provenance to `ai_reviewed`) + ✎ Edit (inline — dropdown for constrained columns, textarea for free-form) + ⓘ reasoning toggle + ⚡ single-paper extract for empty cells. Re-extraction skips `ai_reviewed`/`user` notes and deletes+replaces `ai` notes (no duplicates). New endpoint: `GET /api/extraction/schemas/{id}/results?work_ids=1,2,3` → `ExtractionResultsResponse({cells: ExtractionCellResult[]})`. `WorkNoteUpdate` now accepts `provenance` field; explicit provenance overrides auto-upgrade logic. New types: `ExtractionCellResult`, `ExtractionResultsResponse`. New hooks: `useExtractionResults`, `useRunSingleExtraction`, `useRunBatchExtraction`, `useAcceptExtractionNote`, `useEditExtractionNote`.
+- **CSV and LaTeX export**: `GET /api/extraction/schemas/{id}/export?format=csv|latex&work_ids=1,2,3&column_ids=1,2` — download extraction results as a CSV spreadsheet or a LaTeX booktabs table. `work_ids` and `column_ids` are optional: omitting `work_ids` auto-discovers all works with notes for the schema. `litexplorer/services/extraction_export.py` — `export_as_csv()` and `export_as_latex()`; single-pass regex LaTeX escaping; constrained columns use `c` alignment + `\rotatebox{90}` header; free-text columns use `l`. Frontend: "Export CSV" and "Export LaTeX" buttons in `ExtractionRunView` action bar pass selected paper IDs. 28 tests in `tests/test_extraction_export.py`.
 
 ### Not yet started
 
 - **Per-paper chat**: discuss a paper with an LLM to accelerate understanding
-- **CSV export**: `GET /api/extraction/schemas/{id}/export?project_id=N` — export extraction results as CSV
 
 ### Phase 2 design notes
 
@@ -179,7 +179,7 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **`llm_base_url`**: optional. When set, overrides the provider's default cloud endpoint. Enables local inference servers (Ollama, vLLM, LM Studio, llama.cpp) that expose an OpenAI-compatible API (e.g., `http://localhost:11434/v1`). `llm_api_key` may be left blank when using a local endpoint.
 - **PDF vision mode (Anthropic-only)**: sending the PDF binary directly to the model (vision input) is only supported when `llm_provider = "anthropic"`. When any other provider is configured — including local OpenAI-compatible servers — the "use PDF" toggle in the per-paper chat UI is disabled and the fallback is extracted `.txt` text.
 - **Conversation history — stateless backend**: full conversation history is sent with every chat request; the backend does not persist conversation turns. Conversations are lost on page refresh. This is intentional for Phase 2.
-- **Structured extraction — tables now exist**: `ExtractionSchema` (title, description, nullable project_id) + `ExtractionColumn` (name, prompt, description, allowed_values JSON, sort_order). Results stored as `WorkNote` rows (`provenance="ai"`, `note_type="{schema.title} / {column.name}"`). CSV export not yet implemented.
+- **Structured extraction — tables now exist**: `ExtractionSchema` (title, description, nullable project_id) + `ExtractionColumn` (name, prompt, description, allowed_values JSON, sort_order). Results stored as `WorkNote` rows (`provenance="ai"`, `note_type="{schema.title} / {column.name}"`). CSV and LaTeX export available via `GET /api/extraction/schemas/{id}/export`.
 - **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
 - **Context window strategy**: typical extracted PDF text is 5k–40k tokens. Send abstract+title first; include full text only when available. For very long papers, consider truncating to the first N tokens or chunking by section.
 - **Anthropic SDK**: `anthropic` Python package; `client.messages.create()` for standard calls, `client.messages.stream()` for streaming. Already a required dependency in `pyproject.toml`.
@@ -262,6 +262,7 @@ litexplorer/
 │   ├── filesystem.py     # /api/filesystem — directory browser + mkdir
 │   └── extraction.py     # /api/extraction — schema/column CRUD, extraction execution,
 │                         #   GET /schemas/{id}/results?work_ids=... (ExtractionResultsResponse)
+│                         #   GET /schemas/{id}/export?format=csv|latex (CSV/LaTeX download)
 ├── services/
 │   ├── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
 │   │                     #   DOI resolution, cache management, deduplication,
@@ -270,10 +271,12 @@ litexplorer/
 │   │                     #   enrich_from_semantic_scholar()
 │   ├── pdf.py            # extract_pdf_text(), _detect_two_column(), _words_to_text()
 │   │                     #   ExtractionError; two-column detection via x0 histogram heuristics
-│   └── extraction.py     # assemble_extraction_prompt(), parse_extraction_response(),
-│                         #   run_extraction_for_work() — builds LLM prompt, parses JSON response,
-│                         #   creates WorkNote rows (answer + reasoning per column);
-│                         #   skips ai_reviewed/user notes; deletes stale ai notes before re-creating
+│   ├── extraction.py     # assemble_extraction_prompt(), parse_extraction_response(),
+│   │                     #   run_extraction_for_work() — builds LLM prompt, parses JSON response,
+│   │                     #   creates WorkNote rows (answer + reasoning per column);
+│   │                     #   skips ai_reviewed/user notes; deletes stale ai notes before re-creating
+│   └── extraction_export.py  # export_as_csv(), export_as_latex() — booktabs LaTeX with rotatebox
+│                             #   headers for constrained columns; single-pass regex LaTeX escaping
 └── external/
     ├── base.py           # ExternalWork (with semantic_scholar_id, citations_by_year),
     │                     #   ExternalVenue, ExternalAuthor, ExternalLocation
@@ -359,6 +362,7 @@ tests/
 ├── test_semantic_scholar_enrichment.py  # S2 enrichment endpoint (refs/citations, dedup, error cases)
 ├── test_search_import.py      # Search-by-title candidates + confirm endpoints (12 tests)
 ├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints (34 tests)
+├── test_extraction_export.py  # CSV/LaTeX export service unit tests + API endpoint tests (28 tests)
 └── fixtures/
     ├── openalex_responses.py  # Sample API response fixtures
     ├── generate_fixtures.py   # One-off script to regenerate synthetic PDF fixtures (fpdf2 + matplotlib)
@@ -434,7 +438,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 - **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
-- **LLM Phase 2 remaining work**: structured extraction run UI is complete. Remaining: per-paper chat (store conversation turns as WorkNotes) and CSV export (`GET /api/extraction/schemas/{id}/export`). Design constraints: stateless backend (full history sent per request), PDF vision Anthropic-only, local server auth (most local servers accept `Bearer local` from the openai SDK).
+- **LLM Phase 2 remaining work**: structured extraction run UI and CSV/LaTeX export are complete. Remaining: per-paper chat (store conversation turns as WorkNotes). Design constraints: stateless backend (full history sent per request), PDF vision Anthropic-only, local server auth (most local servers accept `Bearer local` from the openai SDK).
 - **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 
 ---
@@ -442,7 +446,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (256 tests)
+python -m pytest tests/ -v          # all tests (284 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 
