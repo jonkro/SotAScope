@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -401,3 +401,121 @@ def extract_batch(
             errors.append({"work_id": work_id, "error": str(exc)})
 
     return ExtractionBatchResult(results=results, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# Export (CSV / LaTeX)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/schemas/{schema_id}/export")
+def export_schema(
+    schema_id: int,
+    fmt: str = Query(..., alias="format", description="'csv' or 'latex'"),
+    work_ids: str = Query("", description="Comma-separated work IDs; empty = all with notes"),
+    column_ids: str = Query("", description="Comma-separated column IDs; empty = all columns"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Export an extraction schema as CSV or LaTeX.
+
+    Query parameters:
+    - ``format``: ``"csv"`` or ``"latex"`` (required).
+    - ``work_ids``: comma-separated integers. If omitted, all works that have
+      any notes for this schema are included.
+    - ``column_ids``: comma-separated integers. If omitted, all schema columns
+      are included.
+    """
+    from litexplorer.models.library import Work, WorkNote
+    from litexplorer.services.extraction import _truncate_note_type
+    from litexplorer.services.extraction_export import export_as_csv, export_as_latex
+
+    if fmt not in ("csv", "latex"):
+        raise HTTPException(status_code=422, detail="format must be 'csv' or 'latex'")
+
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+
+    # Resolve columns (filter if column_ids provided)
+    all_columns = sorted(schema.columns, key=lambda c: c.sort_order)
+    if column_ids.strip():
+        try:
+            cids = {int(x.strip()) for x in column_ids.split(",") if x.strip()}
+        except ValueError:
+            raise HTTPException(status_code=422, detail="column_ids must be comma-separated integers")
+        columns = [c for c in all_columns if c.id in cids]
+    else:
+        columns = all_columns
+
+    if not columns:
+        raise HTTPException(status_code=422, detail="No columns to export")
+
+    # Build note_type → column mapping for answer notes only
+    answer_type_to_col: dict[str, ExtractionColumn] = {}
+    for col in columns:
+        at = _truncate_note_type(f"{schema.title} / {col.name}")
+        answer_type_to_col[at] = col
+
+    # Resolve work IDs
+    if work_ids.strip():
+        try:
+            wids = [int(x.strip()) for x in work_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="work_ids must be comma-separated integers")
+    else:
+        # Discover all works that have any answer note for the selected columns
+        stmt = (
+            select(WorkNote.work_id)
+            .where(WorkNote.note_type.in_(list(answer_type_to_col.keys())))
+            .distinct()
+        )
+        if schema.project_id is not None:
+            stmt = stmt.where(
+                (WorkNote.project_id == schema.project_id) | (WorkNote.project_id == None)  # noqa: E711
+            )
+        wids = list(db.scalars(stmt).all())
+
+    if not wids:
+        # Return an empty export (header only for CSV, empty table for LaTeX)
+        works: list[Work] = []
+    else:
+        works = list(
+            db.scalars(select(Work).where(Work.id.in_(wids)).order_by(Work.publication_year, Work.title)).all()
+        )
+
+    # Fetch answer notes for these works + columns
+    answer_note_types = list(answer_type_to_col.keys())
+    notes_stmt = select(WorkNote).where(
+        WorkNote.work_id.in_(wids) if wids else WorkNote.work_id.in_([]),
+        WorkNote.note_type.in_(answer_note_types),
+    )
+    if schema.project_id is not None:
+        notes_stmt = notes_stmt.where(
+            (WorkNote.project_id == schema.project_id) | (WorkNote.project_id == None)  # noqa: E711
+        )
+    raw_notes = db.scalars(notes_stmt).all() if wids else []
+
+    # Build (work_id, column_id) → WorkNote mapping
+    notes_by_work_column: dict[tuple[int, int], WorkNote] = {}
+    for note in raw_notes:
+        col = answer_type_to_col.get(note.note_type)
+        if col is not None:
+            notes_by_work_column[(note.work_id, col.id)] = note
+
+    # Sanitize filename (strip path-unsafe characters)
+    safe_title = "".join(c if c.isalnum() or c in " _-" else "_" for c in schema.title).strip() or "export"
+
+    if fmt == "csv":
+        content = export_as_csv(schema, columns, works, notes_by_work_column)
+        return Response(
+            content=content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}.csv"'},
+        )
+    else:
+        content = export_as_latex(schema, columns, works, notes_by_work_column)
+        return Response(
+            content=content,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}.tex"'},
+        )

@@ -377,6 +377,35 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
         <span className="text-xs text-gray-500">
           {selectedCount} of {seeds.length} selected
         </span>
+        {/* Export buttons */}
+        {allSeedIds.length > 0 && (
+          <>
+            <button
+              onClick={() => {
+                const ids = selectedIds.size > 0 ? Array.from(selectedIds) : allSeedIds;
+                window.open(
+                  `/api/extraction/schemas/${schema.id}/export?format=csv&work_ids=${ids.join(',')}`,
+                );
+              }}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
+              title="Export current selection as CSV"
+            >
+              Export CSV
+            </button>
+            <button
+              onClick={() => {
+                const ids = selectedIds.size > 0 ? Array.from(selectedIds) : allSeedIds;
+                window.open(
+                  `/api/extraction/schemas/${schema.id}/export?format=latex&work_ids=${ids.join(',')}`,
+                );
+              }}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
+              title="Export current selection as LaTeX table"
+            >
+              Export LaTeX
+            </button>
+          </>
+        )}
         <div className="flex-1" />
         {isExtracting && extractProgress && (
           <span className="text-xs text-gray-500 flex items-center gap-1.5">
