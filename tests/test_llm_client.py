@@ -353,6 +353,51 @@ def test_openai_list_models_local_with_key_sends_bearer():
 
 
 # ---------------------------------------------------------------------------
+# OpenAILLMClient — base URL normalization
+# ---------------------------------------------------------------------------
+
+
+def test_openai_base_url_bare_port_gets_v1_appended():
+    """Bare Ollama URL without a path gets /v1 appended."""
+    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+        mock_mod.OpenAI.return_value = MagicMock()
+        c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://localhost:11434")
+    assert c._base_url == "http://localhost:11434/v1"
+
+
+def test_openai_base_url_already_v1_unchanged():
+    """URL ending in /v1 is left unchanged."""
+    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+        mock_mod.OpenAI.return_value = MagicMock()
+        c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://localhost:11434/v1")
+    assert c._base_url == "http://localhost:11434/v1"
+
+
+def test_openai_base_url_trailing_slash_v1_unchanged():
+    """URL ending in /v1/ is left unchanged (no double /v1)."""
+    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+        mock_mod.OpenAI.return_value = MagicMock()
+        c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://localhost:11434/v1/")
+    assert c._base_url == "http://localhost:11434/v1/"
+
+
+def test_openai_base_url_custom_path_unchanged():
+    """URL with a meaningful custom path is left unchanged."""
+    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+        mock_mod.OpenAI.return_value = MagicMock()
+        c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://host:8080/custom/v1")
+    assert c._base_url == "http://host:8080/custom/v1"
+
+
+def test_openai_base_url_none_no_normalization():
+    """None base_url is not modified."""
+    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+        mock_mod.OpenAI.return_value = MagicMock()
+        c = OpenAILLMClient(api_key="sk-test", model_id="gpt-4o", base_url=None)
+    assert c._base_url is None
+
+
+# ---------------------------------------------------------------------------
 # make_llm_client factory
 # ---------------------------------------------------------------------------
 

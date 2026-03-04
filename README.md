@@ -116,7 +116,7 @@ Most configuration is done through the **Settings page** in the UI (`/settings`)
 | `llm_provider` | LLM provider: `anthropic` or `openai`. Leave blank to disable LLM features. |
 | `llm_api_key` | API key for the selected provider. Optional when `llm_base_url` points to a local server. |
 | `llm_model_id` | Model to use (e.g. `claude-sonnet-4-6`, `gpt-4o`). The Settings page loads available models from the provider API and shows a dropdown. |
-| `llm_base_url` | Override the provider's default API endpoint. Use this to point to a local inference server (e.g. `http://localhost:11434/v1` for Ollama). |
+| `llm_base_url` | Override the provider's default API endpoint. Use this to point to a local inference server (e.g. `http://localhost:11434/v1` for Ollama). If you omit the `/v1` suffix (e.g. enter `http://localhost:11434`), LitExplorer appends it automatically. |
 
 Environment variables (all prefixed `LITEXPLORER_`) can be set in a shell or in the `env` file (see `env.example`):
 
@@ -144,7 +144,7 @@ cd ..
 ## Running tests
 
 ```bash
-# Backend (284 tests)
+# Backend (313 tests)
 python -m pytest tests/ -v
 
 # Frontend — TypeScript type check + production build (requires Node.js)

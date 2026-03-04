@@ -248,6 +248,9 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
           Optional. Overrides the provider's default endpoint. Use this for local inference
           servers (Ollama, vLLM, LM Studio). Leave blank for Anthropic or OpenAI cloud.
         </p>
+        <p className="mt-0.5 text-xs text-gray-400">
+          For Ollama, use <code>http://host:11434/v1</code>
+        </p>
       </div>
 
       {/* Model */}

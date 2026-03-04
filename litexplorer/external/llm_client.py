@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -20,6 +21,20 @@ except ImportError:
 
 
 _SYSTEM_PROMPT = "You are a research assistant helping analyze academic literature."
+
+
+def _normalize_base_url(url: str) -> str:
+    """Append ``/v1`` to a bare base URL that has no meaningful path.
+
+    Handles the common Ollama misconfiguration where users enter
+    ``http://host:11434`` instead of ``http://host:11434/v1``.
+    Only appends when the URL path is empty or ``/``; any other path
+    (including one that already contains ``v1``) is left unchanged.
+    """
+    parsed = urlparse(url)
+    if parsed.path in ("", "/"):
+        return urlunparse(parsed._replace(path="/v1"))
+    return url
 
 
 @dataclass
@@ -148,6 +163,9 @@ class OpenAILLMClient(LLMClient):
                 "pip install openai"
             )
         self._real_api_key = api_key  # original; empty = no auth for local servers
+        # Normalize bare Ollama-style URLs: http://host:11434 → http://host:11434/v1
+        if base_url:
+            base_url = _normalize_base_url(base_url)
         # Local servers don't validate the key, but the SDK requires a non-empty string.
         effective_key = api_key if api_key else "local"
         kwargs: dict = {"api_key": effective_key}
