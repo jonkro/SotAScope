@@ -29,14 +29,14 @@ _CITATION_FIELDS = "paperId,externalIds,title,year,citationCount"
 # ---------------------------------------------------------------------------
 # Process-level rate limiter — shared across all SemanticScholarClient instances
 # so that concurrent requests from different endpoint handlers don't exceed S2
-# rate limits.  Unauthenticated: 1 req/s.  Authenticated (API key): 10 req/s.
+# rate limits.  S2 enforces 1 req/s regardless of whether an API key is used;
+# without a key the limit is applied globally across all users on the same IP.
 # ---------------------------------------------------------------------------
 _RATE_LOCK = threading.Lock()
 _LAST_CALL_TIME: float = 0.0
 
-# Minimum interval defaults (seconds between consecutive S2 HTTP requests)
-_UNAUTH_MIN_INTERVAL: float = 1.0   # 1 req/s  (no API key)
-_AUTH_MIN_INTERVAL: float = 0.1     # 10 req/s (with API key)
+# 1 request per second — applies both with and without an API key.
+_MIN_INTERVAL: float = 1.0
 
 
 def _throttle(min_interval: float) -> None:
@@ -82,9 +82,9 @@ class SemanticScholarClient:
     """Synchronous Semantic Scholar Academic Graph API client.
 
     All outgoing HTTP calls are throttled via the module-level ``_throttle()``
-    function to stay within S2 rate limits: 1 req/s without an API key,
-    10 req/s with one.  The throttle is process-global so concurrent calls
-    from different request handlers are serialised correctly.
+    function at 1 req/s (S2's enforced limit regardless of API key).  The
+    throttle is process-global so concurrent calls from different request
+    handlers are serialised correctly.
     """
 
     def __init__(
@@ -102,7 +102,7 @@ class SemanticScholarClient:
             timeout=30.0,
             verify=verify,
         )
-        self._min_interval = _AUTH_MIN_INTERVAL if api_key else _UNAUTH_MIN_INTERVAL
+        self._min_interval = _MIN_INTERVAL
 
     def close(self) -> None:
         self._http.close()

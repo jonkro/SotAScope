@@ -112,7 +112,7 @@ Most configuration is done through the **Settings page** in the UI (`/settings`)
 | `api_contact_email` | E-mail sent to OpenAlex and Crossref for polite-pool access (better rate limits). Equivalent to the env vars below; the UI value takes precedence. |
 | `pdf_storage_path` | Where PDFs are stored. Defaults to `{data_dir}/pdfs/`. On a server, point this to a persistent directory outside the repo. |
 | `ssl_verify` | Set to `false` to disable SSL certificate verification for external API calls. Useful when behind a corporate proxy that uses a custom CA. Default: `true` (verification enabled). |
-| `s2_api_key` | Semantic Scholar API key (optional). Raises the rate limit from ~1 req/s to 10 req/s. Apply at https://www.semanticscholar.org/product/api. Without a key, 429 errors are common on shared/university networks. |
+| `s2_api_key` | Semantic Scholar API key (optional). S2 enforces 1 req/s regardless, but without a key the quota is shared across all users on the same IP — 429 errors are common on shared/university networks. An API key gives you a dedicated quota. Apply at https://www.semanticscholar.org/product/api. |
 | `llm_provider` | LLM provider: `anthropic` or `openai`. Leave blank to disable LLM features. |
 | `llm_api_key` | API key for the selected provider. Optional when `llm_base_url` points to a local server. |
 | `llm_model_id` | Model to use (e.g. `claude-sonnet-4-6`, `gpt-4o`). The Settings page loads available models from the provider API and shows a dropdown. |
