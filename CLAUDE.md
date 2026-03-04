@@ -16,6 +16,7 @@ Two distinct layers:
 - A work may have multiple "locations" (typed as `venue` or `preprint`). The venue version is treated as primary. arXiv links are stored as preprint locations.
 - **PDF management**: PDFs are stored in a configurable local folder (`pdf_storage_path` setting, default `{data_dir}/pdfs/`). Each work can have multiple PDFs via the `WorkPDF` table; the first uploaded is auto-set as primary. Files are organized as `{pdf_root}/{work_id}/{filename}`. Deleted PDFs are moved to `{pdf_root}/_orphaned/` rather than permanently removed. PDFs are served inline (not as downloads) via `FileResponse` with `Content-Disposition: inline`.
 - **Work notes**: Per-work notes stored in the `WorkNote` table. Notes can be scoped to a project (`project_id` set) or general (`project_id` null). Each note has `content`, `note_type` (optional label), `provenance` ("user", "ai", or "ai_reviewed"), `model_id`, and `is_outdated` flag. Editing an AI-generated note changes provenance to "ai_reviewed".
+- **Secondary DOIs (WorkDOI)**: A work may have multiple valid DOIs. The primary DOI lives on `Work.doi`; additional DOIs are stored in the `WorkDOI` table (`work_dois`, CASCADE delete). `doi_aliases: list[str]` is included in `WorkOut` via a Pydantic `field_validator(mode='before')`.
 - The library stores a **venue tier list**: a user-maintained mapping of venues to tiers (1 = top venue, 2 = regular, 3 = ignore). Tiers are global per venue (not per-field). Venues can be associated with one or more research fields (e.g., "AI/ML", "Computer Networks") via a many-to-many relationship, but the tier is a single global value.
 - **Venue aliases** handle year-to-year name variation (e.g., the same conference has different OpenAlex names across years). Aliases are manually reorderable; the first alias (by sort_order) is the **preferred alias** used for display throughout the UI.
 - **Venue normalization** runs at startup: strips "Proceedings of the..." prefixes, calendar years, and ordinal edition numbers. Detects and merges duplicate venues after normalization, preserving old names as aliases.
@@ -106,7 +107,7 @@ Y-axis ticks show untransformed integers at powers of 10 (0, 1, 10, 100, 1000...
 - **Add to topic list**: buttons in the side panel let the user add the paper to any topic list (making it a new seed and triggering auto-enrichment)
 - **Remove from topic list**: buttons to remove the paper from topic lists it belongs to
 - **Mark uninteresting**: for neighbor papers, moves them to the project's ignored list
-- **Citation list markers**: References and Cited-by lists in the side panel show SVG markers matching the timeline shapes (colored squares for seeds, grey circles for backward refs, grey diamonds for forward cites). Entries are clickable to navigate to that paper in the timeline.
+- **Citation list markers**: References and Cited-by lists in the side panel show SVG markers matching the timeline shapes (colored squares for seeds, grey circles for backward refs, grey diamonds for forward cites). Entries that are visible in the timeline render as clickable buttons (`cursor-pointer`, `hover:underline`). Clicking navigates to that paper (panel + timeline both update). On every selection change, a brief indigo ripple expands outward from the newly selected dot over 650 ms (D3 transition, fires only on genuine selection changes via `prevSelectedWorkIdRef`).
 - **Collapsible sections**: Abstract, Locations, Actions, References, and Cited-by sections are collapsible. Fold state persists across paper selections within the same page.
 
 ### Timeline controls
@@ -146,10 +147,13 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - Per-client timeline state persistence via localStorage
 - **Topic list visibility toggle**: clicking a TL legend entry in the citation timeline hides/shows its seeds (and candidates connected only to that TL). Multi-TL seeds lose the deactivated color stripe. Toggle state persists in `localStorage` alongside other timeline settings. Implemented entirely client-side — no backend changes required.
 - Deployment: `README.md`, `litexplorer.service` (optional systemd unit), `env.example`; pre-built frontend committed to `frontend/dist/` (no Node.js required to run)
-- **Semantic Scholar integration**: `SemanticScholarClient` (`external/semantic_scholar.py`); `Work.semantic_scholar_id` column; on-demand enrichment endpoint `POST /api/enrich/works/{id}/semantic-scholar?direction={both|backward|forward}` (fetches refs/citations by direction, returns new/existing/raw counts); editable S2 ID field in WorkDetailPanel; deduplication by S2 ID as 4th fallback after DOI/openalex_id/arxiv_id; `s2_api_key` DB setting (raises S2 rate limit from 1→10 req/s); `SemanticScholarEnrichResult` includes `raw_references` and `raw_citing` (items returned by S2 API before dedup, used by UI to distinguish "S2 has no data" from "already in library")
+- **Semantic Scholar integration**: `SemanticScholarClient` (`external/semantic_scholar.py`); `Work.semantic_scholar_id` column; on-demand enrichment endpoint `POST /api/enrich/works/{id}/semantic-scholar?direction={both|backward|forward}` (fetches refs/citations by direction, returns new/existing/raw counts); editable S2 ID field in WorkDetailPanel; deduplication by S2 ID as 4th fallback after DOI/openalex_id/arxiv_id; `s2_api_key` DB setting (raises S2 rate limit from 1→10 req/s); `SemanticScholarEnrichResult` includes `raw_references` and `raw_citing` (items returned by S2 API before dedup, used by UI to distinguish "S2 has no data" from "already in library"); `enrich_from_semantic_scholar()` falls back to title-search when DOI and S2 ID lookups both fail: normalizes title via `_normalize_title_for_cmp()` (NFKD + Jaccard) and searches S2 by title, taking the first exact-normalized-title match
+- **Multi-DOI support**: `WorkDOI` table stores secondary DOIs per work (CASCADE delete). `doi_aliases` returned in `WorkOut`. `GET/POST/DELETE /api/works/{id}/doi-aliases` endpoints. `GET /api/enrich/doi/info?doi=...` looks up title/year for a DOI without importing (OA cache → live OA → Crossref fallback). WorkDetailPanel shows editable primary DOI and secondary DOI list, both with real-time title similarity check (Jaccard ≥ 0.7 = green, < 0.7 = amber warning, not found = red).
 - **SSL verify toggle**: `ssl_verify` DB setting (default `"true"`); passed as `verify=` to all httpx clients; checkbox in Settings with amber warning; `formatError()` in ImportDialog detects SSL errors; global 503 handler with `SSL_CERTIFICATE_ERROR:` prefix
 - **WorkDetailPanel enrichment buttons**: 5 buttons in Actions section: "Fetch references (OA)", "Fetch citing papers (OA)", "Fetch references (S2)", "Fetch citing papers (S2)", "Enrich from Crossref"; works without a DOI show "Resolve DOI (CrossRef)" instead of Crossref button; each S2 button calls the endpoint with appropriate direction param; status messages distinguish S2 returning 0 items ("S2 has no reference list for this paper") from all-already-existing case
-- **LLM provider configuration (Phase 2 pre-work)**: four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`) seeded in `_seed_default_settings()`; `litexplorer/external/llm_client.py` — `ContextDocument` dataclass, abstract `LLMClient`, `AnthropicLLMClient`, `OpenAILLMClient`, `make_llm_client()` factory; `GET /api/llm/models` endpoint (reads DB settings, returns model list or soft error); `anthropic` and `openai` added as required dependencies in `pyproject.toml`; Settings page `/settings` has a dedicated **LLM Configuration** section: provider dropdown, API key (password, save on blur), base URL (save on blur, triggers model list re-fetch), model picker (loading spinner → populated dropdown or free-text fallback on error/empty), "Test connection" button, PDF vision note for Anthropic
+- **LLM provider configuration (Phase 2 pre-work)**: four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`) seeded in `_seed_default_settings()`; `litexplorer/external/llm_client.py` — `ContextDocument` dataclass, abstract `LLMClient`, `AnthropicLLMClient`, `OpenAILLMClient`, `make_llm_client()` factory; `GET /api/llm/models` endpoint (reads DB settings, returns model list or soft error); `anthropic` and `openai` added as required dependencies in `pyproject.toml`; Settings page `/settings` has a dedicated **LLM Configuration** section: provider dropdown, API key (password, save on blur), base URL (save on blur, triggers model list re-fetch), model picker (loading spinner → populated dropdown or free-text fallback on error/empty), "Test connection" button, PDF vision note for Anthropic; `OpenAILLMClient.list_models()` uses httpx directly when `base_url` is set (stores `_real_api_key`; sends no auth header when api_key empty, sends `Bearer` only when a real key is provided) — avoids sending `Bearer local` to local servers that validate auth
+
+- **Topic list UX**: When a work is added from the candidates list, the target topic list auto-expands (`forceExpand` prop on `TopicListCard`); added works are removed from the candidate list to prevent duplicates. `ProjectDetailPage` tracks `expandedListId` and filters `searchedWorks` against already-added members.
 
 ### Not yet implemented from Phase 1 spec
 - (All Phase 1 items are now implemented)
@@ -214,7 +218,7 @@ litexplorer/
 │   ├── base.py           # SQLAlchemy DeclarativeBase
 │   ├── library.py        # Work (with citations_by_year JSON), WorkLocation, Author, WorkAuthor,
 │   │                     #   Venue, VenueAlias, Field (passive_deletes=True), VenueField,
-│   │                     #   Citation, WorkPDF (extraction_status: pending/ready/failed), WorkNote
+│   │                     #   Citation, WorkPDF (extraction_status: pending/ready/failed), WorkNote, WorkDOI (secondary DOIs, CASCADE delete)
 │   ├── project.py        # Project, TopicList, TopicListWork, ProjectIgnoredWork
 │   ├── cache.py          # ApiCache (permanent / timestamped)
 │   └── settings.py       # Setting (key-value store)
@@ -226,7 +230,7 @@ litexplorer/
 │   ├── enrichment.py     # EnrichDOIResult, CitationResult, DOIResolutionResult,
 │   │                     #   SemanticScholarEnrichResult, SearchImportRequest,
 │   │                     #   SearchImportCandidate, SearchImportCandidatesResult,
-│   │                     #   SearchImportConfirmRequest
+│   │                     #   SearchImportConfirmRequest, DOIInfoResult
 │   ├── timeline.py       # TimelineResponse, TimelineSeedWork, TimelineNeighborWork
 │   │                     #   (seeds/neighbors include citations_by_year: list[dict] | None)
 │   ├── fields.py         # FieldOut (includes venue_count: int)
@@ -235,12 +239,14 @@ litexplorer/
 ├── api/
 │   ├── deps.py           # get_db dependency
 │   ├── works.py          # /api/works — CRUD, BibTeX import, citations, merge, duplicates,
-│   │                     #   PDF upload/serve/delete/extract-text/text, notes CRUD
+│   │                     #   PDF upload/serve/delete/extract-text/text, notes CRUD,
+│   │                     #   DOI alias CRUD: GET/POST/DELETE /{id}/doi-aliases
 │   ├── venues.py         # /api/venues — CRUD, aliases, field associations, sortable (sort_by, sort_dir)
 │   ├── fields.py         # /api/fields — CRUD + DELETE /{field_id} (cascade deletes VenueField)
 │   ├── projects.py       # /api/projects — CRUD, topic lists, ignored works
 │   ├── enrichment.py     # /api/enrich — DOI import, citation fetching, Crossref, DOI resolution,
-│   │                     #   S2 enrichment, search-import/candidates, search-import/confirm
+│   │                     #   S2 enrichment, search-import/candidates, search-import/confirm,
+│   │                     #   doi/info (DOIInfoResult)
 │   ├── timeline.py       # /api/projects/{id}/timeline — timeline data aggregation
 │   ├── notes.py          # /api/projects/{id}/notes — project-scoped notes aggregation
 │   ├── settings.py       # /api/settings — key-value settings CRUD
@@ -339,7 +345,7 @@ tests/
 ## Startup lifecycle (app.py lifespan)
 
 1. `init_db()` — create engine and tables
-2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works)
+2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois)
 3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
 4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, and `s2_api_key` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
@@ -390,6 +396,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Search-by-title import added**: "Search by Title" tab in ImportDialog. Backend searches Crossref first, falls back to S2 if Crossref returns nothing. `SearchImportCandidateDialog` shows radio-pick candidates with source badges (Crossref = green, Semantic Scholar = purple).
 - **S2 direction param**: `POST /api/enrich/works/{id}/semantic-scholar` accepts `?direction=backward|forward|both` (default `both`). WorkDetailPanel has separate "Fetch references (S2)" and "Fetch citing papers (S2)" buttons.
 - **Topic list visibility toggle added**: Clicking a topic list entry in the citation timeline legend toggles it inactive (40% opacity, pointer cursor). `inactiveTopicListIds: Set<number>` state in `ProjectDetailPage`, serialized as `number[]` in localStorage. Derived memos: `activeTopicListIds`, `activeSeedIds`, `filteredSeeds`, `filteredSeedCitations`. `filteredNeighbors` excludes neighbors whose connections are all to inactive seeds. `CitationTimeline` receives `activeTopicListIds` + `onToggleTopicList` props; legend items carry optional `topicListId`. Storing **inactive** IDs (not active) is intentional: empty set = all active, so new topic lists are automatically visible.
+- **Multi-DOI support added**: A work can have multiple valid DOIs. Primary DOI stays on `Work.doi`; secondary DOIs use the new `WorkDOI` table. `doi_aliases` included in `WorkOut`. WorkDetailPanel allows editing the primary DOI and managing secondary DOIs, with a Jaccard title-similarity check against the DOI's resolved title to warn about mismatches.
 
 ---
 
@@ -400,13 +407,14 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 - **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
 - **LLM integration (Phase 2) not yet started**: design decisions documented in the Phase 2 scope section above. Key pre-work in place: PDF text extraction (fully implemented), WorkNote table with `provenance`/`model_id` fields. Architecture decisions: thin `LLMClient` abstraction (provider-agnostic), `llm_base_url` for local inference servers (Ollama etc.), PDF vision mode Anthropic-only, model IDs via provider API dropdown (not hardcoded), stateless conversation history. Priority order: (1) new DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`), (2) per-paper chat stored as WorkNotes, (3) structured extraction with new tables.
+- **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 
 ---
 
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (198 tests)
+python -m pytest tests/ -v          # all tests (222 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 
