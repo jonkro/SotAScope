@@ -347,3 +347,44 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error';
   content: string;
 }
+
+// ---- Extraction ----
+
+export interface ExtractionColumn {
+  id: number;
+  schema_id: number;
+  name: string;
+  prompt: string;
+  description: string | null;
+  allowed_values: string[] | null;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface ExtractionSchema {
+  id: number;
+  project_id: number | null;
+  title: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  columns: ExtractionColumn[];
+}
+
+export interface ExtractionColumnResult {
+  column_id: number;
+  column_name: string;
+  answer: string;
+  reasoning: string;
+  note: WorkNote;
+}
+
+export interface ExtractionWorkResult {
+  work_id: number;
+  columns: ExtractionColumnResult[];
+}
+
+export interface ExtractionBatchResult {
+  results: ExtractionWorkResult[];
+  errors: { work_id: number; error: string }[];
+}

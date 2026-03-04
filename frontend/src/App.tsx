@@ -6,6 +6,7 @@ import LibraryPage from './pages/LibraryPage'
 import VenuesPage from './pages/VenuesPage'
 import SettingsPage from './pages/SettingsPage'
 import DiscussionPage from './pages/DiscussionPage'
+import ExtractionSchemasPage from './pages/ExtractionSchemasPage'
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="projects" element={<ProjectsPage />} />
         <Route path="projects/:projectId" element={<ProjectDetailPage />} />
         <Route path="projects/:projectId/discuss" element={<DiscussionPage />} />
+        <Route path="projects/:projectId/extraction" element={<ExtractionSchemasPage />} />
         <Route path="library" element={<LibraryPage />} />
         <Route path="works/:workId/discuss" element={<DiscussionPage />} />
         <Route path="venues" element={<VenuesPage />} />

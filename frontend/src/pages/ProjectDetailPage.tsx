@@ -344,6 +344,12 @@ export default function ProjectDetailPage() {
             Discuss
           </button>
           <button
+            onClick={() => navigate(`/projects/${projectId}/extraction`)}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+          >
+            Extraction Tables
+          </button>
+          <button
             onClick={() => setShowCreateList(true)}
             className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
           >

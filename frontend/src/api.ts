@@ -31,6 +31,10 @@ import type {
   ProjectNote,
   BrowseResult,
   PDFMigrationResult,
+  ExtractionSchema,
+  ExtractionColumn,
+  ExtractionWorkResult,
+  ExtractionBatchResult,
 } from './types';
 
 class ApiError extends Error {
@@ -542,5 +546,98 @@ export function postLLMChat(data: {
   return apiFetch<{ reply: string }>('/api/llm/chat', {
     method: 'POST',
     body: JSON.stringify(data),
+  });
+}
+
+// ---- Extraction ----
+
+export function getExtractionSchemas(projectId?: number) {
+  const sp = new URLSearchParams();
+  if (projectId != null) sp.set('project_id', String(projectId));
+  return apiFetch<ExtractionSchema[]>(`/api/extraction/schemas?${sp}`);
+}
+
+export function getExtractionSchema(id: number) {
+  return apiFetch<ExtractionSchema>(`/api/extraction/schemas/${id}`);
+}
+
+export function createExtractionSchema(data: {
+  title: string;
+  description?: string | null;
+  project_id?: number | null;
+}) {
+  return apiFetch<ExtractionSchema>('/api/extraction/schemas', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateExtractionSchema(id: number, data: { title?: string; description?: string | null }) {
+  return apiFetch<ExtractionSchema>(`/api/extraction/schemas/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteExtractionSchema(id: number) {
+  return apiFetch<void>(`/api/extraction/schemas/${id}`, { method: 'DELETE' });
+}
+
+export function createExtractionColumn(
+  schemaId: number,
+  data: {
+    name: string;
+    prompt: string;
+    description?: string | null;
+    allowed_values?: string[] | null;
+    sort_order?: number;
+  },
+) {
+  return apiFetch<ExtractionColumn>(`/api/extraction/schemas/${schemaId}/columns`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateExtractionColumn(
+  columnId: number,
+  data: {
+    name?: string;
+    prompt?: string;
+    description?: string | null;
+    allowed_values?: string[] | null;
+    sort_order?: number;
+  },
+) {
+  return apiFetch<ExtractionColumn>(`/api/extraction/columns/${columnId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteExtractionColumn(columnId: number) {
+  return apiFetch<void>(`/api/extraction/columns/${columnId}`, { method: 'DELETE' });
+}
+
+export function reorderExtractionColumns(schemaId: number, columnIds: number[]) {
+  return apiFetch<ExtractionColumn[]>(`/api/extraction/schemas/${schemaId}/columns/reorder`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      columns: columnIds.map((id, idx) => ({ column_id: id, sort_order: idx })),
+    }),
+  });
+}
+
+export function runExtraction(schemaId: number, workId: number) {
+  return apiFetch<ExtractionWorkResult>(
+    `/api/extraction/schemas/${schemaId}/extract/${workId}`,
+    { method: 'POST' },
+  );
+}
+
+export function runBatchExtraction(schemaId: number, workIds: number[]) {
+  return apiFetch<ExtractionBatchResult>(`/api/extraction/schemas/${schemaId}/extract`, {
+    method: 'POST',
+    body: JSON.stringify({ work_ids: workIds }),
   });
 }

@@ -164,11 +164,12 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 
 - **LLM provider configuration**: `LLMClient` abstraction with `AnthropicLLMClient` and `OpenAILLMClient`; four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`); `GET /api/llm/models` endpoint; Settings page UI with model picker, test connection, and PDF vision note
 - **Structured extraction (backend)**: `ExtractionSchema` + `ExtractionColumn` models; `litexplorer/services/extraction.py` with `assemble_extraction_prompt()`, `parse_extraction_response()`, `run_extraction_for_work()`; full CRUD + extraction API at `/api/extraction`; new `llm_system_prompt_prefix` DB setting. Extraction results stored as `WorkNote` rows (`provenance="ai"`), two per column (answer + reasoning). 34 tests in `tests/test_extraction.py`.
+- **Structured extraction frontend**: `ExtractionSchemasPage` at `/projects/:projectId/extraction`; schema list view → new-schema form → schema editor; `ColumnFormModal` with tag-style allowed-values input; up/down column reordering; `useExtraction.ts` hooks; "Extraction Tables" button in `ProjectDetailPage` header; `ExtractionSchema`, `ExtractionColumn`, `ExtractionWorkResult`, `ExtractionBatchResult` types; all extraction API functions in `api.ts`.
 
 ### Not yet started
 
 - **Per-paper chat**: discuss a paper with an LLM to accelerate understanding
-- **Structured extraction frontend**: UI for creating/editing schemas, running extraction, reviewing results
+- **Structured extraction run UI**: trigger extraction for specific papers, review results table
 - **CSV export**: `GET /api/extraction/schemas/{id}/export?project_id=N` — export extraction results as CSV
 
 ### Phase 2 design notes
@@ -298,13 +299,21 @@ frontend/src/
 │   ├── useWorkNotes.ts   # useWorkNotes(), useProjectNotes(), useCreateWorkNote(), etc.
 │   ├── useWorkPDFs.ts    # useWorkPDFs(), useUploadWorkPDF(), useSetWorkPDFPrimary(),
 │   │                     #   useDeleteWorkPDF(), useExtractWorkPDFText()
-│   └── useSettings.ts
+│   ├── useSettings.ts
+│   └── useExtraction.ts  # useExtractionSchemas(), useExtractionSchema(),
+│                         #   useCreateExtractionSchema(), useUpdateExtractionSchema(),
+│                         #   useDeleteExtractionSchema(), useCreateExtractionColumn(),
+│                         #   useUpdateExtractionColumn(), useDeleteExtractionColumn(),
+│                         #   useReorderExtractionColumns()
 ├── pages/
-│   ├── ProjectsPage.tsx       # Project listing with create/delete
-│   ├── ProjectDetailPage.tsx  # Timeline + Topic Lists + Notes tabs, localStorage persistence
-│   ├── LibraryPage.tsx        # Work listing with search, pagination, venue filter
-│   ├── VenuesPage.tsx         # Venues tab (sortable table) + Fields tab (CRUD with delete)
-│   └── SettingsPage.tsx       # Database-stored settings editor + PDF folder browser
+│   ├── ProjectsPage.tsx         # Project listing with create/delete
+│   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes tabs, localStorage persistence
+│   │                            #   "Extraction Tables" button → /projects/:id/extraction
+│   ├── ExtractionSchemasPage.tsx # Schema list / new-schema form / schema editor views
+│   │                            #   ColumnFormModal with tag-style allowed-values input
+│   ├── LibraryPage.tsx          # Work listing with search, pagination, venue filter
+│   ├── VenuesPage.tsx           # Venues tab (sortable table) + Fields tab (CRUD with delete)
+│   └── SettingsPage.tsx         # Database-stored settings editor + PDF folder browser
 └── components/
     ├── AppShell.tsx            # Layout: Sidebar + Outlet
     ├── Sidebar.tsx             # Nav: Projects (remembers last path), Library, Venues, Settings
