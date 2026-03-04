@@ -2,6 +2,7 @@
 
 from litexplorer.models.base import Base
 from litexplorer.models.cache import ApiCache
+from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
 from litexplorer.models.library import (
     Author,
     Citation,
@@ -23,6 +24,8 @@ __all__ = [
     "ApiCache",
     "Author",
     "Citation",
+    "ExtractionColumn",
+    "ExtractionSchema",
     "Field",
     "Setting",
     "Venue",

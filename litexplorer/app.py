@@ -131,6 +131,36 @@ def _migrate_schema() -> None:
             ))
             db.commit()
 
+        # Create extraction_schemas table if it doesn't exist
+        if "extraction_schemas" not in existing_tables:
+            db.execute(text(
+                "CREATE TABLE extraction_schemas ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,"
+                "  title VARCHAR(256) NOT NULL,"
+                "  description TEXT,"
+                "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+            db.commit()
+
+        # Create extraction_columns table if it doesn't exist
+        if "extraction_columns" not in existing_tables:
+            db.execute(text(
+                "CREATE TABLE extraction_columns ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  schema_id INTEGER NOT NULL REFERENCES extraction_schemas(id) ON DELETE CASCADE,"
+                "  name VARCHAR(256) NOT NULL,"
+                "  prompt TEXT NOT NULL,"
+                "  description TEXT,"
+                "  allowed_values JSON,"
+                "  sort_order INTEGER DEFAULT 0,"
+                "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+            db.commit()
+
     finally:
         db.close()
 
@@ -204,6 +234,12 @@ def _seed_default_settings() -> None:
             "Optional base URL to override the provider's default cloud endpoint. "
             "Use this to point to a local inference server such as Ollama "
             "(e.g. http://localhost:11434/v1). Leave empty to use the provider's cloud API.",
+        ),
+        (
+            "llm_system_prompt_prefix",
+            "",
+            "Optional text prepended to the system prompt for all LLM extraction requests. "
+            "Use this to add domain-specific instructions or context for every extraction.",
         ),
     ]
 
@@ -464,6 +500,7 @@ from litexplorer.api.settings import router as settings_router  # noqa: E402
 from litexplorer.api.filesystem import router as filesystem_router  # noqa: E402
 from litexplorer.api.notes import project_notes_router  # noqa: E402
 from litexplorer.api.llm import router as llm_router  # noqa: E402
+from litexplorer.api.extraction import router as extraction_router  # noqa: E402
 
 app.include_router(works_router)
 app.include_router(authors_router)
@@ -476,6 +513,7 @@ app.include_router(settings_router)
 app.include_router(filesystem_router)
 app.include_router(project_notes_router)
 app.include_router(llm_router)
+app.include_router(extraction_router)
 
 # Serve built frontend (only when frontend/dist exists)
 if _frontend_dist.is_dir():

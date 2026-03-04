@@ -1,0 +1,117 @@
+"""Pydantic schemas for structured extraction."""
+
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel
+
+from litexplorer.schemas.notes import WorkNoteOut
+
+
+# ---------------------------------------------------------------------------
+# Column schemas
+# ---------------------------------------------------------------------------
+
+
+class ExtractionColumnCreate(BaseModel):
+    name: str
+    prompt: str
+    description: Optional[str] = None
+    allowed_values: Optional[list[str]] = None
+    sort_order: int = 0
+
+
+class ExtractionColumnUpdate(BaseModel):
+    name: Optional[str] = None
+    prompt: Optional[str] = None
+    description: Optional[str] = None
+    allowed_values: Optional[list[str]] = None
+    sort_order: Optional[int] = None
+
+
+class ExtractionColumnOut(BaseModel):
+    id: int
+    schema_id: int
+    name: str
+    prompt: str
+    description: Optional[str]
+    allowed_values: Optional[list[str]]
+    sort_order: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Schema schemas
+# ---------------------------------------------------------------------------
+
+
+class ExtractionSchemaCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    project_id: Optional[int] = None
+
+
+class ExtractionSchemaUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+
+
+class ExtractionSchemaOut(BaseModel):
+    id: int
+    project_id: Optional[int]
+    title: str
+    description: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    columns: list[ExtractionColumnOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Reorder
+# ---------------------------------------------------------------------------
+
+
+class ColumnReorderItem(BaseModel):
+    column_id: int
+    sort_order: int
+
+
+class ColumnReorderRequest(BaseModel):
+    columns: list[ColumnReorderItem]
+
+
+# ---------------------------------------------------------------------------
+# Extraction result
+# ---------------------------------------------------------------------------
+
+
+class ExtractionColumnResult(BaseModel):
+    """The extracted answer + reasoning for a single column."""
+
+    column_id: int
+    column_name: str
+    answer: str
+    reasoning: str
+    note: WorkNoteOut
+
+
+class ExtractionWorkResult(BaseModel):
+    """All extracted column results for a single work."""
+
+    work_id: int
+    columns: list[ExtractionColumnResult]
+
+
+class ExtractionBatchRequest(BaseModel):
+    work_ids: list[int]
+
+
+class ExtractionBatchResult(BaseModel):
+    """Results for multiple works."""
+
+    results: list[ExtractionWorkResult]
+    errors: list[dict] = []
