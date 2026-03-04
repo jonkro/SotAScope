@@ -211,6 +211,10 @@ export function workPDFTextUrl(workId: number, pdfId: number): string {
   return `/api/works/${workId}/pdfs/${pdfId}/text`;
 }
 
+export function fetchWorkPDFFromSources(workId: number) {
+  return apiFetch<WorkPDFOut>(`/api/works/${workId}/pdfs/fetch`, { method: 'POST' });
+}
+
 // ---- Venues ----
 
 export function fetchVenues(params?: { offset?: number; limit?: number; q?: string; sort_by?: string; sort_dir?: string }) {

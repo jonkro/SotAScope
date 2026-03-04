@@ -728,26 +728,15 @@ def merge_works(target_id: int, source_id: int, db: Session = Depends(get_db)):
 # PDFs
 # ---------------------------------------------------------------------------
 
-@router.post("/{work_id}/pdfs", response_model=WorkPDFOut, status_code=201)
-def upload_pdf(work_id: int, file: UploadFile, db: Session = Depends(get_db)):
-    """Upload a PDF and attach it to a work."""
+def _register_and_extract_pdf(
+    db: Session, work_id: int, pdf_root: Path, safe_name: str, dest: Path
+) -> WorkPDF:
+    """Create a WorkPDF record for a file already saved to disk and run text extraction.
+
+    This is shared by the manual upload flow and the OA fetch flow.
+    """
     from litexplorer.services.pdf import ExtractionError, extract_pdf_text
 
-    _get_work(db, work_id)
-    safe_name = _secure_filename(file.filename or "unnamed.pdf")
-
-    pdf_root = _get_pdf_root(db)
-    work_dir = pdf_root / str(work_id)
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    dest = work_dir / safe_name
-    if dest.exists():
-        raise HTTPException(status_code=409, detail=f"File '{safe_name}' already exists for this work")
-
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    # First PDF for this work becomes primary
     existing_count = db.scalar(
         select(func.count()).select_from(WorkPDF).where(WorkPDF.work_id == work_id)
     )
@@ -772,8 +761,76 @@ def upload_pdf(work_id: int, file: UploadFile, db: Session = Depends(get_db)):
         pdf.extraction_status = "failed"
     db.commit()
     db.refresh(pdf)
-
     return pdf
+
+
+@router.post("/{work_id}/pdfs", response_model=WorkPDFOut, status_code=201)
+def upload_pdf(work_id: int, file: UploadFile, db: Session = Depends(get_db)):
+    """Upload a PDF and attach it to a work."""
+    _get_work(db, work_id)
+    safe_name = _secure_filename(file.filename or "unnamed.pdf")
+
+    pdf_root = _get_pdf_root(db)
+    work_dir = pdf_root / str(work_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = work_dir / safe_name
+    if dest.exists():
+        raise HTTPException(status_code=409, detail=f"File '{safe_name}' already exists for this work")
+
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    return _register_and_extract_pdf(db, work_id, pdf_root, safe_name, dest)
+
+
+@router.post("/{work_id}/pdfs/fetch", response_model=WorkPDFOut, status_code=201)
+def fetch_pdf_oa(work_id: int, db: Session = Depends(get_db)):
+    """Fetch a PDF from open-access sources (arXiv, Unpaywall) and attach it to a work."""
+    from litexplorer.api.enrichment import _get_contact_email, _get_ssl_verify
+    from litexplorer.external.pdf_fetch import PDFFetchError, fetch_pdf_for_work
+
+    work = _get_work(db, work_id)
+
+    if not work.arxiv_id and not work.doi:
+        raise HTTPException(
+            status_code=400,
+            detail="Work has no arXiv ID or DOI — cannot fetch PDF automatically",
+        )
+
+    ssl_verify = _get_ssl_verify(db)
+    email = _get_contact_email(db) or ""
+
+    try:
+        result = fetch_pdf_for_work(None, work, verify=ssl_verify, email=email)
+    except PDFFetchError as exc:
+        raise HTTPException(status_code=502, detail=f"PDF download failed: {exc}")
+
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No open-access PDF found. "
+                "The paper may be paywalled. You can upload a PDF manually."
+            ),
+        )
+
+    pdf_bytes, suggested_filename = result
+    safe_name = _secure_filename(suggested_filename)
+
+    pdf_root = _get_pdf_root(db)
+    work_dir = pdf_root / str(work_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = work_dir / safe_name
+    # Avoid collision with an already-existing file
+    if dest.exists():
+        stem = Path(safe_name).stem
+        safe_name = f"{stem}_fetched.pdf"
+        dest = work_dir / safe_name
+
+    dest.write_bytes(pdf_bytes)
+    return _register_and_extract_pdf(db, work_id, pdf_root, safe_name, dest)
 
 
 @router.get("/{work_id}/pdfs", response_model=list[WorkPDFOut])

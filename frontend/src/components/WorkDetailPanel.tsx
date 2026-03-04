@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useEnrichFromSemanticScholar, useResolveDOI } from '../hooks/useEnrichment';
 import { useUpdateWork, useAddWorkDOIAlias, useRemoveWorkDOIAlias } from '../hooks/useWorks';
-import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF, useExtractWorkPDFText } from '../hooks/useWorkPDFs';
+import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF, useExtractWorkPDFText, useFetchWorkPDF } from '../hooks/useWorkPDFs';
 import { useWorkNotes, useCreateWorkNote, useUpdateWorkNote, useDeleteWorkNote } from '../hooks/useWorkNotes';
 import { serveWorkPDFUrl, workPDFTextUrl, getDOIInfo } from '../api';
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
@@ -323,7 +323,9 @@ export default function WorkDetailPanel({
   const setPrimaryPDF = useSetWorkPDFPrimary();
   const removePDF = useDeleteWorkPDF();
   const extractText = useExtractWorkPDFText();
+  const fetchPDF = useFetchWorkPDF();
   const [extractErrors, setExtractErrors] = useState<Record<number, string>>({});
+  const [fetchPDFMsg, setFetchPDFMsg] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pdfToRemove, setPdfToRemove] = useState<{ id: number; filename: string } | null>(null);
 
@@ -1109,16 +1111,59 @@ export default function WorkDetailPanel({
               e.target.value = '';
             }}
           />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploadPDF.isPending}
-            className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
-          >
-            {uploadPDF.isPending ? 'Uploading...' : 'Attach PDF'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadPDF.isPending}
+              className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+            >
+              {uploadPDF.isPending ? 'Uploading...' : 'Attach PDF'}
+            </button>
+            {(() => {
+              const canFetch = !!(work.arxiv_id || work.doi);
+              return (
+                <span className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      setFetchPDFMsg(null);
+                      fetchPDF.mutate({ workId }, {
+                        onSuccess: () => setFetchPDFMsg({ kind: 'ok', text: 'PDF fetched successfully.' }),
+                        onError: (err) => {
+                          const msg = err instanceof Error ? err.message : 'Unknown error';
+                          let parsed = msg;
+                          try { parsed = JSON.parse(msg).detail ?? msg; } catch { /* not JSON */ }
+                          const is404 = err instanceof Error && (err as { status?: number }).status === 404;
+                          setFetchPDFMsg({ kind: is404 ? 'warn' : 'err', text: parsed });
+                        },
+                      });
+                    }}
+                    disabled={!canFetch || fetchPDF.isPending}
+                    title={canFetch ? 'Fetch from open-access sources' : 'No arXiv ID or DOI available'}
+                    className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M8 2v8M5 7l3 3 3-3M2 12v1a1 1 0 001 1h10a1 1 0 001-1v-1" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    {fetchPDF.isPending ? 'Fetching...' : 'Fetch PDF'}
+                  </button>
+                  {work.arxiv_id && (
+                    <span className="text-[10px] px-1 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded font-medium">arXiv</span>
+                  )}
+                  {work.doi && (
+                    <span className="text-[10px] px-1 py-0.5 bg-purple-50 text-purple-700 border border-purple-200 rounded font-medium">Unpaywall</span>
+                  )}
+                </span>
+              );
+            })()}
+          </div>
           {uploadPDF.isError && (
             <p className="text-xs text-red-600 mt-1">
               Upload failed: {uploadPDF.error instanceof Error ? uploadPDF.error.message : 'Unknown error'}
+            </p>
+          )}
+          {fetchPDFMsg && (
+            <p className={`text-xs mt-1 ${fetchPDFMsg.kind === 'ok' ? 'text-green-700' : fetchPDFMsg.kind === 'warn' ? 'text-amber-700' : 'text-red-600'}`}>
+              {fetchPDFMsg.text}
             </p>
           )}
         </CollapsibleSection>

@@ -22,6 +22,7 @@ Two distinct layers:
 - **Venue normalization** runs at startup: strips "Proceedings of the..." prefixes, calendar years, and ordinal edition numbers. Detects and merges duplicate venues after normalization, preserving old names as aliases.
 - The library is the single source of truth for all paper metadata.
 - **Library sanitization** tools: duplicate detection (by DOI, bibtex_key, or title+year), work merge (repoints citations, topic list memberships, authors, locations), and bulk deletion.
+- **Extraction schemas**: User-defined structured extraction tables for LLM-assisted literature review. Each `ExtractionSchema` (title, optional description, optional `project_id`) contains ordered `ExtractionColumn` records (name, LLM prompt, optional description, optional `allowed_values` list, `sort_order`). Results are stored as `WorkNote` rows (two per column: answer + reasoning, both `provenance="ai"`). A `null project_id` means the schema is global (not project-specific). Defined in `models/extraction.py`, migrated in `_migrate_schema()`.
 
 ### 2. Project layer (per project)
 - A project contains one or more **topic lists**. Each topic list is a named, color-coded set of "selected" papers (seeds). These represent sub-fields or themes the researcher is investigating.
@@ -167,6 +168,7 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **Structured extraction frontend**: `ExtractionSchemasPage` at `/projects/:projectId/extraction`; schema list view → new-schema form → schema editor with two tabs: **Schema** (edit title/description/columns) and **Extract & Review** (run extraction + results table). `ColumnFormModal` with tag-style allowed-values input; up/down column reordering; `useExtraction.ts` hooks; "Extraction Tables" button in `ProjectDetailPage` header.
 - **Structured extraction run & review UI**: `ExtractionRunView` component in `ExtractionSchemasPage`; seed paper selector (searchable checkboxes from `useTimeline`); Extract button with per-paper progress indicator; confirmation dialog when re-running on papers with existing notes; results table (rows = papers, columns = schema columns). `ExtractionCell` component: answer text + `ProvenanceBadge` (ai=blue, ai_reviewed=purple, user=green) + ✓ Accept button (ai notes only, sets provenance to `ai_reviewed`) + ✎ Edit (inline — dropdown for constrained columns, textarea for free-form) + ⓘ reasoning toggle + ⚡ single-paper extract for empty cells. Re-extraction skips `ai_reviewed`/`user` notes and deletes+replaces `ai` notes (no duplicates). New endpoint: `GET /api/extraction/schemas/{id}/results?work_ids=1,2,3` → `ExtractionResultsResponse({cells: ExtractionCellResult[]})`. `WorkNoteUpdate` now accepts `provenance` field; explicit provenance overrides auto-upgrade logic. New types: `ExtractionCellResult`, `ExtractionResultsResponse`. New hooks: `useExtractionResults`, `useRunSingleExtraction`, `useRunBatchExtraction`, `useAcceptExtractionNote`, `useEditExtractionNote`.
 - **CSV and LaTeX export**: `GET /api/extraction/schemas/{id}/export?format=csv|latex&work_ids=1,2,3&column_ids=1,2` — download extraction results as a CSV spreadsheet or a LaTeX booktabs table. `work_ids` and `column_ids` are optional: omitting `work_ids` auto-discovers all works with notes for the schema. `litexplorer/services/extraction_export.py` — `export_as_csv()` and `export_as_latex()`; single-pass regex LaTeX escaping; constrained columns use `c` alignment + `\rotatebox{90}` header; free-text columns use `l`. Frontend: "Export CSV" and "Export LaTeX" buttons in `ExtractionRunView` action bar pass selected paper IDs. 28 tests in `tests/test_extraction_export.py`.
+- **Open-access PDF fetch**: `POST /api/works/{work_id}/pdfs/fetch` — fetches a PDF from arXiv (by `work.arxiv_id`) first, then Unpaywall (by `work.doi` + `api_contact_email` if configured). Returns `WorkPDFOut` (201) on success; 400 if the work has neither arXiv ID nor DOI; 404 if no OA source found; 502 if a URL was resolved but the download failed. Reuses `_register_and_extract_pdf()` helper (shared with manual upload; extracts text automatically). Client in `litexplorer/external/pdf_fetch.py` (`fetch_pdf_from_arxiv`, `fetch_pdf_url_from_unpaywall`, `fetch_pdf_from_url`, `fetch_pdf_for_work`, `PDFFetchError`). WorkDetailPanel PDFs section: "Fetch PDF" button with arXiv (blue) / Unpaywall (purple) source badges and inline success/warn/error message. 23 tests in `tests/test_pdf_fetch.py`.
 
 ### Not yet started
 
@@ -283,8 +285,10 @@ litexplorer/
     ├── openalex.py       # OpenAlexClient — DOI lookup, batch fetch, forward citations
     │                     #   parse_work() extracts counts_by_year from OpenAlex responses
     ├── crossref.py       # CrossrefClient — DOI lookup, fuzzy search
-    └── semantic_scholar.py # SemanticScholarClient — paper lookup by DOI/S2 ID,
-                          #   get_references(), get_citations(), search_by_title()
+    ├── semantic_scholar.py # SemanticScholarClient — paper lookup by DOI/S2 ID,
+    │                     #   get_references(), get_citations(), search_by_title()
+    └── pdf_fetch.py      # fetch_pdf_from_arxiv(), fetch_pdf_url_from_unpaywall(),
+                          #   fetch_pdf_from_url(), fetch_pdf_for_work(), PDFFetchError
 
 frontend/src/
 ├── App.tsx               # Routes: /projects, /projects/:id, /library, /venues, /settings
@@ -305,7 +309,7 @@ frontend/src/
 │   ├── useVenueTiers.ts
 │   ├── useWorkNotes.ts   # useWorkNotes(), useProjectNotes(), useCreateWorkNote(), etc.
 │   ├── useWorkPDFs.ts    # useWorkPDFs(), useUploadWorkPDF(), useSetWorkPDFPrimary(),
-│   │                     #   useDeleteWorkPDF(), useExtractWorkPDFText()
+│   │                     #   useDeleteWorkPDF(), useExtractWorkPDFText(), useFetchWorkPDF()
 │   ├── useSettings.ts
 │   └── useExtraction.ts  # useExtractionSchemas(), useExtractionSchema(),
 │                         #   useCreateExtractionSchema(), useUpdateExtractionSchema(),
@@ -363,6 +367,7 @@ tests/
 ├── test_search_import.py      # Search-by-title candidates + confirm endpoints (12 tests)
 ├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints (34 tests)
 ├── test_extraction_export.py  # CSV/LaTeX export service unit tests + API endpoint tests (28 tests)
+├── test_pdf_fetch.py          # OA PDF fetch: arXiv, Unpaywall, fetch_pdf_for_work, API endpoint (23 tests)
 └── fixtures/
     ├── openalex_responses.py  # Sample API response fixtures
     ├── generate_fixtures.py   # One-off script to regenerate synthetic PDF fixtures (fpdf2 + matplotlib)
@@ -428,7 +433,8 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 direction param**: `POST /api/enrich/works/{id}/semantic-scholar` accepts `?direction=backward|forward|both` (default `both`). WorkDetailPanel has separate "Fetch references (S2)" and "Fetch citing papers (S2)" buttons.
 - **Topic list visibility toggle added**: Clicking a topic list entry in the citation timeline legend toggles it inactive (40% opacity, pointer cursor). `inactiveTopicListIds: Set<number>` state in `ProjectDetailPage`, serialized as `number[]` in localStorage. Derived memos: `activeTopicListIds`, `activeSeedIds`, `filteredSeeds`, `filteredSeedCitations`. `filteredNeighbors` excludes neighbors whose connections are all to inactive seeds. `CitationTimeline` receives `activeTopicListIds` + `onToggleTopicList` props; legend items carry optional `topicListId`. Storing **inactive** IDs (not active) is intentional: empty set = all active, so new topic lists are automatically visible.
 - **Multi-DOI support added**: A work can have multiple valid DOIs. Primary DOI stays on `Work.doi`; secondary DOIs use the new `WorkDOI` table. `doi_aliases` included in `WorkOut`. WorkDetailPanel allows editing the primary DOI and managing secondary DOIs, with a Jaccard title-similarity check against the DOI's resolved title to warn about mismatches.
-- **Structured extraction added**: `ExtractionSchema` + `ExtractionColumn` models, full CRUD API at `/api/extraction`, and `litexplorer/services/extraction.py`. Results stored as `WorkNote` rows (provenance tracking built-in). Frontend `ExtractionSchemasPage` provides schema management and an Extract & Review tab for running extraction against project seed papers and reviewing/accepting/editing results. CSV export not yet implemented.
+- **Structured extraction added**: `ExtractionSchema` + `ExtractionColumn` models, full CRUD API at `/api/extraction`, and `litexplorer/services/extraction.py`. Results stored as `WorkNote` rows (provenance tracking built-in). Frontend `ExtractionSchemasPage` provides schema management and an Extract & Review tab for running extraction against project seed papers and reviewing/accepting/editing results. CSV and LaTeX export implemented via `GET /api/extraction/schemas/{id}/export?format=csv|latex`; 28 tests in `tests/test_extraction_export.py`.
+- **Open-access PDF fetch added**: Not in original spec. One-click fetch of PDFs from arXiv (by `arxiv_id`) and Unpaywall (by DOI). Integrated into WorkDetailPanel alongside manual upload. arXiv fetch requires no auth; Unpaywall fetch requires `api_contact_email` to be configured (the same setting used for OpenAlex/Crossref polite pool). `_register_and_extract_pdf()` helper extracted from upload flow so both paths share the save-to-disk + WorkPDF creation + text extraction logic.
 
 ---
 
@@ -438,7 +444,8 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 - **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
-- **LLM Phase 2 remaining work**: structured extraction run UI and CSV/LaTeX export are complete. Remaining: per-paper chat (store conversation turns as WorkNotes). Design constraints: stateless backend (full history sent per request), PDF vision Anthropic-only, local server auth (most local servers accept `Bearer local` from the openai SDK).
+- **LLM Phase 2 remaining work**: structured extraction (run UI + CSV/LaTeX export) is complete. Remaining: per-paper chat (store conversation turns as WorkNotes). Design constraints: stateless backend (full history sent per request), PDF vision Anthropic-only, local server auth (most local servers accept `Bearer local` from the openai SDK).
+- **Unpaywall requires contact email**: OA PDF fetch via Unpaywall is only attempted when `api_contact_email` is configured in Settings. Without it, only arXiv is tried (works that have `arxiv_id`). Works that have only a DOI but no `arxiv_id` and no configured email will return 404 from the fetch endpoint.
 - **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 
 ---
@@ -446,7 +453,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (284 tests)
+python -m pytest tests/ -v          # all tests (308 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 
