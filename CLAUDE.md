@@ -163,11 +163,13 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 ### Implemented
 
 - **LLM provider configuration**: `LLMClient` abstraction with `AnthropicLLMClient` and `OpenAILLMClient`; four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`); `GET /api/llm/models` endpoint; Settings page UI with model picker, test connection, and PDF vision note
+- **Structured extraction (backend)**: `ExtractionSchema` + `ExtractionColumn` models; `litexplorer/services/extraction.py` with `assemble_extraction_prompt()`, `parse_extraction_response()`, `run_extraction_for_work()`; full CRUD + extraction API at `/api/extraction`; new `llm_system_prompt_prefix` DB setting. Extraction results stored as `WorkNote` rows (`provenance="ai"`), two per column (answer + reasoning). 34 tests in `tests/test_extraction.py`.
 
 ### Not yet started
 
 - **Per-paper chat**: discuss a paper with an LLM to accelerate understanding
-- **Structured extraction**: user defines a custom schema of questions (e.g., "method used", "datasets used", "evaluation metric"). The LLM answers each question per paper, succinctly. Results stored locally, exportable as CSV. Designed for systematic literature review tables.
+- **Structured extraction frontend**: UI for creating/editing schemas, running extraction, reviewing results
+- **CSV export**: `GET /api/extraction/schemas/{id}/export?project_id=N` — export extraction results as CSV
 
 ### Phase 2 design notes
 
@@ -176,7 +178,7 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **`llm_base_url`**: optional. When set, overrides the provider's default cloud endpoint. Enables local inference servers (Ollama, vLLM, LM Studio, llama.cpp) that expose an OpenAI-compatible API (e.g., `http://localhost:11434/v1`). `llm_api_key` may be left blank when using a local endpoint.
 - **PDF vision mode (Anthropic-only)**: sending the PDF binary directly to the model (vision input) is only supported when `llm_provider = "anthropic"`. When any other provider is configured — including local OpenAI-compatible servers — the "use PDF" toggle in the per-paper chat UI is disabled and the fallback is extracted `.txt` text.
 - **Conversation history — stateless backend**: full conversation history is sent with every chat request; the backend does not persist conversation turns. Conversations are lost on page refresh. This is intentional for Phase 2.
-- **Structured extraction needs new tables**: `ExtractionSchema` (user-defined list of questions, per-project) + `ExtractionResult` (per-work answers as JSON, keyed by schema+work). Export as CSV via a new endpoint (e.g., `GET /api/projects/{id}/extraction/{schema_id}/export`).
+- **Structured extraction — tables now exist**: `ExtractionSchema` (title, description, nullable project_id) + `ExtractionColumn` (name, prompt, description, allowed_values JSON, sort_order). Results stored as `WorkNote` rows (`provenance="ai"`, `note_type="{schema.title} / {column.name}"`). CSV export not yet implemented.
 - **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
 - **Context window strategy**: typical extracted PDF text is 5k–40k tokens. Send abstract+title first; include full text only when available. For very long papers, consider truncating to the first N tokens or chunking by section.
 - **Anthropic SDK**: `anthropic` Python package; `client.messages.create()` for standard calls, `client.messages.stream()` for streaming. Already a required dependency in `pyproject.toml`.
@@ -220,6 +222,8 @@ litexplorer/
 │   │                     #   Venue, VenueAlias, Field (passive_deletes=True), VenueField,
 │   │                     #   Citation, WorkPDF (extraction_status: pending/ready/failed), WorkNote, WorkDOI (secondary DOIs, CASCADE delete)
 │   ├── project.py        # Project, TopicList, TopicListWork, ProjectIgnoredWork
+│   ├── extraction.py     # ExtractionSchema (title, description, nullable project_id),
+│   │                     #   ExtractionColumn (name, prompt, description, allowed_values JSON, sort_order)
 │   ├── cache.py          # ApiCache (permanent / timestamped)
 │   └── settings.py       # Setting (key-value store)
 ├── schemas/              # Pydantic v2 request/response models
@@ -235,6 +239,9 @@ litexplorer/
 │   │                     #   (seeds/neighbors include citations_by_year: list[dict] | None)
 │   ├── fields.py         # FieldOut (includes venue_count: int)
 │   ├── notes.py          # WorkNoteCreate, WorkNoteUpdate, WorkNoteOut, ProjectNoteOut
+│   ├── extraction.py     # ExtractionSchemaCreate/Update/Out, ExtractionColumnCreate/Update/Out,
+│   │                     #   ColumnReorderRequest, ExtractionColumnResult, ExtractionWorkResult,
+│   │                     #   ExtractionBatchRequest, ExtractionBatchResult
 │   └── settings.py       # SettingOut, SettingUpdate
 ├── api/
 │   ├── deps.py           # get_db dependency
@@ -250,15 +257,19 @@ litexplorer/
 │   ├── timeline.py       # /api/projects/{id}/timeline — timeline data aggregation
 │   ├── notes.py          # /api/projects/{id}/notes — project-scoped notes aggregation
 │   ├── settings.py       # /api/settings — key-value settings CRUD
-│   └── filesystem.py     # /api/filesystem — directory browser + mkdir
+│   ├── filesystem.py     # /api/filesystem — directory browser + mkdir
+│   └── extraction.py     # /api/extraction — schema/column CRUD + extraction execution
 ├── services/
 │   ├── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
 │   │                     #   DOI resolution, cache management, deduplication,
 │   │                     #   _refresh_work_metadata(), import_by_semantic_scholar_id(),
 │   │                     #   search_import_candidates() (Crossref-first with S2 fallback),
 │   │                     #   enrich_from_semantic_scholar()
-│   └── pdf.py            # extract_pdf_text(), _detect_two_column(), _words_to_text()
-│                         #   ExtractionError; two-column detection via x0 histogram heuristics
+│   ├── pdf.py            # extract_pdf_text(), _detect_two_column(), _words_to_text()
+│   │                     #   ExtractionError; two-column detection via x0 histogram heuristics
+│   └── extraction.py     # assemble_extraction_prompt(), parse_extraction_response(),
+│                         #   run_extraction_for_work() — builds LLM prompt, parses JSON response,
+│                         #   creates WorkNote rows (answer + reasoning per column)
 └── external/
     ├── base.py           # ExternalWork (with semantic_scholar_id, citations_by_year),
     │                     #   ExternalVenue, ExternalAuthor, ExternalLocation
@@ -332,6 +343,7 @@ tests/
 ├── test_settings_api.py       # ssl_verify setting: read, update, _get_ssl_verify() helper
 ├── test_semantic_scholar_enrichment.py  # S2 enrichment endpoint (refs/citations, dedup, error cases)
 ├── test_search_import.py      # Search-by-title candidates + confirm endpoints (12 tests)
+├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints (34 tests)
 └── fixtures/
     ├── openalex_responses.py  # Sample API response fixtures
     ├── generate_fixtures.py   # One-off script to regenerate synthetic PDF fixtures (fpdf2 + matplotlib)
@@ -345,9 +357,9 @@ tests/
 ## Startup lifecycle (app.py lifespan)
 
 1. `init_db()` — create engine and tables
-2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois)
+2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois, extraction_schemas, extraction_columns)
 3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
-4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, and `s2_api_key` settings
+4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, `s2_api_key`, `llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`, `llm_system_prompt_prefix` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
 6. `_backfill_citations_by_year()` — populate `citations_by_year` from cached OpenAlex responses (scans `work:doi:*`, `backward_citations:*`, and `forward_citations:*` cache entries)
 
@@ -397,6 +409,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 direction param**: `POST /api/enrich/works/{id}/semantic-scholar` accepts `?direction=backward|forward|both` (default `both`). WorkDetailPanel has separate "Fetch references (S2)" and "Fetch citing papers (S2)" buttons.
 - **Topic list visibility toggle added**: Clicking a topic list entry in the citation timeline legend toggles it inactive (40% opacity, pointer cursor). `inactiveTopicListIds: Set<number>` state in `ProjectDetailPage`, serialized as `number[]` in localStorage. Derived memos: `activeTopicListIds`, `activeSeedIds`, `filteredSeeds`, `filteredSeedCitations`. `filteredNeighbors` excludes neighbors whose connections are all to inactive seeds. `CitationTimeline` receives `activeTopicListIds` + `onToggleTopicList` props; legend items carry optional `topicListId`. Storing **inactive** IDs (not active) is intentional: empty set = all active, so new topic lists are automatically visible.
 - **Multi-DOI support added**: A work can have multiple valid DOIs. Primary DOI stays on `Work.doi`; secondary DOIs use the new `WorkDOI` table. `doi_aliases` included in `WorkOut`. WorkDetailPanel allows editing the primary DOI and managing secondary DOIs, with a Jaccard title-similarity check against the DOI's resolved title to warn about mismatches.
+- **Structured extraction backend added**: `ExtractionSchema` + `ExtractionColumn` models, full CRUD API at `/api/extraction`, and `litexplorer/services/extraction.py`. Results stored as `WorkNote` rows rather than a separate `ExtractionResult` table (leveraging the existing provenance tracking). Frontend and CSV export not yet implemented.
 
 ---
 
