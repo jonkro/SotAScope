@@ -199,9 +199,10 @@ class TestFetchBackwardCitations:
         # Mock batch fetch of referenced works
         mock_client.get_works_by_ids_raw.return_value = [SAMPLE_REFERENCED_WORK_RAW]
 
-        refs = service.fetch_backward_citations(seed.id)
+        refs, raw_count = service.fetch_backward_citations(seed.id)
         assert len(refs) == 1
         assert refs[0].doi == "10.1234/example.2015"
+        assert raw_count == 1
 
         # Citation edge should exist
         citation = db_session.execute(
@@ -238,6 +239,24 @@ class TestFetchBackwardCitations:
 
         # Only one batch fetch call
         assert mock_client.get_works_by_ids_raw.call_count == 1
+
+    def test_returns_zero_raw_count_when_no_oa_refs(self, service, mock_client, db_session):
+        """When OA has no reference list, raw_count should be 0 (not an error)."""
+        from tests.fixtures.openalex_responses import SAMPLE_WORK_RAW_NO_REFS
+        mock_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW_NO_REFS
+        seed = service.import_by_doi("10.9999/no-refs")
+
+        refs, raw_count = service.fetch_backward_citations(seed.id)
+        assert refs == []
+        assert raw_count == 0
+        # Should cache an empty list sentinel
+        cached = db_session.execute(
+            select(ApiCache).where(
+                ApiCache.query_key == f"backward_citations:{seed.openalex_id}"
+            )
+        ).scalar_one_or_none()
+        assert cached is not None
+        assert cached.response_json == "[]"
 
     def test_raises_for_missing_work(self, service):
         with pytest.raises(ValueError, match="not found"):

@@ -151,7 +151,8 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **Semantic Scholar integration**: `SemanticScholarClient` (`external/semantic_scholar.py`); `Work.semantic_scholar_id` column; on-demand enrichment endpoint `POST /api/enrich/works/{id}/semantic-scholar?direction={both|backward|forward}` (fetches refs/citations by direction, returns new/existing/raw counts); editable S2 ID field in WorkDetailPanel; deduplication by S2 ID as 4th fallback after DOI/openalex_id/arxiv_id; `s2_api_key` DB setting (authenticates requests; S2 enforces 1 req/s with or without key); `SemanticScholarEnrichResult` includes `raw_references` and `raw_citing` (items returned by S2 API before dedup, used by UI to distinguish "S2 has no data" from "already in library"); `enrich_from_semantic_scholar()` falls back to title-search when DOI and S2 ID lookups both fail: normalizes title via `_normalize_title_for_cmp()` (NFKD + Jaccard) and searches S2 by title, taking the first exact-normalized-title match
 - **Multi-DOI support**: `WorkDOI` table stores secondary DOIs per work (CASCADE delete). `doi_aliases` returned in `WorkOut`. `GET/POST/DELETE /api/works/{id}/doi-aliases` endpoints. `GET /api/enrich/doi/info?doi=...` looks up title/year for a DOI without importing (OA cache → live OA → Crossref fallback). WorkDetailPanel shows editable primary DOI and secondary DOI list, both with real-time title similarity check (Jaccard ≥ 0.7 = green, < 0.7 = amber warning, not found = red).
 - **SSL verify toggle**: `ssl_verify` DB setting (default `"true"`); passed as `verify=` to all httpx clients; checkbox in Settings with amber warning; `formatError()` in ImportDialog detects SSL errors; global 503 handler with `SSL_CERTIFICATE_ERROR:` prefix
-- **WorkDetailPanel enrichment buttons**: 5 buttons in Actions section: "Fetch references (OA)", "Fetch citing papers (OA)", "Fetch references (S2)", "Fetch citing papers (S2)", "Enrich from Crossref"; works without a DOI show "Resolve DOI (CrossRef)" instead of Crossref button; each S2 button calls the endpoint with appropriate direction param; status messages distinguish S2 returning 0 items ("S2 has no reference list for this paper") from all-already-existing case
+- **WorkDetailPanel enrichment buttons**: 5 buttons in Actions section: "Fetch references (OA)", "Fetch citing papers (OA)", "Fetch references (S2)", "Fetch citing papers (S2)", "Enrich from Crossref"; works without a DOI show "Resolve DOI (CrossRef)" instead of Crossref button; each S2 button calls the endpoint with appropriate direction param; status messages distinguish S2 returning 0 items ("S2 has no reference list for this paper") from all-already-existing case; OA "Fetch references" button shows amber "OpenAlex has no reference list for this paper" when `raw_count == 0`
+- **OA zero-references warning**: `CitationResult.raw_count` (int, 0 = OA has no reference list) is returned by the backward citations enrichment endpoint. `TimelineSeedWork.backward_citations_no_oa_data` (bool) is set when the cached `backward_citations:*` entry is `"[]"`. `TimelineEnrichBar` shows `"References: X/Y works fetched (N has no OA data)"` — X excludes no-OA-data seeds so the count reflects seeds with actual reference data.
 - **LLM provider configuration (Phase 2 pre-work)**: four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`) seeded in `_seed_default_settings()`; `litexplorer/external/llm_client.py` — `ContextDocument` dataclass, abstract `LLMClient`, `AnthropicLLMClient`, `OpenAILLMClient`, `make_llm_client()` factory; `GET /api/llm/models` endpoint (reads DB settings, returns model list or soft error); `anthropic` and `openai` added as required dependencies in `pyproject.toml`; Settings page `/settings` has a dedicated **LLM Configuration** section: provider dropdown, API key (password, save on blur), base URL (save on blur, triggers model list re-fetch), model picker (loading spinner → populated dropdown or free-text fallback on error/empty), "Test connection" button, PDF vision note for Anthropic; `OpenAILLMClient.list_models()` uses httpx directly when `base_url` is set (stores `_real_api_key`; sends no auth header when api_key empty, sends `Bearer` only when a real key is provided) — avoids sending `Bearer local` to local servers that validate auth; `_normalize_base_url()` in `llm_client.py` appends `/v1` to bare Ollama-style URLs (path empty or `/`) so users can enter `http://host:11434` without the suffix; Settings page shows "For Ollama, use http://host:11434/v1" hint below the base URL field
 
 - **Topic list UX**: When a work is added from the candidates list, the target topic list auto-expands (`forceExpand` prop on `TopicListCard`); added works are removed from the candidate list to prevent duplicates. `ProjectDetailPage` tracks `expandedListId` and filters `searchedWorks` against already-added members.
@@ -234,12 +235,12 @@ litexplorer/
 │   │                     #   WorkPDFOut (with extraction_status: Literal[ready/failed/pending]), etc.
 │   ├── venues.py         # VenueOut, VenueDetail, VenueAliasOut, etc.
 │   ├── projects.py       # ProjectOut, ProjectDetail, TopicListOut, etc.
-│   ├── enrichment.py     # EnrichDOIResult, CitationResult, DOIResolutionResult,
+│   ├── enrichment.py     # EnrichDOIResult, CitationResult (+ raw_count), DOIResolutionResult,
 │   │                     #   SemanticScholarEnrichResult, SearchImportRequest,
 │   │                     #   SearchImportCandidate, SearchImportCandidatesResult,
 │   │                     #   SearchImportConfirmRequest, DOIInfoResult
-│   ├── timeline.py       # TimelineResponse, TimelineSeedWork, TimelineNeighborWork
-│   │                     #   (seeds/neighbors include citations_by_year: list[dict] | None)
+│   ├── timeline.py       # TimelineResponse, TimelineSeedWork (+ backward_citations_no_oa_data),
+│   │                     #   TimelineNeighborWork (seeds/neighbors include citations_by_year: list[dict] | None)
 │   ├── fields.py         # FieldOut (includes venue_count: int)
 │   ├── notes.py          # WorkNoteCreate, WorkNoteUpdate (+ provenance field), WorkNoteOut, ProjectNoteOut
 │   ├── extraction.py     # ExtractionSchemaCreate/Update/Out, ExtractionColumnCreate/Update/Out,
@@ -270,7 +271,9 @@ litexplorer/
 │   │                     #   DOI resolution, cache management, deduplication,
 │   │                     #   _refresh_work_metadata(), import_by_semantic_scholar_id(),
 │   │                     #   search_import_candidates() (Crossref-first with S2 fallback),
-│   │                     #   enrich_from_semantic_scholar()
+│   │                     #   enrich_from_semantic_scholar();
+│   │                     #   fetch_backward_citations() returns tuple[list[Work], int] where
+│   │                     #   int is raw_count (0 = OA has no reference list for this paper)
 │   ├── pdf.py            # extract_pdf_text(), _detect_two_column(), _words_to_text()
 │   │                     #   ExtractionError; two-column detection via x0 histogram heuristics
 │   ├── extraction.py     # assemble_extraction_prompt(), parse_extraction_response(),
@@ -453,7 +456,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (313 tests)
+python -m pytest tests/ -v          # all tests (316 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 

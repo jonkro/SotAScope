@@ -72,6 +72,29 @@ SAMPLE_WORK_RAW = {
     ],
 }
 
+# A work with no referenced_works (OA has no reference list for it)
+SAMPLE_WORK_RAW_NO_REFS = {
+    "id": "https://openalex.org/W8888888888",
+    "doi": "https://doi.org/10.9999/no-refs",
+    "title": "A Paper With No Reference List In OpenAlex",
+    "display_name": "A Paper With No Reference List In OpenAlex",
+    "publication_year": 2021,
+    "cited_by_count": 5,
+    "abstract_inverted_index": None,
+    "primary_location": {
+        "source": {
+            "id": "https://openalex.org/S9999999",
+            "display_name": "Some Journal",
+            "type": "journal",
+        },
+        "is_primary": True,
+        "landing_page_url": "https://example.com/paper",
+    },
+    "locations": [],
+    "authorships": [],
+    "referenced_works": [],  # OA has no reference list for this paper
+}
+
 # A minimal/stub work (e.g. a citation neighbor with sparse metadata)
 SAMPLE_STUB_WORK_RAW = {
     "id": "https://openalex.org/W9999999999",

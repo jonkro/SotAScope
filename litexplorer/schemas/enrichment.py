@@ -31,6 +31,7 @@ class CitationResult(BaseModel):
     count: int
     cached: bool = False
     fetched_at: datetime | None = None
+    raw_count: int = 0  # total items OA returned before library dedup (0 = OA has no reference list)
 
 
 class CrossrefEnrichResult(BaseModel):

@@ -120,18 +120,23 @@ def get_project_timeline(
     #    (Citation row existence is insufficient: a work with 0 references
     #     has no Citation rows but the fetch was still done.)
     seeds_with_bwd: set[int] = set()
+    seeds_bwd_no_oa_data: set[int] = set()  # fetched but OA returned empty reference list
     seeds_with_fwd: set[int] = set()
     for sid in seed_ids:
         w = works_by_id.get(sid)
         if w and w.openalex_id:
             bwd_key = f"backward_citations:{w.openalex_id}"
-            if db.execute(
-                select(ApiCache.id).where(
+            bwd_response_json = db.execute(
+                select(ApiCache.response_json).where(
                     ApiCache.source == "openalex",
                     ApiCache.query_key == bwd_key,
                 ).limit(1)
-            ).scalar_one_or_none() is not None:
+            ).scalar_one_or_none()
+            if bwd_response_json is not None:
                 seeds_with_bwd.add(sid)
+                # "[]" is cached when OA has no reference list for the paper
+                if bwd_response_json == "[]":
+                    seeds_bwd_no_oa_data.add(sid)
 
             fwd_key = f"forward_citations:{w.openalex_id}"
             if db.execute(
@@ -195,6 +200,7 @@ def get_project_timeline(
             has_backward_citations=wid in seeds_with_bwd,
             has_forward_citations=wid in seeds_with_fwd,
             forward_citations_fetched_at=fwd_cache_timestamps.get(wid),
+            backward_citations_no_oa_data=wid in seeds_bwd_no_oa_data,
         ))
 
     neighbors_out: list[TimelineNeighborWork] = []

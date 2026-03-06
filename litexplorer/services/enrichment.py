@@ -153,12 +153,17 @@ class EnrichmentService:
         ext_work = parse_crossref_work(cr_raw)
         return self._upsert_work(ext_work)
 
-    def fetch_backward_citations(self, work_id: int) -> list[Work]:
+    def fetch_backward_citations(self, work_id: int) -> tuple[list[Work], int]:
         """Fetch and persist backward citations (references) for a work.
 
         Reads referenced_work_ids from the cached work data, fetches metadata
         for each referenced work, creates stub Work records, and creates
         Citation edges.
+
+        Returns a tuple of (works, raw_count) where raw_count is the number
+        of full work records returned by OpenAlex.  raw_count == 0 means OA
+        has no reference list for this paper (not merely that all refs were
+        already in the library).
         """
         work = self.db.get(Work, work_id)
         if work is None:
@@ -178,10 +183,12 @@ class EnrichmentService:
                 # Cache empty result and commit so it persists
                 self._set_cache("openalex", cache_key, "[]", "permanent")
                 self.db.commit()
-                return []
+                return [], 0
 
             raw_list = self.client.get_works_by_ids_raw(ref_ids)
             self._set_cache("openalex", cache_key, json.dumps(raw_list), "permanent")
+
+        raw_count = len(raw_list)
 
         # Parse and persist each referenced work
         results: list[Work] = []
@@ -194,7 +201,7 @@ class EnrichmentService:
             self._ensure_citation(citing_work_id=work.id, cited_work_id=db_work.id)
 
         self.db.commit()
-        return results
+        return results, raw_count
 
     def fetch_forward_citations(
         self, work_id: int, force_refresh: bool = False

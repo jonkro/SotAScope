@@ -216,7 +216,7 @@ def fetch_backward_citations(work_id: int, db: Session = Depends(get_db)):
     try:
         svc = EnrichmentService(db=db, client=client)
         try:
-            works = svc.fetch_backward_citations(work_id)
+            works, raw_count = svc.fetch_backward_citations(work_id)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
     finally:
@@ -225,6 +225,7 @@ def fetch_backward_citations(work_id: int, db: Session = Depends(get_db)):
     return CitationResult(
         works=[WorkOut.model_validate(w) for w in works],
         count=len(works),
+        raw_count=raw_count,
     )
 
 

@@ -1299,7 +1299,9 @@ export default function WorkDetailPanel({
             <p className="text-xs text-blue-600 mt-1 animate-pulse">Auto-enriching references and citations...</p>
           )}
           {fetchBwd.data && (
-            <p className="text-xs text-green-600 mt-1">Fetched {fetchBwd.data.count} references</p>
+            fetchBwd.data.raw_count === 0
+              ? <p className="text-xs text-amber-600 mt-1">OpenAlex has no reference list for this paper</p>
+              : <p className="text-xs text-green-600 mt-1">Fetched {fetchBwd.data.count} references</p>
           )}
           {fetchFwd.data && (
             <p className="text-xs text-green-600 mt-1">Fetched {fetchFwd.data.count} citing papers</p>

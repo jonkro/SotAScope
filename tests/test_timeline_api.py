@@ -2,6 +2,7 @@
 
 import pytest
 
+from litexplorer.models.cache import ApiCache
 from litexplorer.models.library import Citation, Venue, Work
 from litexplorer.models.project import Project, TopicList, TopicListWork
 
@@ -267,3 +268,71 @@ def test_timeline_citations_by_year_null(client, db_session):
     s = data["seeds"][0]
     assert s["citations_by_year"] is None
     assert s["citation_count"] == 10
+
+
+def test_timeline_backward_citations_no_oa_data(client, db_session):
+    """backward_citations_no_oa_data is True when the cached response is '[]'.
+
+    Layout:
+        seed_with_data  — has a non-empty backward citations cache entry
+        seed_no_refs    — has an empty '[]' backward citations cache entry (OA has no refs)
+        seed_not_fetched — no cache entry at all (not yet enriched)
+    """
+    # Three seeds with different enrichment states
+    seed_with_data = Work(
+        title="Paper With Refs", publication_year=2020, openalex_id="W_WITH_DATA"
+    )
+    seed_no_refs = Work(
+        title="Paper No Refs In OA", publication_year=2021, openalex_id="W_NO_REFS"
+    )
+    seed_not_fetched = Work(
+        title="Paper Not Fetched", publication_year=2022, openalex_id="W_NOT_FETCHED"
+    )
+    db_session.add_all([seed_with_data, seed_no_refs, seed_not_fetched])
+    db_session.flush()
+
+    project = Project(name="No-OA-Data Test")
+    db_session.add(project)
+    db_session.flush()
+
+    tl = TopicList(project_id=project.id, name="TL", color="#000")
+    db_session.add(tl)
+    db_session.flush()
+
+    db_session.add(TopicListWork(topic_list_id=tl.id, work_id=seed_with_data.id))
+    db_session.add(TopicListWork(topic_list_id=tl.id, work_id=seed_no_refs.id))
+    db_session.add(TopicListWork(topic_list_id=tl.id, work_id=seed_not_fetched.id))
+
+    # Cache entries
+    db_session.add(ApiCache(
+        source="openalex",
+        query_key=f"backward_citations:{seed_with_data.openalex_id}",
+        response_json='[{"id":"https://openalex.org/W999"}]',
+        cache_type="permanent",
+    ))
+    db_session.add(ApiCache(
+        source="openalex",
+        query_key=f"backward_citations:{seed_no_refs.openalex_id}",
+        response_json="[]",
+        cache_type="permanent",
+    ))
+    # seed_not_fetched has no cache entry
+    db_session.commit()
+
+    resp = client.get(f"/api/projects/{project.id}/timeline")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    seeds_by_id = {s["id"]: s for s in data["seeds"]}
+
+    s_with_data = seeds_by_id[seed_with_data.id]
+    assert s_with_data["has_backward_citations"] is True
+    assert s_with_data["backward_citations_no_oa_data"] is False
+
+    s_no_refs = seeds_by_id[seed_no_refs.id]
+    assert s_no_refs["has_backward_citations"] is True
+    assert s_no_refs["backward_citations_no_oa_data"] is True
+
+    s_not_fetched = seeds_by_id[seed_not_fetched.id]
+    assert s_not_fetched["has_backward_citations"] is False
+    assert s_not_fetched["backward_citations_no_oa_data"] is False

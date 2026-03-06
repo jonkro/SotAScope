@@ -35,6 +35,9 @@ export default function TimelineEnrichBar({ seeds, projectId }: TimelineEnrichBa
 
   const seedsWithBwd = seeds.filter((s) => s.has_backward_citations).length;
   const seedsWithFwd = seeds.filter((s) => s.has_forward_citations).length;
+  const bwdNoOaData = seeds.filter((s) => s.backward_citations_no_oa_data).length;
+  // Seeds with actual OA reference data (fetched and non-empty)
+  const bwdFetched = seedsWithBwd - bwdNoOaData;
   const total = seeds.length;
 
   const handleFetchAll = async () => {
@@ -89,7 +92,12 @@ export default function TimelineEnrichBar({ seeds, projectId }: TimelineEnrichBa
     <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs">
       <div className="flex items-center gap-3">
         <span className="text-blue-700">
-          References: {seedsWithBwd}/{total} works fetched
+          References: {bwdFetched}/{total} works fetched
+          {bwdNoOaData > 0 && (
+            <span className="text-amber-600 ml-1">
+              ({bwdNoOaData} {bwdNoOaData === 1 ? 'has' : 'have'} no OA data)
+            </span>
+          )}
           {' | '}
           Citing: {seedsWithFwd}/{total} works fetched
         </span>

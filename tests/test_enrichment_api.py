@@ -175,6 +175,22 @@ class TestBackwardCitations:
         data = resp.json()
         assert data["count"] >= 1
         assert len(data["works"]) >= 1
+        assert data["raw_count"] >= 1  # OA has reference data
+
+    def test_zero_raw_count_when_no_oa_refs(self, client, mock_oa_client, db_session):
+        """When OA returns an empty reference list, raw_count should be 0."""
+        from tests.fixtures.openalex_responses import SAMPLE_WORK_RAW_NO_REFS
+        mock_oa_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW_NO_REFS
+        resp = client.post("/api/enrich/doi", json={"doi": "10.9999/no-refs"})
+        assert resp.status_code == 200
+        work_id = resp.json()["work"]["id"]
+
+        # get_works_by_ids_raw should NOT be called (no ref IDs to fetch)
+        resp = client.post(f"/api/enrich/works/{work_id}/citations/backward")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 0
+        assert data["raw_count"] == 0
 
     def test_work_not_found(self, client):
         resp = client.post("/api/enrich/works/9999/citations/backward")

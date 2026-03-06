@@ -144,7 +144,7 @@ cd ..
 ## Running tests
 
 ```bash
-# Backend (313 tests)
+# Backend (316 tests)
 python -m pytest tests/ -v
 
 # Frontend — TypeScript type check + production build (requires Node.js)

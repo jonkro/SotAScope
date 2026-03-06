@@ -194,6 +194,7 @@ export interface TimelineSeedWork {
   has_backward_citations: boolean;
   has_forward_citations: boolean;
   forward_citations_fetched_at: string | null;
+  backward_citations_no_oa_data: boolean;
 }
 
 export interface TimelineNeighborWork {
@@ -292,6 +293,7 @@ export interface CitationResult {
   count: number;
   cached: boolean | null;
   fetched_at: string | null;
+  raw_count: number;  // total items OA returned; 0 = OA has no reference list for this paper
 }
 
 export interface CrossrefEnrichResult {
