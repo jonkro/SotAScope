@@ -161,6 +161,34 @@ def _migrate_schema() -> None:
             ))
             db.commit()
 
+        # Create chat_sessions table if it doesn't exist
+        if "chat_sessions" not in existing_tables:
+            db.execute(text(
+                "CREATE TABLE chat_sessions ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,"
+                "  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,"
+                "  title VARCHAR(256),"
+                "  is_auto BOOLEAN DEFAULT 1,"
+                "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+            db.commit()
+
+        # Create chat_messages table if it doesn't exist
+        if "chat_messages" not in existing_tables:
+            db.execute(text(
+                "CREATE TABLE chat_messages ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+                "  role VARCHAR(16) NOT NULL,"
+                "  content TEXT NOT NULL,"
+                "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+            db.commit()
+
     finally:
         db.close()
 
@@ -501,6 +529,7 @@ from litexplorer.api.filesystem import router as filesystem_router  # noqa: E402
 from litexplorer.api.notes import project_notes_router  # noqa: E402
 from litexplorer.api.llm import router as llm_router  # noqa: E402
 from litexplorer.api.extraction import router as extraction_router  # noqa: E402
+from litexplorer.api.chat import router as chat_router  # noqa: E402
 
 app.include_router(works_router)
 app.include_router(authors_router)
@@ -514,6 +543,7 @@ app.include_router(filesystem_router)
 app.include_router(project_notes_router)
 app.include_router(llm_router)
 app.include_router(extraction_router)
+app.include_router(chat_router)
 
 # Serve built frontend (only when frontend/dist exists)
 if _frontend_dist.is_dir():

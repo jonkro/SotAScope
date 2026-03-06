@@ -350,6 +350,27 @@ export interface ChatMessage {
   content: string;
 }
 
+// ---- Chat Sessions ----
+
+export interface ChatSessionMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+export interface ChatSessionOut {
+  id: number;
+  work_id: number;
+  project_id: number | null;
+  title: string | null;
+  is_auto: boolean;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+  messages: ChatSessionMessage[];
+}
+
 // ---- Extraction ----
 
 export interface ExtractionColumn {

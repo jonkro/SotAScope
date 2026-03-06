@@ -544,6 +544,7 @@ export function searchImportConfirm(data: { doi?: string | null; semantic_schola
 
 export function postLLMChat(data: {
   project_id?: number | null;
+  session_id?: number | null;
   papers: { work_id: number; use_pdf: boolean; remark?: string | null }[];
   history: { role: string; content: string }[];
   message: string;
@@ -551,6 +552,42 @@ export function postLLMChat(data: {
   return apiFetch<{ reply: string }>('/api/llm/chat', {
     method: 'POST',
     body: JSON.stringify(data),
+  });
+}
+
+// ---- Chat Sessions ----
+
+export function getOrCreateAutoSession(data: { work_id: number; project_id: number | null }) {
+  return apiFetch<import('./types').ChatSessionOut>('/api/chat/sessions/auto', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function listChatSessions(workId: number, projectId: number | null) {
+  const params = new URLSearchParams({ work_id: String(workId) });
+  if (projectId != null) params.set('project_id', String(projectId));
+  return apiFetch<import('./types').ChatSessionOut[]>(`/api/chat/sessions?${params}`);
+}
+
+export function getChatSession(sessionId: number) {
+  return apiFetch<import('./types').ChatSessionOut>(`/api/chat/sessions/${sessionId}`);
+}
+
+export function saveChatSession(sessionId: number, title: string) {
+  return apiFetch<import('./types').ChatSessionOut>(`/api/chat/sessions/${sessionId}/save`, {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function deleteChatSession(sessionId: number) {
+  return apiFetch<void>(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' });
+}
+
+export function clearChatMessages(sessionId: number) {
+  return apiFetch<{ cleared: boolean }>(`/api/chat/sessions/${sessionId}/messages`, {
+    method: 'DELETE',
   });
 }
 

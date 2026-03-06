@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from litexplorer.api.deps import get_db
 from litexplorer.external.llm_client import ContextDocument, make_llm_client
+from litexplorer.models.chat import ChatMessage, ChatSession
 from litexplorer.models.library import Work, WorkPDF
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
@@ -30,6 +32,7 @@ class ChatPaperEntry(BaseModel):
 
 class ChatRequest(BaseModel):
     project_id: Optional[int] = None
+    session_id: Optional[int] = None  # auto-persist messages when provided
     papers: list[ChatPaperEntry] = []
     history: list[dict] = []
     message: str
@@ -199,5 +202,14 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         reply = llm_client.chat(messages=messages, context_documents=context_documents)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    # Auto-persist both turns to the session when a session_id is provided.
+    if body.session_id is not None:
+        session = db.get(ChatSession, body.session_id)
+        if session is not None:
+            db.add(ChatMessage(session_id=session.id, role="user", content=body.message))
+            db.add(ChatMessage(session_id=session.id, role="assistant", content=reply))
+            session.updated_at = datetime.now(timezone.utc)
+            db.commit()
 
     return ChatResponse(reply=reply)

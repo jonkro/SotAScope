@@ -5,8 +5,15 @@ import { useWork } from '../hooks/useWorks';
 import { useTimeline } from '../hooks/useTimeline';
 import { useWorkPDFs } from '../hooks/useWorkPDFs';
 import { useSettings, useLLMModels } from '../hooks/useSettings';
-import { postLLMChat, createWorkNote } from '../api';
-import type { ChatMessage, WorkPDFOut } from '../types';
+import {
+  useGetOrCreateAutoSession,
+  useListChatSessions,
+  useSaveChatSession,
+  useDeleteChatSession,
+  useClearChatMessages,
+} from '../hooks/useChatSessions';
+import { getChatSession, postLLMChat, createWorkNote } from '../api';
+import type { ChatMessage, ChatSessionOut, WorkPDFOut } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,7 +158,6 @@ function PaperRow({
   anthropicProvider: boolean;
   onChange: (updated: Partial<PaperEntry>) => void;
 }) {
-  // A paper can only be included if it has an extracted .txt file.
   const noContent = entry.pdfsLoaded && !entry.canInclude;
   const loading = !entry.pdfsLoaded;
 
@@ -179,7 +185,6 @@ function PaperRow({
           </p>
           {entry.year != null && <p className="text-gray-400">{entry.year}</p>}
         </div>
-        {/* Status badge or Text/PDF toggle */}
         {loading ? (
           <span className="text-[10px] text-gray-400 shrink-0">Loading…</span>
         ) : noContent ? (
@@ -203,7 +208,6 @@ function PaperRow({
         )}
       </div>
 
-      {/* Remark — only shown when paper can be included */}
       {!noContent && !loading && (
         entry.remarkOpen ? (
           <div className="pl-5">
@@ -313,6 +317,71 @@ function PaperContextSelector({
 }
 
 // ---------------------------------------------------------------------------
+// Load session modal
+// ---------------------------------------------------------------------------
+
+function LoadSessionModal({
+  sessions,
+  onLoad,
+  onClose,
+  onDelete,
+}: {
+  sessions: ChatSessionOut[];
+  onLoad: (session: ChatSessionOut) => void;
+  onClose: () => void;
+  onDelete: (sessionId: number) => void;
+}) {
+  const saved = sessions.filter((s) => !s.is_auto);
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 flex flex-col max-h-[80vh]">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+          <h2 className="text-sm font-semibold text-gray-900">Load saved conversation</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-lg leading-none">×</button>
+        </div>
+        <div className="overflow-y-auto flex-1 divide-y divide-gray-100">
+          {saved.length === 0 && (
+            <p className="text-sm text-gray-400 text-center py-8">No saved conversations yet.</p>
+          )}
+          {saved.map((s) => (
+            <div key={s.id} className="flex items-center justify-between px-4 py-3 hover:bg-gray-50">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-800 truncate">{s.title}</p>
+                <p className="text-[11px] text-gray-400">
+                  {s.message_count} message{s.message_count !== 1 ? 's' : ''}
+                  {' · '}
+                  {new Date(s.updated_at).toLocaleDateString()}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 ml-3 shrink-0">
+                <button
+                  onClick={() => onLoad(s)}
+                  className="px-2 py-1 text-xs text-white bg-indigo-600 rounded hover:bg-indigo-700"
+                >
+                  Load
+                </button>
+                <button
+                  onClick={() => onDelete(s.id)}
+                  className="px-2 py-1 text-xs border border-red-200 text-red-600 rounded hover:bg-red-50"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="px-4 py-3 border-t border-gray-200">
+          <button onClick={onClose} className="px-3 py-1.5 text-xs border border-gray-300 rounded hover:bg-gray-50">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main DiscussionPage
 // ---------------------------------------------------------------------------
 
@@ -344,7 +413,6 @@ export default function DiscussionPage() {
   const { data: singleWork } = useWork(workId);
   const { data: singleWorkPdfs } = useWorkPDFs(workId);
 
-  // Library mode content availability
   const singleWorkPdfsLoaded = singleWorkPdfs !== undefined;
   const libraryModeHasContent = isLibraryMode && singleWorkPdfsLoaded
     && singleWorkPdfs.some((p) => p.extraction_status === 'ready');
@@ -357,7 +425,6 @@ export default function DiscussionPage() {
   const [entries, setEntries] = useState<PaperEntry[]>([]);
   const [entriesInitialized, setEntriesInitialized] = useState(false);
 
-  // Initialize entries from timeline seeds; all start as unloaded/not includable
   useEffect(() => {
     if (isLibraryMode || entriesInitialized || !timeline) return;
     const seeds = timeline.seeds.map((s): PaperEntry => ({
@@ -376,7 +443,6 @@ export default function DiscussionPage() {
     setEntriesInitialized(true);
   }, [timeline, isLibraryMode, entriesInitialized]);
 
-  // Fetch PDFs for all project-mode entries, then set canInclude + included
   useEffect(() => {
     if (isLibraryMode || entries.length === 0) return;
     const unloaded = entries.filter((e) => !e.pdfsLoaded);
@@ -406,11 +472,61 @@ export default function DiscussionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length, isLibraryMode]);
 
+  // ---------------------------------------------------------------------------
+  // Session persistence
+  // ---------------------------------------------------------------------------
+
+  const [autoSessionId, setAutoSessionId] = useState<number | null>(null);
+  const sessionInitialized = useRef(false);
+
+  const getOrCreateAuto = useGetOrCreateAutoSession();
+
+  // On mount (once workId is known), get or create the auto-session and restore messages.
+  useEffect(() => {
+    if (sessionInitialized.current) return;
+    const scopeWorkId = workId ?? (isLibraryMode ? null : null);
+    if (scopeWorkId == null && !isLibraryMode) return; // project mode — no workId needed for session
+    // For library mode we need workId; for project mode we also need workId from params.
+    // Both modes use workId (in library mode) or require workId to be set.
+    if (workId == null) return; // wait for workId
+    sessionInitialized.current = true;
+
+    getOrCreateAuto.mutate(
+      { work_id: workId, project_id: projectId },
+      {
+        onSuccess: (session) => {
+          setAutoSessionId(session.id);
+          // Restore messages from the session
+          if (session.messages.length > 0) {
+            setMessages(
+              session.messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+            );
+          }
+        },
+      },
+    );
+  // Only run when workId becomes known. projectId is stable.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workId]);
+
+  // ---------------------------------------------------------------------------
   // Chat state
+  // ---------------------------------------------------------------------------
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [saveNoteForIdx, setSaveNoteForIdx] = useState<number | null>(null);
+
+  // "New Chat" confirm dialog
   const [confirmClear, setConfirmClear] = useState(false);
+
+  // Save dialog
+  const [showSavePrompt, setShowSavePrompt] = useState(false);
+  const [saveTitle, setSaveTitle] = useState('');
+
+  // Load modal
+  const [showLoadModal, setShowLoadModal] = useState(false);
+
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -420,6 +536,15 @@ export default function DiscussionPage() {
     }
   }, [messages]);
 
+  // ---------------------------------------------------------------------------
+  // Session mutations
+  // ---------------------------------------------------------------------------
+
+  const saveMutation = useSaveChatSession();
+  const deleteMutation = useDeleteChatSession();
+  const clearMutation = useClearChatMessages();
+  const { data: sessionList, refetch: refetchSessions } = useListChatSessions(workId, projectId);
+
   const chatMutation = useMutation({
     mutationFn: (vars: {
       papers: { work_id: number; use_pdf: boolean; remark?: string | null }[];
@@ -428,6 +553,7 @@ export default function DiscussionPage() {
     }) =>
       postLLMChat({
         project_id: projectId,
+        session_id: autoSessionId,
         papers: vars.papers,
         history: vars.history,
         message: vars.message,
@@ -523,7 +649,56 @@ export default function DiscussionPage() {
     });
   };
 
+  // New Chat — clears messages from the auto-session
+  const handleNewChat = () => {
+    setMessages([]);
+    setSaveNoteForIdx(null);
+    setConfirmClear(false);
+    if (autoSessionId != null) {
+      clearMutation.mutate(autoSessionId);
+    }
+  };
+
+  // Save conversation as a named snapshot
+  const handleSave = () => {
+    const title = saveTitle.trim();
+    if (!title || autoSessionId == null) return;
+    saveMutation.mutate(
+      { sessionId: autoSessionId, title },
+      {
+        onSuccess: () => {
+          setShowSavePrompt(false);
+          setSaveTitle('');
+          refetchSessions();
+        },
+      },
+    );
+  };
+
+  // Load a saved session — replace local messages
+  const handleLoadSession = async (session: ChatSessionOut) => {
+    try {
+      const full = await getChatSession(session.id);
+      setMessages(
+        full.messages.map((m) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        }))
+      );
+      setSaveNoteForIdx(null);
+      setShowLoadModal(false);
+    } catch {
+      // silently ignore load errors
+    }
+  };
+
+  // Delete a saved session
+  const handleDeleteSession = (sessionId: number) => {
+    deleteMutation.mutate(sessionId, { onSuccess: () => refetchSessions() });
+  };
+
   const isPending = chatMutation.isPending;
+  const hasSavedSessions = (sessionList ?? []).some((s) => !s.is_auto);
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -544,14 +719,66 @@ export default function DiscussionPage() {
               : 'Project discussion'}
           </h1>
         </div>
-        {messages.length > 0 && (
+
+        {/* Session toolbar */}
+        <div className="flex items-center gap-2">
+          {/* Save button */}
+          {messages.some((m) => m.role !== 'error') && autoSessionId != null && (
+            <div className="relative">
+              {showSavePrompt ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={saveTitle}
+                    onChange={(e) => setSaveTitle(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') { setShowSavePrompt(false); setSaveTitle(''); } }}
+                    placeholder="Conversation title…"
+                    autoFocus
+                    className="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 w-40"
+                  />
+                  <button
+                    onClick={handleSave}
+                    disabled={!saveTitle.trim() || saveMutation.isPending}
+                    className="px-2 py-1 text-xs text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {saveMutation.isPending ? '…' : 'Save'}
+                  </button>
+                  <button
+                    onClick={() => { setShowSavePrompt(false); setSaveTitle(''); }}
+                    className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowSavePrompt(true)}
+                  className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Save
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Load button */}
           <button
-            onClick={() => setConfirmClear(true)}
+            onClick={() => { refetchSessions(); setShowLoadModal(true); }}
             className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
           >
-            New conversation
+            Load{hasSavedSessions ? ' ▾' : ''}
           </button>
-        )}
+
+          {/* New Chat button */}
+          {messages.length > 0 && (
+            <button
+              onClick={() => setConfirmClear(true)}
+              className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50"
+            >
+              New Chat
+            </button>
+          )}
+        </div>
       </div>
 
       {/* LLM not configured banner */}
@@ -574,12 +801,12 @@ export default function DiscussionPage() {
       {/* Confirm clear */}
       {confirmClear && (
         <div className="px-4 py-2 bg-red-50 border-b border-red-200 flex items-center gap-3 text-sm">
-          <span className="text-red-700">Clear conversation history?</span>
+          <span className="text-red-700">Start a new conversation? The current one will be lost unless saved.</span>
           <button
-            onClick={() => { setMessages([]); setSaveNoteForIdx(null); setConfirmClear(false); }}
+            onClick={handleNewChat}
             className="px-2 py-0.5 text-xs text-white bg-red-600 rounded hover:bg-red-700"
           >
-            Clear
+            New Chat
           </button>
           <button
             onClick={() => setConfirmClear(false)}
@@ -697,6 +924,16 @@ export default function DiscussionPage() {
           </div>
         </div>
       </div>
+
+      {/* Load session modal */}
+      {showLoadModal && (
+        <LoadSessionModal
+          sessions={sessionList ?? []}
+          onLoad={handleLoadSession}
+          onClose={() => setShowLoadModal(false)}
+          onDelete={handleDeleteSession}
+        />
+      )}
     </div>
   );
 }
