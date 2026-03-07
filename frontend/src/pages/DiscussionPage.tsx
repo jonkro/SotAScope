@@ -154,11 +154,13 @@ function PaperRow({
   entry,
   anthropicProvider,
   topicListColorMap,
+  locked,
   onChange,
 }: {
   entry: PaperEntry;
   anthropicProvider: boolean;
   topicListColorMap: Map<number, string>;
+  locked: boolean;
   onChange: (updated: Partial<PaperEntry>) => void;
 }) {
   const noContent = entry.pdfsLoaded && !entry.canInclude;
@@ -188,11 +190,11 @@ function PaperRow({
         {/* Main content */}
         <div className="flex-1 p-2 space-y-1.5 min-w-0">
           <div className="flex items-start gap-2">
-            <span title={noContent ? 'No extracted text — upload and extract a PDF first' : undefined}>
+            <span title={noContent ? 'No extracted text — upload and extract a PDF first' : locked ? 'Start a new chat to change paper selection' : undefined}>
               <input
                 type="checkbox"
                 checked={entry.included}
-                disabled={noContent || loading}
+                disabled={noContent || loading || locked}
                 onChange={(e) => onChange({ included: e.target.checked })}
                 className="mt-0.5 shrink-0 disabled:cursor-not-allowed"
               />
@@ -267,6 +269,7 @@ function PaperContextSelector({
   topicLists,
   topicListColorMap,
   anthropicProvider,
+  locked,
   onChangeEntry,
   onGlobalToggle,
   onBulkTopicListToggle,
@@ -275,6 +278,7 @@ function PaperContextSelector({
   topicLists: TopicListOut[];
   topicListColorMap: Map<number, string>;
   anthropicProvider: boolean;
+  locked: boolean;
   onChangeEntry: (workId: number, updated: Partial<PaperEntry>) => void;
   onGlobalToggle: () => void;
   onBulkTopicListToggle: (tlId: number) => void;
@@ -319,11 +323,13 @@ function PaperContextSelector({
       <div className="p-3 border-b border-gray-200 flex items-center justify-between">
         <div>
           <h2 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Context papers</h2>
-          {allLoaded && availableCount < entries.length && (
+          {locked ? (
+            <p className="text-[10px] text-amber-600 mt-0.5">Locked · start a new chat to change</p>
+          ) : allLoaded && availableCount < entries.length ? (
             <p className="text-[10px] text-gray-400 mt-0.5">
               {entries.length - availableCount} paper{entries.length - availableCount !== 1 ? 's' : ''} have no extracted text
             </p>
-          )}
+          ) : null}
         </div>
         <button
           onClick={onGlobalToggle}
@@ -349,7 +355,7 @@ function PaperContextSelector({
             const selectedCount = tlEntries.filter((e) => e.included).length;
             const allSelected = tlEntries.length > 0 && selectedCount === tlEntries.length;
             return (
-              <label key={tl.id} className="flex items-center gap-1 cursor-pointer" title={tl.name}>
+              <label key={tl.id} className={`flex items-center gap-1 ${locked ? 'cursor-default' : 'cursor-pointer'}`} title={tl.name}>
                 <input
                   type="checkbox"
                   ref={(el) => {
@@ -357,8 +363,9 @@ function PaperContextSelector({
                     else tlCheckboxRefs.current.delete(tl.id);
                   }}
                   checked={allSelected}
+                  disabled={locked}
                   onChange={() => onBulkTopicListToggle(tl.id)}
-                  className="w-3 h-3 shrink-0"
+                  className="w-3 h-3 shrink-0 disabled:cursor-not-allowed"
                 />
                 <span
                   className="text-[10px] font-medium truncate max-w-[72px]"
@@ -382,6 +389,7 @@ function PaperContextSelector({
             entry={e}
             anthropicProvider={anthropicProvider}
             topicListColorMap={topicListColorMap}
+            locked={locked}
             onChange={(updated) => onChangeEntry(e.work_id, updated)}
           />
         ))}
@@ -657,6 +665,9 @@ export default function DiscussionPage() {
 
   const noPapersSelected = !isLibraryMode && includedPapers.length === 0;
 
+  // Lock the paper selection once the discussion has started; unlock on New Chat.
+  const discussionActive = messages.some((m) => m.role === 'user' || m.role === 'assistant');
+
   const chatDisabled =
     chatMutation.isPending ||
     llmNotConfigured ||
@@ -924,6 +935,7 @@ export default function DiscussionPage() {
             topicLists={topicLists}
             topicListColorMap={topicListColorMap}
             anthropicProvider={isAnthropicProvider}
+            locked={discussionActive}
             onChangeEntry={handleChangeEntry}
             onGlobalToggle={handleGlobalToggle}
             onBulkTopicListToggle={handleBulkTopicListToggle}
