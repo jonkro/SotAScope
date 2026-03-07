@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import ConfirmDialog from '../components/ConfirmDialog';
+import type { WorkPDFOut } from '../types';
 import {
   useExtractionSchemas,
   useExtractionSchema,
@@ -51,6 +52,7 @@ interface ExtractionCellProps {
   schemaId: number;
   column: ExtractionColumn;
   isRunningGlobal: boolean;
+  noText?: boolean;
   onExtractSingle: (workId: number) => void;
 }
 
@@ -60,6 +62,7 @@ function ExtractionCell({
   schemaId: _schemaId,
   column,
   isRunningGlobal,
+  noText = false,
   onExtractSingle,
 }: ExtractionCellProps) {
   const [editing, setEditing] = useState(false);
@@ -72,14 +75,16 @@ function ExtractionCell({
   if (!cell) {
     return (
       <td className="px-3 py-2 text-center align-top border-r border-gray-100 last:border-r-0">
-        <button
-          onClick={() => onExtractSingle(workId)}
-          disabled={isRunningGlobal}
-          title="Extract this cell"
-          className="text-xs text-gray-400 hover:text-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          ⚡
-        </button>
+        {!noText && (
+          <button
+            onClick={() => onExtractSingle(workId)}
+            disabled={isRunningGlobal}
+            title="Extract this cell"
+            className="text-xs text-gray-400 hover:text-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ⚡
+          </button>
+        )}
       </td>
     );
   }
@@ -214,18 +219,42 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     [topicLists],
   );
 
+  // PDF availability: track which seeds have extraction_status='ready' PDF
+  const [seedPdfsLoaded, setSeedPdfsLoaded] = useState(false);
+  const [seedsWithText, setSeedsWithText] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (seeds.length === 0) return;
+    setSeedPdfsLoaded(false);
+    Promise.all(
+      seeds.map((s) =>
+        fetch(`/api/works/${s.id}/pdfs`)
+          .then((r) => (r.ok ? r.json() : []))
+          .then((pdfs: WorkPDFOut[]) => ({
+            id: s.id,
+            hasText: pdfs.some((p) => p.extraction_status === 'ready'),
+          }))
+          .catch(() => ({ id: s.id, hasText: false })),
+      ),
+    ).then((results) => {
+      const withText = new Set(results.filter((r) => r.hasText).map((r) => r.id));
+      setSeedsWithText(withText);
+      setSeedPdfsLoaded(true);
+    });
+  }, [seeds.length]); // re-run only when seed count changes
+
   // Work selection state
   const [searchQ, setSearchQ] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const initializedRef = useRef(false);
 
-  // Default: select all seeds on first load
+  // Default: select only seeds that have extracted text
   useEffect(() => {
-    if (!initializedRef.current && seeds.length > 0) {
-      setSelectedIds(new Set(seeds.map((s) => s.id)));
+    if (!initializedRef.current && seedPdfsLoaded && seeds.length > 0) {
+      setSelectedIds(new Set(seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
       initializedRef.current = true;
     }
-  }, [seeds]);
+  }, [seedPdfsLoaded, seeds, seedsWithText]);
 
   const filteredSeeds = useMemo(() => {
     if (!searchQ.trim()) return seeds;
@@ -233,12 +262,15 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     return seeds.filter((s) => s.title.toLowerCase().includes(q));
   }, [seeds, searchQ]);
 
-  // Sort: selected papers float to top (preserving existing order within each group)
+  // Sort: selected float to top, then unselected-with-text, then no-text
   const sortedFilteredSeeds = useMemo(() => {
     const selected = filteredSeeds.filter((s) => selectedIds.has(s.id));
-    const unselected = filteredSeeds.filter((s) => !selectedIds.has(s.id));
-    return [...selected, ...unselected];
-  }, [filteredSeeds, selectedIds]);
+    const unselectedWithText = filteredSeeds.filter(
+      (s) => !selectedIds.has(s.id) && seedsWithText.has(s.id),
+    );
+    const noText = filteredSeeds.filter((s) => !seedsWithText.has(s.id));
+    return [...selected, ...unselectedWithText, ...noText];
+  }, [filteredSeeds, selectedIds, seedsWithText]);
 
   // Existing results
   const allSeedIds = useMemo(() => seeds.map((s) => s.id), [seeds]);
@@ -340,6 +372,7 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
   );
 
   const toggleId = (id: number) => {
+    if (!seedsWithText.has(id)) return; // no text — not selectable
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -348,7 +381,8 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     });
   };
 
-  const selectAll = () => setSelectedIds(new Set(filteredSeeds.map((s) => s.id)));
+  const selectAll = () =>
+    setSelectedIds(new Set(filteredSeeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
   const deselectAll = () => setSelectedIds(new Set());
 
   // Topic list bulk-select: indeterminate state via refs
@@ -358,16 +392,16 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     for (const tl of topicLists) {
       const el = tlCheckboxRefs.current.get(tl.id);
       if (!el) continue;
-      const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id));
+      const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id) && seedsWithText.has(s.id));
       const selectedCount = tlSeeds.filter((s) => selectedIds.has(s.id)).length;
       el.indeterminate = selectedCount > 0 && selectedCount < tlSeeds.length;
     }
-  }, [selectedIds, topicLists, seeds]);
+  }, [selectedIds, topicLists, seeds, seedsWithText]);
 
   const handleBulkTopicListToggle = (tlId: number) => {
     setSelectedIds((prev) => {
       const tlSeedIds = seeds
-        .filter((s) => s.topic_list_ids.includes(tlId))
+        .filter((s) => s.topic_list_ids.includes(tlId) && seedsWithText.has(s.id))
         .map((s) => s.id);
       const anySelected = tlSeedIds.some((id) => prev.has(id));
       const next = new Set(prev);
@@ -412,6 +446,7 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     );
   }
 
+  const selectableCount = seeds.filter((s) => seedsWithText.has(s.id)).length;
   const selectedCount = selectedIds.size;
   const isDone =
     !isExtracting && extractProgress !== null && extractProgress.done === extractProgress.total;
@@ -440,7 +475,12 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
           Deselect all
         </button>
         <span className="text-xs text-gray-500">
-          {selectedCount} of {seeds.length} selected
+          {selectedCount} of {selectableCount} selected
+          {seedPdfsLoaded && selectableCount < seeds.length && (
+            <span className="ml-1 text-gray-400">
+              ({seeds.length - selectableCount} without extracted text)
+            </span>
+          )}
         </span>
         {/* Export buttons */}
         {allSeedIds.length > 0 && (
@@ -513,7 +553,7 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
         <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-2 flex flex-wrap gap-x-4 gap-y-1.5 items-center">
           <span className="text-[11px] text-gray-500 font-medium">Topic lists:</span>
           {topicLists.map((tl) => {
-            const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id));
+            const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id) && seedsWithText.has(s.id));
             const selectedCount = tlSeeds.filter((s) => selectedIds.has(s.id)).length;
             const allSelected = tlSeeds.length > 0 && selectedCount === tlSeeds.length;
             return (
@@ -563,8 +603,8 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
                 <input
                   type="checkbox"
                   checked={
-                    filteredSeeds.length > 0 &&
-                    filteredSeeds.every((s) => selectedIds.has(s.id))
+                    filteredSeeds.some((s) => seedsWithText.has(s.id)) &&
+                    filteredSeeds.filter((s) => seedsWithText.has(s.id)).every((s) => selectedIds.has(s.id))
                   }
                   onChange={(e) => (e.target.checked ? selectAll() : deselectAll())}
                   className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
@@ -593,18 +633,30 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {sortedFilteredSeeds.map((seed) => (
+            {sortedFilteredSeeds.map((seed) => {
+              const hasText = seedsWithText.has(seed.id);
+              const noText = seedPdfsLoaded && !hasText;
+              return (
               <tr
                 key={seed.id}
-                className={selectedIds.has(seed.id) ? 'bg-white' : 'bg-gray-50 opacity-60'}
+                className={
+                  noText
+                    ? 'bg-gray-50 opacity-50'
+                    : selectedIds.has(seed.id)
+                    ? 'bg-white'
+                    : 'bg-gray-50 opacity-60'
+                }
               >
                 <td className="px-3 py-2 text-center align-top border-r border-gray-100">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(seed.id)}
-                    onChange={() => toggleId(seed.id)}
-                    className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
-                  />
+                  <span title={noText ? 'No extracted text — upload and extract a PDF first' : undefined}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(seed.id)}
+                      disabled={noText}
+                      onChange={() => toggleId(seed.id)}
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer disabled:cursor-not-allowed"
+                    />
+                  </span>
                 </td>
                 <td
                   className="p-0 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] min-w-[200px] max-w-[280px]"
@@ -619,8 +671,13 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
                           style={{ width: 3, backgroundColor: color, alignSelf: 'stretch' }}
                         />
                       ))}
-                    <div className="px-3 py-2 min-w-0 flex-1">
+                    <div className="px-3 py-2 min-w-0 flex-1 flex items-start justify-between gap-2">
                       <p className="text-xs font-medium text-gray-900 line-clamp-2">{seed.title}</p>
+                      {noText && (
+                        <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-400 rounded shrink-0 leading-none mt-0.5">
+                          No text
+                        </span>
+                      )}
                     </div>
                   </div>
                 </td>
@@ -635,11 +692,13 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
                     schemaId={schema.id}
                     column={col}
                     isRunningGlobal={isExtracting}
+                    noText={noText}
                     onExtractSingle={handleExtractSingle}
                   />
                 ))}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
 
