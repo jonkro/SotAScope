@@ -703,6 +703,53 @@ export default function DiscussionPage() {
     libraryModeNoContent ||
     noPapersSelected;
 
+  // Prompt preview
+  const [showPromptPreview, setShowPromptPreview] = useState(false);
+
+  const buildChatPromptPreview = (): string => {
+    const parts: string[] = [];
+
+    parts.push('━━━ System ━━━');
+    parts.push('You are a research assistant helping analyze academic literature.');
+    parts.push('');
+
+    // Context papers with content placeholders
+    const papers = isLibraryMode && singleWork
+      ? [{ title: singleWork.title, year: singleWork.publication_year as number | null, use_pdf: false, remark: '' }]
+      : entries.filter((e) => e.included);
+
+    if (papers.length > 0) {
+      parts.push('━━━ Context ━━━');
+      for (const p of papers) {
+        const yearStr = p.year != null ? String(p.year) : 'n.d.';
+        parts.push(`--- Paper: ${p.title} (${yearStr}) ---`);
+        if ('remark' in p && (p as PaperEntry).remark?.trim()) {
+          parts.push((p as PaperEntry).remark.trim());
+        }
+        parts.push(p.use_pdf ? `[PDF of "${p.title}"]` : `[Text of "${p.title}"]`);
+      }
+      parts.push('');
+    }
+
+    // Conversation history (truncated per message for readability)
+    const history = messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+    if (history.length > 0) {
+      parts.push('━━━ Conversation history ━━━');
+      for (const msg of history) {
+        const preview = msg.content.length > 300
+          ? msg.content.slice(0, 297) + '…'
+          : msg.content;
+        parts.push(`${msg.role === 'user' ? 'User' : 'Assistant'}: ${preview}`);
+      }
+      parts.push('');
+    }
+
+    parts.push('━━━ Current message ━━━');
+    parts.push(input.trim() || '(your message here)');
+
+    return parts.join('\n');
+  };
+
   const inputPlaceholder = llmNotConfigured
     ? 'Configure LLM in Settings first'
     : libraryModeNoContent
@@ -1097,6 +1144,13 @@ export default function DiscussionPage() {
                 className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
               />
               <button
+                onClick={() => setShowPromptPreview(true)}
+                title="Preview the prompt sent to the LLM (paper content replaced with placeholder)"
+                className="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-600 self-end"
+              >
+                Show prompt
+              </button>
+              <button
                 onClick={handleSend}
                 disabled={chatDisabled || !input.trim()}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 self-end"
@@ -1112,6 +1166,39 @@ export default function DiscussionPage() {
           </div>
         </div>
       </div>
+
+      {/* Prompt preview modal */}
+      {showPromptPreview && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setShowPromptPreview(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Prompt preview</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Paper content replaced with placeholder. History truncated at 300 chars per message.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowPromptPreview(false)}
+                className="text-gray-400 hover:text-gray-700 text-lg leading-none ml-4"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <pre className="text-xs font-mono whitespace-pre-wrap text-gray-700 leading-relaxed">
+                {buildChatPromptPreview()}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Load session modal */}
       {showLoadModal && (

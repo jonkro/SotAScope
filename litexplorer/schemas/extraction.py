@@ -104,6 +104,7 @@ class ExtractionWorkResult(BaseModel):
 
     work_id: int
     columns: list[ExtractionColumnResult]
+    parsing_method: str = "json"
 
 
 class ExtractionBatchRequest(BaseModel):

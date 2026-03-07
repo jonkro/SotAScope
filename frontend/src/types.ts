@@ -405,6 +405,7 @@ export interface ExtractionColumnResult {
 export interface ExtractionWorkResult {
   work_id: number;
   columns: ExtractionColumnResult[];
+  parsing_method: string;
 }
 
 export interface ExtractionBatchResult {

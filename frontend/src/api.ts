@@ -690,3 +690,9 @@ export function getExtractionResults(schemaId: number, workIds: number[]) {
   if (workIds.length > 0) sp.set('work_ids', workIds.join(','));
   return apiFetch<ExtractionResultsResponse>(`/api/extraction/schemas/${schemaId}/results?${sp}`);
 }
+
+export function getExtractionPromptPreview(schemaId: number, workId: number) {
+  return apiFetch<{ system_text: string; user_message: string }>(
+    `/api/extraction/schemas/${schemaId}/preview-prompt?work_id=${workId}`,
+  );
+}

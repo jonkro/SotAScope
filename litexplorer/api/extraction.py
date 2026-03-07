@@ -65,7 +65,7 @@ def _build_llm_client(db: Session):
     base_url = get_setting_value(db, "llm_base_url") or None
 
     client = make_llm_client(provider, api_key, model_id, base_url)
-    return client, model_id
+    return client, model_id, provider
 
 
 # ---------------------------------------------------------------------------
@@ -319,10 +319,11 @@ def _run_and_format(
     model_id: str,
     pdf_root: Path,
     system_prefix: str,
+    provider: str = "",
 ) -> ExtractionWorkResult:
     from litexplorer.services.extraction import run_extraction_for_work
 
-    items = run_extraction_for_work(
+    items, parsing_method = run_extraction_for_work(
         db=db,
         work_id=work_id,
         schema_id=schema_id,
@@ -330,6 +331,7 @@ def _run_and_format(
         model_id=model_id,
         pdf_root=pdf_root,
         system_prefix=system_prefix,
+        provider=provider,
     )
     column_results = [
         ExtractionColumnResult(
@@ -341,7 +343,11 @@ def _run_and_format(
         )
         for item in items
     ]
-    return ExtractionWorkResult(work_id=work_id, columns=column_results)
+    return ExtractionWorkResult(
+        work_id=work_id,
+        columns=column_results,
+        parsing_method=parsing_method,
+    )
 
 
 @router.post("/schemas/{schema_id}/extract/{work_id}", response_model=ExtractionWorkResult)
@@ -357,12 +363,14 @@ def extract_for_work(
     if schema is None:
         raise HTTPException(status_code=404, detail="Extraction schema not found")
 
-    llm_client, model_id = _build_llm_client(db)
+    llm_client, model_id, provider = _build_llm_client(db)
     pdf_root = _get_pdf_root(db)
     system_prefix = get_setting_value(db, "llm_system_prompt_prefix") or ""
 
     try:
-        return _run_and_format(db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix)
+        return _run_and_format(
+            db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix, provider
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -382,7 +390,7 @@ def extract_batch(
     if schema is None:
         raise HTTPException(status_code=404, detail="Extraction schema not found")
 
-    llm_client, model_id = _build_llm_client(db)
+    llm_client, model_id, provider = _build_llm_client(db)
     pdf_root = _get_pdf_root(db)
     system_prefix = get_setting_value(db, "llm_system_prompt_prefix") or ""
 
@@ -392,7 +400,7 @@ def extract_batch(
     for work_id in body.work_ids:
         try:
             result = _run_and_format(
-                db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix
+                db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix, provider
             )
             results.append(result)
         except ValueError as exc:
@@ -519,3 +527,67 @@ def export_schema(
             media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{safe_title}.tex"'},
         )
+
+
+# ---------------------------------------------------------------------------
+# Prompt preview (for UI transparency)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/schemas/{schema_id}/preview-prompt")
+def preview_extraction_prompt(
+    schema_id: int,
+    work_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return the extraction prompt for a given work with paper text replaced by a placeholder.
+
+    The actual paper content is replaced by ``[Text of "{title}"]`` so the user can
+    inspect the full prompt structure without transmitting the entire paper text to
+    the browser.
+
+    Returns ``{"system_text": str, "user_message": str}``.
+    """
+    from litexplorer.api.settings import get_setting_value
+    from litexplorer.models.library import Work, WorkPDF
+    from litexplorer.services.extraction import assemble_extraction_prompt
+
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+
+    work = db.get(Work, work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="Work not found")
+
+    columns = sorted(schema.columns, key=lambda c: c.sort_order)
+
+    provider = get_setting_value(db, "llm_provider") or ""
+    model_id = get_setting_value(db, "llm_model_id") or ""
+    system_prefix = get_setting_value(db, "llm_system_prompt_prefix") or ""
+
+    # Determine whether the work has extracted text available
+    has_ready_pdf = (
+        db.scalars(
+            select(WorkPDF)
+            .where(WorkPDF.work_id == work_id, WorkPDF.extraction_status == "ready")
+            .limit(1)
+        ).one_or_none()
+        is not None
+    )
+
+    # Use a placeholder in place of the actual paper text
+    paper_text_placeholder = f'[Text of "{work.title}"]' if has_ready_pdf else None
+
+    system_text, user_message = assemble_extraction_prompt(
+        schema=schema,
+        columns=columns,
+        paper_text=paper_text_placeholder,
+        paper_title=work.title,
+        paper_year=work.publication_year,
+        system_prefix=system_prefix,
+        provider=provider,
+        model_id=model_id,
+    )
+
+    return {"system_text": system_text, "user_message": user_message}

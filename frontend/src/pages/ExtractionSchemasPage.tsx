@@ -18,6 +18,7 @@ import {
   useEditExtractionNote,
 } from '../hooks/useExtraction';
 import { useTimeline } from '../hooks/useTimeline';
+import { getExtractionPromptPreview } from '../api';
 import type { ExtractionColumn, ExtractionSchema, ExtractionCellResult } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -270,6 +271,11 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
   const [extractErrors, setExtractErrors] = useState<{ workId: number; msg: string }[]>([]);
   const [showConfirm, setShowConfirm] = useState(false);
 
+  // Prompt preview state
+  const [showPromptPreview, setShowPromptPreview] = useState(false);
+  const [promptPreview, setPromptPreview] = useState<{ system_text: string; user_message: string } | null>(null);
+  const [promptPreviewLoading, setPromptPreviewLoading] = useState(false);
+
   const runSingle = useRunSingleExtraction(schema.id);
 
   const doExtract = async (ids: number[]) => {
@@ -309,6 +315,23 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     }
     setIsExtracting(false);
     refetchResults();
+  };
+
+  const handleShowPrompt = async () => {
+    // Pick the first selected paper, or the first seed if nothing is selected
+    const firstId = Array.from(selectedIds)[0] ?? seeds[0]?.id;
+    if (firstId == null) return;
+    setPromptPreview(null);
+    setPromptPreviewLoading(true);
+    setShowPromptPreview(true);
+    try {
+      const data = await getExtractionPromptPreview(schema.id, firstId);
+      setPromptPreview(data);
+    } catch {
+      setPromptPreview(null);
+    } finally {
+      setPromptPreviewLoading(false);
+    }
   };
 
   const sortedColumns = useMemo(
@@ -469,6 +492,14 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
           </span>
         )}
         <button
+          onClick={handleShowPrompt}
+          disabled={seeds.length === 0 || isExtracting}
+          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Preview the prompt that will be sent to the LLM (paper text replaced with placeholder)"
+        >
+          Show prompt
+        </button>
+        <button
           onClick={handleExtractClick}
           disabled={selectedCount === 0 || isExtracting}
           className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -618,6 +649,56 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
           </div>
         )}
       </div>
+
+      {/* Prompt preview modal */}
+      {showPromptPreview && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setShowPromptPreview(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Prompt preview</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Showing prompt for the first selected paper. Paper text replaced with placeholder.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowPromptPreview(false)}
+                className="text-gray-400 hover:text-gray-700 text-lg leading-none ml-4"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {promptPreviewLoading ? (
+                <p className="text-sm text-gray-400">Loading…</p>
+              ) : promptPreview ? (
+                <>
+                  <div>
+                    <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">System</p>
+                    <pre className="text-xs font-mono whitespace-pre-wrap text-gray-700 bg-gray-50 rounded p-3 border border-gray-200 leading-relaxed">
+                      {promptPreview.system_text}
+                    </pre>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">User message</p>
+                    <pre className="text-xs font-mono whitespace-pre-wrap text-gray-700 bg-gray-50 rounded p-3 border border-gray-200 leading-relaxed">
+                      {promptPreview.user_message}
+                    </pre>
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-red-500">Failed to load prompt preview.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Re-extraction confirmation */}
       {showConfirm && (

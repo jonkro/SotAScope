@@ -14,6 +14,7 @@ from litexplorer.models.project import Project
 from litexplorer.services.extraction import (
     assemble_extraction_prompt,
     parse_extraction_response,
+    run_extraction_for_work,
 )
 
 
@@ -360,20 +361,21 @@ def test_parse_valid_json():
             "Dataset": {"answer": "ImageNet", "reasoning": "Mentioned in section 4."},
         }
     })
-    result = parse_extraction_response(response, columns)
+    result, method = parse_extraction_response(response, columns)
+    assert method == "json"
     assert result[1]["answer"] == "supervised"
     assert result[1]["reasoning"] == "The paper trains on labeled data."
     assert result[2]["answer"] == "ImageNet"
 
 
 def test_parse_invalid_json_fallback():
+    """Completely unparseable response returns empty dict with method='failed'."""
     columns = _make_columns()
     response = "Sorry, I cannot answer that."
-    result = parse_extraction_response(response, columns)
-    # Both columns get the raw text as answer
-    assert result[1]["answer"] == response
-    assert result[2]["answer"] == response
-    assert result[1]["reasoning"] == ""
+    result, method = parse_extraction_response(response, columns)
+    # Failed parse: empty dict, raw text is NOT stored in columns
+    assert result == {}
+    assert method == "failed"
 
 
 def test_parse_allowed_values_case_insensitive():
@@ -384,7 +386,8 @@ def test_parse_allowed_values_case_insensitive():
             "Dataset": {"answer": "CIFAR-10", "reasoning": "y"},
         }
     })
-    result = parse_extraction_response(response, columns)
+    result, method = parse_extraction_response(response, columns)
+    assert method == "json"
     # Should match and return canonical spelling
     assert result[1]["answer"] == "supervised"
     # No allowed_values constraint → raw answer preserved
@@ -399,7 +402,8 @@ def test_parse_allowed_values_no_match_keeps_raw():
             "Dataset": {"answer": "MNIST", "reasoning": "y"},
         }
     })
-    result = parse_extraction_response(response, columns)
+    result, method = parse_extraction_response(response, columns)
+    assert method == "json"
     # "reinforcement" not in allowed_values — keep raw
     assert result[1]["answer"] == "reinforcement"
 
@@ -413,7 +417,8 @@ def test_parse_fenced_code_block():
         }
     })
     response = f"```json\n{inner}\n```"
-    result = parse_extraction_response(response, columns)
+    result, method = parse_extraction_response(response, columns)
+    assert method == "json_extracted"
     assert result[1]["answer"] == "unsupervised"
     assert result[2]["answer"] == "STL-10"
 
@@ -426,10 +431,138 @@ def test_parse_missing_column_in_response():
             # "Dataset" is missing
         }
     })
-    result = parse_extraction_response(response, columns)
+    result, method = parse_extraction_response(response, columns)
+    assert method == "json"
     assert result[1]["answer"] == "supervised"
     assert result[2]["answer"] == ""
     assert result[2]["reasoning"] == ""
+
+
+# ---------------------------------------------------------------------------
+# New parse_extraction_response tests (robust parsing strategies)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_json_with_preamble():
+    """Strategy 2: JSON embedded in prose — regex extracts the JSON block."""
+    columns = _make_columns()
+    inner = json.dumps({
+        "columns": {
+            "Learning paradigm": {"answer": "supervised", "reasoning": "Uses labelled data."},
+            "Dataset": {"answer": "CIFAR-10", "reasoning": "Evaluation on CIFAR-10."},
+        }
+    })
+    response = f"Let me analyze this paper. After careful consideration:\n{inner}"
+    result, method = parse_extraction_response(response, columns)
+    assert method == "json_extracted"
+    assert result[1]["answer"] == "supervised"
+    assert result[2]["answer"] == "CIFAR-10"
+
+
+def test_parse_markdown_table_exact_headers():
+    """Strategy 3: Markdown table with exact column name matches."""
+    columns = _make_columns()
+    response = (
+        "**Extracted information**\n\n"
+        "| # | Learning paradigm | Dataset |\n"
+        "|---|-------------------|---------|\n"
+        "| 1 | supervised | ImageNet |\n"
+    )
+    result, method = parse_extraction_response(response, columns)
+    assert method == "markdown_table"
+    assert result[1]["answer"] == "supervised"
+    assert result[2]["answer"] == "ImageNet"
+
+
+def test_parse_markdown_table_fuzzy_headers():
+    """Strategy 3: Markdown table with fuzzy/variant column name headers."""
+    columns = _make_columns()
+    response = (
+        "| # | Learning paradigm (type) | Dataset used |\n"
+        "|---|--------------------------|------------------|\n"
+        "| 1 | Unsupervised | CIFAR-10 |\n"
+    )
+    result, method = parse_extraction_response(response, columns)
+    assert method == "markdown_table"
+    # Allowed-values normalisation: "Unsupervised" → "unsupervised"
+    assert result[1]["answer"] == "unsupervised"
+    assert result[2]["answer"] == "CIFAR-10"
+
+
+def test_parse_key_value_format():
+    """Strategy 4: Key: value pattern extraction."""
+    columns = _make_columns()
+    response = "Learning paradigm: supervised\nDataset: ImageNet"
+    result, method = parse_extraction_response(response, columns)
+    assert method == "key_value"
+    assert result[1]["answer"] == "supervised"
+    assert result[2]["answer"] == "ImageNet"
+
+
+def test_parse_key_value_bold_format():
+    """Strategy 4: **Key**: value markdown-bold variant."""
+    columns = _make_columns()
+    response = "**Learning paradigm**: other\n**Dataset**: MNIST"
+    result, method = parse_extraction_response(response, columns)
+    assert method == "key_value"
+    assert result[1]["answer"] == "other"
+    assert result[2]["answer"] == "MNIST"
+
+
+def test_parse_thinking_model_think_tags():
+    """Thinking model <think>...</think> wrapper is stripped before parsing."""
+    columns = _make_columns()
+    inner = json.dumps({
+        "columns": {
+            "Learning paradigm": {"answer": "supervised", "reasoning": "Labeled data used."},
+            "Dataset": {"answer": "MNIST", "reasoning": "See evaluation section."},
+        }
+    })
+    response = f"<think>Let me analyze this paper carefully...</think>\n{inner}"
+    result, method = parse_extraction_response(response, columns)
+    assert result[1]["answer"] == "supervised"
+    assert result[2]["answer"] == "MNIST"
+    assert method in ("json", "json_extracted")
+
+
+def test_parse_garbage_returns_failed():
+    """Strategy 5: completely unparseable content returns empty dict, method='failed'."""
+    columns = _make_columns()
+    result, method = parse_extraction_response("🤖🤖🤖 ¯_(ツ)_/¯ random gibberish", columns)
+    assert result == {}
+    assert method == "failed"
+
+
+def test_parse_markdown_table_description_as_headers():
+    """Strategy 3: LLM used question-style text as headers — fuzzy match still works."""
+    columns = _make_columns()
+    # "Dataset for evaluation" should fuzzy-match "Dataset" via containment
+    response = (
+        "| # | Learning paradigm (supervised/unsupervised) | Dataset for evaluation |\n"
+        "|---|----------------------------------------------|------------------------|\n"
+        "| 1 | supervised | MNIST |\n"
+    )
+    result, method = parse_extraction_response(response, columns)
+    assert method == "markdown_table"
+    assert result[2]["answer"] == "MNIST"
+
+
+def test_parse_markdown_table_repeated_table():
+    """Strategy 3: LLM returned the same table twice — first data row is used correctly."""
+    columns = _make_columns()
+    response = (
+        "| # | Learning paradigm | Dataset |\n"
+        "|---|-------------------|---------|\n"
+        "| 1 | supervised | ImageNet |\n"
+        "\n"
+        "| # | Learning paradigm | Dataset |\n"
+        "|---|-------------------|---------|\n"
+        "| 1 | supervised | ImageNet |\n"
+    )
+    result, method = parse_extraction_response(response, columns)
+    assert method == "markdown_table"
+    assert result[1]["answer"] == "supervised"
+    assert result[2]["answer"] == "ImageNet"
 
 
 # ---------------------------------------------------------------------------
@@ -583,3 +716,62 @@ def test_extract_llm_error_returns_502(client, db_session, schema, columns, work
         resp = client.post(f"/api/extraction/schemas/{schema.id}/extract/{work.id}")
 
     assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# run_extraction_for_work service-level test (failed parse)
+# ---------------------------------------------------------------------------
+
+
+def test_run_extraction_failed_parse_no_raw_in_columns(db_session, schema, columns, work):
+    """A failed parse creates a single _parse_error note and no per-column notes."""
+    mock_client = _mock_llm_client("I cannot process this request in any structured way.")
+
+    items, parsing_method = run_extraction_for_work(
+        db=db_session,
+        work_id=work.id,
+        schema_id=schema.id,
+        llm_client=mock_client,
+        model_id="test-model",
+        pdf_root=Path("/tmp/fake"),
+    )
+
+    assert parsing_method == "failed"
+    assert items == []
+
+    notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
+
+    # No column notes should contain the raw response
+    col_notes = [n for n in notes if "_parse_error" not in (n.note_type or "")]
+    assert not any(
+        "I cannot process this request" in (n.content or "") for n in col_notes
+    )
+
+    # Exactly one _parse_error note should exist
+    parse_error_notes = [n for n in notes if "_parse_error" in (n.note_type or "")]
+    assert len(parse_error_notes) == 1
+    assert "I cannot process this request" in parse_error_notes[0].content
+
+
+def test_run_extraction_non_json_response_uses_parsing_method(db_session, schema, columns, work):
+    """A markdown-table LLM response is parsed, notes created, method != 'json'."""
+    table_reply = (
+        "| # | Learning paradigm | Dataset |\n"
+        "|---|-------------------|---------|\n"
+        "| 1 | supervised | MNIST |\n"
+    )
+    mock_client = _mock_llm_client(table_reply)
+
+    items, parsing_method = run_extraction_for_work(
+        db=db_session,
+        work_id=work.id,
+        schema_id=schema.id,
+        llm_client=mock_client,
+        model_id="test-model",
+        pdf_root=Path("/tmp/fake"),
+    )
+
+    assert parsing_method == "markdown_table"
+    assert len(items) == 2
+    paradigm = next(i for i in items if i["column_name"] == "Learning paradigm")
+    assert paradigm["answer"] == "supervised"
