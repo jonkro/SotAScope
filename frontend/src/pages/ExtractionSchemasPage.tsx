@@ -207,6 +207,12 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     [timeline],
   );
 
+  const topicLists = useMemo(() => timeline?.topic_lists ?? [], [timeline]);
+  const topicListColorMap = useMemo(
+    () => new Map(topicLists.map((tl) => [tl.id, tl.color])),
+    [topicLists],
+  );
+
   // Work selection state
   const [searchQ, setSearchQ] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -225,6 +231,13 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     const q = searchQ.toLowerCase();
     return seeds.filter((s) => s.title.toLowerCase().includes(q));
   }, [seeds, searchQ]);
+
+  // Sort: selected papers float to top (preserving existing order within each group)
+  const sortedFilteredSeeds = useMemo(() => {
+    const selected = filteredSeeds.filter((s) => selectedIds.has(s.id));
+    const unselected = filteredSeeds.filter((s) => !selectedIds.has(s.id));
+    return [...selected, ...unselected];
+  }, [filteredSeeds, selectedIds]);
 
   // Existing results
   const allSeedIds = useMemo(() => seeds.map((s) => s.id), [seeds]);
@@ -314,6 +327,35 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
 
   const selectAll = () => setSelectedIds(new Set(filteredSeeds.map((s) => s.id)));
   const deselectAll = () => setSelectedIds(new Set());
+
+  // Topic list bulk-select: indeterminate state via refs
+  const tlCheckboxRefs = useRef<Map<number, HTMLInputElement>>(new Map());
+
+  useEffect(() => {
+    for (const tl of topicLists) {
+      const el = tlCheckboxRefs.current.get(tl.id);
+      if (!el) continue;
+      const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id));
+      const selectedCount = tlSeeds.filter((s) => selectedIds.has(s.id)).length;
+      el.indeterminate = selectedCount > 0 && selectedCount < tlSeeds.length;
+    }
+  }, [selectedIds, topicLists, seeds]);
+
+  const handleBulkTopicListToggle = (tlId: number) => {
+    setSelectedIds((prev) => {
+      const tlSeedIds = seeds
+        .filter((s) => s.topic_list_ids.includes(tlId))
+        .map((s) => s.id);
+      const anySelected = tlSeedIds.some((id) => prev.has(id));
+      const next = new Set(prev);
+      if (anySelected) {
+        for (const id of tlSeedIds) next.delete(id);
+      } else {
+        for (const id of tlSeedIds) next.add(id);
+      }
+      return next;
+    });
+  };
 
   // --- Render ---
 
@@ -435,6 +477,38 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
         </button>
       </div>
 
+      {/* Topic list bulk-select row */}
+      {topicLists.length > 0 && (
+        <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-2 flex flex-wrap gap-x-4 gap-y-1.5 items-center">
+          <span className="text-[11px] text-gray-500 font-medium">Topic lists:</span>
+          {topicLists.map((tl) => {
+            const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id));
+            const selectedCount = tlSeeds.filter((s) => selectedIds.has(s.id)).length;
+            const allSelected = tlSeeds.length > 0 && selectedCount === tlSeeds.length;
+            return (
+              <label key={tl.id} className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  ref={(el) => {
+                    if (el) tlCheckboxRefs.current.set(tl.id, el);
+                    else tlCheckboxRefs.current.delete(tl.id);
+                  }}
+                  checked={allSelected}
+                  onChange={() => handleBulkTopicListToggle(tl.id)}
+                  className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
+                />
+                <span className="text-[11px] font-medium" style={{ color: tl.color }}>
+                  {tl.name}
+                </span>
+                <span className="text-[11px] text-gray-400">
+                  ({selectedCount}/{tlSeeds.length})
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
       {/* Error summary */}
       {extractErrors.length > 0 && (
         <div className="shrink-0 px-4 py-2 bg-red-50 border-b border-red-100 text-xs text-red-700">
@@ -488,7 +562,7 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {filteredSeeds.map((seed) => (
+            {sortedFilteredSeeds.map((seed) => (
               <tr
                 key={seed.id}
                 className={selectedIds.has(seed.id) ? 'bg-white' : 'bg-gray-50 opacity-60'}
@@ -502,9 +576,22 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
                   />
                 </td>
                 <td
-                  className="px-3 py-2 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] min-w-[200px] max-w-[280px]"
+                  className="p-0 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] min-w-[200px] max-w-[280px]"
                 >
-                  <p className="text-xs font-medium text-gray-900 line-clamp-2">{seed.title}</p>
+                  <div className="flex" style={{ minHeight: '2.25rem' }}>
+                    {seed.topic_list_ids
+                      .map((id) => topicListColorMap.get(id))
+                      .filter((c): c is string => Boolean(c))
+                      .map((color, i) => (
+                        <div
+                          key={i}
+                          style={{ width: 3, backgroundColor: color, alignSelf: 'stretch' }}
+                        />
+                      ))}
+                    <div className="px-3 py-2 min-w-0 flex-1">
+                      <p className="text-xs font-medium text-gray-900 line-clamp-2">{seed.title}</p>
+                    </div>
+                  </div>
                 </td>
                 <td className="px-3 py-2 align-top border-r border-gray-100 text-xs text-gray-500 whitespace-nowrap">
                   {seed.publication_year ?? '—'}
