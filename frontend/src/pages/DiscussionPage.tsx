@@ -13,7 +13,7 @@ import {
   useClearChatMessages,
 } from '../hooks/useChatSessions';
 import { getChatSession, postLLMChat, createWorkNote } from '../api';
-import type { ChatMessage, ChatSessionOut, WorkPDFOut } from '../types';
+import type { ChatMessage, ChatSessionOut, TopicListOut, WorkPDFOut } from '../types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +23,7 @@ interface PaperEntry {
   work_id: number;
   title: string;
   year: number | null;
+  topic_list_ids: number[];
   /** Whether this paper has at least one PDF with extraction_status='ready'. */
   canInclude: boolean;
   /** Unknown until pdfsLoaded — starts false, set after PDFs fetch. */
@@ -152,10 +153,12 @@ function SaveNoteForm({
 function PaperRow({
   entry,
   anthropicProvider,
+  topicListColorMap,
   onChange,
 }: {
   entry: PaperEntry;
   anthropicProvider: boolean;
+  topicListColorMap: Map<number, string>;
   onChange: (updated: Partial<PaperEntry>) => void;
 }) {
   const noContent = entry.pdfsLoaded && !entry.canInclude;
@@ -167,73 +170,90 @@ function PaperRow({
     ? 'No PDF attached'
     : null;
 
-  return (
-    <div className={`border rounded p-2 space-y-1.5 text-xs ${noContent ? 'border-gray-100 bg-gray-50 opacity-60' : 'border-gray-200'}`}>
-      <div className="flex items-start gap-2">
-        <span title={noContent ? 'No extracted text — upload and extract a PDF first' : undefined}>
-          <input
-            type="checkbox"
-            checked={entry.included}
-            disabled={noContent || loading}
-            onChange={(e) => onChange({ included: e.target.checked })}
-            className="mt-0.5 shrink-0 disabled:cursor-not-allowed"
-          />
-        </span>
-        <div className="flex-1 min-w-0">
-          <p className={`font-medium truncate ${noContent ? 'text-gray-400' : 'text-gray-800'}`} title={entry.title}>
-            {entry.title.length > 70 ? entry.title.slice(0, 67) + '…' : entry.title}
-          </p>
-          {entry.year != null && <p className="text-gray-400">{entry.year}</p>}
-        </div>
-        {loading ? (
-          <span className="text-[10px] text-gray-400 shrink-0">Loading…</span>
-        ) : noContent ? (
-          <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-400 rounded shrink-0">
-            No text
-          </span>
-        ) : (
-          <span title={pdfToggleDisabledReason ?? undefined}>
-            <button
-              onClick={() => pdfToggleDisabledReason == null && onChange({ use_pdf: !entry.use_pdf })}
-              disabled={pdfToggleDisabledReason != null || !entry.included}
-              className={`px-1.5 py-0.5 rounded border text-[10px] font-medium transition-colors ${
-                entry.use_pdf
-                  ? 'bg-indigo-600 border-indigo-600 text-white'
-                  : 'bg-white border-gray-300 text-gray-600'
-              } disabled:opacity-40 disabled:cursor-not-allowed`}
-            >
-              {entry.use_pdf ? 'PDF' : 'Text'}
-            </button>
-          </span>
-        )}
-      </div>
+  const colorBars = entry.topic_list_ids
+    .map((id) => topicListColorMap.get(id))
+    .filter((c): c is string => c != null);
 
-      {!noContent && !loading && (
-        entry.remarkOpen ? (
-          <div className="pl-5">
-            <textarea
-              value={entry.remark}
-              onChange={(e) => onChange({ remark: e.target.value })}
-              placeholder="Optional instruction for this paper (e.g. focus on the evaluation)"
-              rows={2}
-              className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
-            />
-            <button
-              onClick={() => onChange({ remarkOpen: false })}
-              className="text-[10px] text-gray-400 hover:text-gray-600 mt-0.5"
-            >
-              Hide note
-            </button>
+  return (
+    <div className={`border rounded overflow-hidden text-xs ${noContent ? 'border-gray-100 bg-gray-50 opacity-60' : 'border-gray-200'}`}>
+      <div className="flex">
+        {/* Topic list color bars */}
+        {colorBars.length > 0 && (
+          <div className="flex shrink-0">
+            {colorBars.map((color, i) => (
+              <div key={i} style={{ width: 3, backgroundColor: color }} />
+            ))}
           </div>
-        ) : (
-          <button
-            onClick={() => onChange({ remarkOpen: true })}
-            className="pl-5 text-[10px] text-gray-400 hover:text-blue-600"
-          >
-            + Add note
-          </button>
-        )
-      )}
+        )}
+        {/* Main content */}
+        <div className="flex-1 p-2 space-y-1.5 min-w-0">
+          <div className="flex items-start gap-2">
+            <span title={noContent ? 'No extracted text — upload and extract a PDF first' : undefined}>
+              <input
+                type="checkbox"
+                checked={entry.included}
+                disabled={noContent || loading}
+                onChange={(e) => onChange({ included: e.target.checked })}
+                className="mt-0.5 shrink-0 disabled:cursor-not-allowed"
+              />
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className={`font-medium truncate ${noContent ? 'text-gray-400' : 'text-gray-800'}`} title={entry.title}>
+                {entry.title.length > 70 ? entry.title.slice(0, 67) + '…' : entry.title}
+              </p>
+              {entry.year != null && <p className="text-gray-400">{entry.year}</p>}
+            </div>
+            {loading ? (
+              <span className="text-[10px] text-gray-400 shrink-0">Loading…</span>
+            ) : noContent ? (
+              <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-400 rounded shrink-0">
+                No text
+              </span>
+            ) : (
+              <span title={pdfToggleDisabledReason ?? undefined}>
+                <button
+                  onClick={() => pdfToggleDisabledReason == null && onChange({ use_pdf: !entry.use_pdf })}
+                  disabled={pdfToggleDisabledReason != null || !entry.included}
+                  className={`px-1.5 py-0.5 rounded border text-[10px] font-medium transition-colors ${
+                    entry.use_pdf
+                      ? 'bg-indigo-600 border-indigo-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-600'
+                  } disabled:opacity-40 disabled:cursor-not-allowed`}
+                >
+                  {entry.use_pdf ? 'PDF' : 'Text'}
+                </button>
+              </span>
+            )}
+          </div>
+
+          {!noContent && !loading && (
+            entry.remarkOpen ? (
+              <div className="pl-5">
+                <textarea
+                  value={entry.remark}
+                  onChange={(e) => onChange({ remark: e.target.value })}
+                  placeholder="Optional instruction for this paper (e.g. focus on the evaluation)"
+                  rows={2}
+                  className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+                />
+                <button
+                  onClick={() => onChange({ remarkOpen: false })}
+                  className="text-[10px] text-gray-400 hover:text-gray-600 mt-0.5"
+                >
+                  Hide note
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => onChange({ remarkOpen: true })}
+                className="pl-5 text-[10px] text-gray-400 hover:text-blue-600"
+              >
+                + Add note
+              </button>
+            )
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -244,14 +264,20 @@ function PaperRow({
 
 function PaperContextSelector({
   entries,
+  topicLists,
+  topicListColorMap,
   anthropicProvider,
   onChangeEntry,
   onGlobalToggle,
+  onBulkTopicListToggle,
 }: {
   entries: PaperEntry[];
+  topicLists: TopicListOut[];
+  topicListColorMap: Map<number, string>;
   anthropicProvider: boolean;
   onChangeEntry: (workId: number, updated: Partial<PaperEntry>) => void;
   onGlobalToggle: () => void;
+  onBulkTopicListToggle: (tlId: number) => void;
 }) {
   const includedEntries = entries.filter((e) => e.included);
   const allPdf = includedEntries.length > 0 && includedEntries.every((e) => e.use_pdf);
@@ -267,6 +293,26 @@ function PaperContextSelector({
 
   const allLoaded = entries.length > 0 && entries.every((e) => e.pdfsLoaded);
   const availableCount = entries.filter((e) => e.canInclude).length;
+
+  // Fix 1: sort selected papers to top, then alphabetical within each group
+  const sortedEntries = useMemo(() => {
+    const included = entries.filter((e) => e.included).sort((a, b) => a.title.localeCompare(b.title));
+    const notIncluded = entries.filter((e) => !e.included).sort((a, b) => a.title.localeCompare(b.title));
+    return [...included, ...notIncluded];
+  }, [entries]);
+
+  // Fix 3: indeterminate state for topic list checkboxes
+  const tlCheckboxRefs = useRef<Map<number, HTMLInputElement>>(new Map());
+
+  useEffect(() => {
+    for (const tl of topicLists) {
+      const el = tlCheckboxRefs.current.get(tl.id);
+      if (!el) continue;
+      const tlEntries = entries.filter((e) => e.topic_list_ids.includes(tl.id));
+      const selectedCount = tlEntries.filter((e) => e.included).length;
+      el.indeterminate = selectedCount > 0 && selectedCount < tlEntries.length;
+    }
+  }, [entries, topicLists]);
 
   return (
     <div className="flex flex-col h-full border-r border-gray-200 bg-gray-50" style={{ minWidth: 260, maxWidth: 320 }}>
@@ -295,15 +341,47 @@ function PaperContextSelector({
         </button>
       </div>
 
+      {/* Fix 3: topic list bulk-select checkboxes */}
+      {topicLists.length > 0 && (
+        <div className="px-2 py-1.5 border-b border-gray-200 flex flex-wrap gap-x-3 gap-y-1">
+          {topicLists.map((tl) => {
+            const tlEntries = entries.filter((e) => e.topic_list_ids.includes(tl.id));
+            const selectedCount = tlEntries.filter((e) => e.included).length;
+            const allSelected = tlEntries.length > 0 && selectedCount === tlEntries.length;
+            return (
+              <label key={tl.id} className="flex items-center gap-1 cursor-pointer" title={tl.name}>
+                <input
+                  type="checkbox"
+                  ref={(el) => {
+                    if (el) tlCheckboxRefs.current.set(tl.id, el);
+                    else tlCheckboxRefs.current.delete(tl.id);
+                  }}
+                  checked={allSelected}
+                  onChange={() => onBulkTopicListToggle(tl.id)}
+                  className="w-3 h-3 shrink-0"
+                />
+                <span
+                  className="text-[10px] font-medium truncate max-w-[72px]"
+                  style={{ color: tl.color }}
+                >
+                  {tl.name}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
-        {entries.length === 0 && (
+        {sortedEntries.length === 0 && (
           <p className="text-xs text-gray-400 p-2">No papers in this project yet.</p>
         )}
-        {entries.map((e) => (
+        {sortedEntries.map((e) => (
           <PaperRow
             key={e.work_id}
             entry={e}
             anthropicProvider={anthropicProvider}
+            topicListColorMap={topicListColorMap}
             onChange={(updated) => onChangeEntry(e.work_id, updated)}
           />
         ))}
@@ -431,6 +509,7 @@ export default function DiscussionPage() {
       work_id: s.id,
       title: s.title,
       year: s.publication_year,
+      topic_list_ids: s.topic_list_ids,
       canInclude: false,
       pdfsLoaded: false,
       included: false,
@@ -632,8 +711,27 @@ export default function DiscussionPage() {
     }
   };
 
+  const topicLists = timeline?.topic_lists ?? [];
+
+  const topicListColorMap = useMemo(
+    () => new Map(topicLists.map((tl) => [tl.id, tl.color])),
+    [topicLists],
+  );
+
   const handleChangeEntry = (wid: number, updated: Partial<PaperEntry>) => {
     setEntries((prev) => prev.map((e) => (e.work_id === wid ? { ...e, ...updated } : e)));
+  };
+
+  const handleBulkTopicListToggle = (tlId: number) => {
+    setEntries((prev) => {
+      const anySelected = prev.some((e) => e.topic_list_ids.includes(tlId) && e.included);
+      return prev.map((e) => {
+        if (!e.topic_list_ids.includes(tlId)) return e;
+        // Deselect all → unselect; None selected → select canInclude papers
+        if (anySelected) return { ...e, included: false };
+        return { ...e, included: e.canInclude ? true : e.included };
+      });
+    });
   };
 
   const handleGlobalToggle = () => {
@@ -823,9 +921,12 @@ export default function DiscussionPage() {
         {!isLibraryMode && (
           <PaperContextSelector
             entries={entries}
+            topicLists={topicLists}
+            topicListColorMap={topicListColorMap}
             anthropicProvider={isAnthropicProvider}
             onChangeEntry={handleChangeEntry}
             onGlobalToggle={handleGlobalToggle}
+            onBulkTopicListToggle={handleBulkTopicListToggle}
           />
         )}
 
