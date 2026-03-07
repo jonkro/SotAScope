@@ -547,12 +547,16 @@ export default function DiscussionPage() {
       for (const r of results) {
         map[r.work_id] = r.pdfs;
       }
+      const restored = restoredSelectionRef.current;
       setEntries((prev) =>
         prev.map((e) => {
           if (!(e.work_id in map)) return e;
           const pdfs = map[e.work_id];
           const canInclude = pdfs.some((p) => p.extraction_status === 'ready');
-          return { ...e, pdfs, pdfsLoaded: true, canInclude, included: canInclude };
+          // If a stored selection exists (returning to a locked discussion),
+          // honour it; otherwise auto-select all papers that have text.
+          const included = restored != null ? restored.has(e.work_id) : canInclude;
+          return { ...e, pdfs, pdfsLoaded: true, canInclude, included };
         }),
       );
     });
@@ -565,6 +569,17 @@ export default function DiscussionPage() {
 
   const [autoSessionId, setAutoSessionId] = useState<number | null>(null);
   const sessionInitialized = useRef(false);
+
+  // localStorage key for persisting paper selection for this project discussion.
+  const selKey = !isLibraryMode && projectId != null
+    ? `litexplorer:discuss:project:${projectId}:sel`
+    : null;
+
+  // When the auto-session is restored with messages, we need to honour the saved
+  // paper selection instead of auto-selecting everything.  This ref bridges the
+  // async race between session restore and PDF loading (whichever arrives second
+  // wins: the ref is checked in both places).
+  const restoredSelectionRef = useRef<Set<number> | null>(null);
 
   const getOrCreateAuto = useGetOrCreateAutoSession();
 
@@ -588,6 +603,20 @@ export default function DiscussionPage() {
             setMessages(
               session.messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
             );
+            // Restore paper selection if we have a stored one for this scope.
+            // The ref ensures the PDF-loading effect (which may run later) also
+            // sees the stored selection instead of auto-selecting everything.
+            if (selKey) {
+              const stored = localStorage.getItem(selKey);
+              if (stored) {
+                const storedIds = new Set<number>(JSON.parse(stored) as number[]);
+                restoredSelectionRef.current = storedIds;
+                // Apply immediately in case PDFs are already loaded.
+                setEntries((prev) =>
+                  prev.map((e) => (e.pdfsLoaded ? { ...e, included: storedIds.has(e.work_id) } : e))
+                );
+              }
+            }
           }
         },
       },
@@ -686,6 +715,12 @@ export default function DiscussionPage() {
     const text = input.trim();
     if (!text || chatDisabled) return;
 
+    // Persist the paper selection the first time a message is sent in this discussion
+    if (!isLibraryMode && !discussionActive && selKey) {
+      const selectedIds = entries.filter((e) => e.included).map((e) => e.work_id);
+      localStorage.setItem(selKey, JSON.stringify(selectedIds));
+    }
+
     const userMsg: ChatMessage = { role: 'user', content: text };
     const historyForApi = messages
       .filter((m) => m.role !== 'error')
@@ -763,6 +798,9 @@ export default function DiscussionPage() {
     setMessages([]);
     setSaveNoteForIdx(null);
     setConfirmClear(false);
+    // Clear persisted selection so the next discussion starts with a fresh slate
+    if (selKey) localStorage.removeItem(selKey);
+    restoredSelectionRef.current = null;
     if (autoSessionId != null) {
       clearMutation.mutate(autoSessionId);
     }
