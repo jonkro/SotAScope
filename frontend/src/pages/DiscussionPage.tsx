@@ -560,14 +560,14 @@ export default function DiscussionPage() {
 
   const getOrCreateAuto = useGetOrCreateAutoSession();
 
-  // On mount (once workId is known), get or create the auto-session and restore messages.
+  // The scope identifier: workId for library mode, projectId for project mode.
+  // The effect re-runs when this becomes non-null (params parsed by React Router).
+  const scopeKey = isLibraryMode ? workId : projectId;
+
+  // On mount (once the scope key is known), get or create the auto-session and restore messages.
   useEffect(() => {
     if (sessionInitialized.current) return;
-    const scopeWorkId = workId ?? (isLibraryMode ? null : null);
-    if (scopeWorkId == null && !isLibraryMode) return; // project mode — no workId needed for session
-    // For library mode we need workId; for project mode we also need workId from params.
-    // Both modes use workId (in library mode) or require workId to be set.
-    if (workId == null) return; // wait for workId
+    if (scopeKey == null) return; // wait for route params to resolve
     sessionInitialized.current = true;
 
     getOrCreateAuto.mutate(
@@ -584,9 +584,9 @@ export default function DiscussionPage() {
         },
       },
     );
-  // Only run when workId becomes known. projectId is stable.
+  // Re-run only when the scope key becomes known (stable after first render).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workId]);
+  }, [scopeKey]);
 
   // ---------------------------------------------------------------------------
   // Chat state
@@ -932,6 +932,43 @@ export default function DiscussionPage() {
 
         {/* Chat panel */}
         <div className="flex flex-col flex-1 min-w-0">
+
+          {/* Context annotation — paper(s) being discussed */}
+          {(isLibraryMode ? !!singleWork : true) && (
+            <div className="px-4 py-2 border-b border-slate-200 bg-slate-50 text-xs text-gray-600 shrink-0">
+              {isLibraryMode && singleWork ? (
+                <span>
+                  <span className="font-medium text-gray-800">
+                    {singleWork.title.length > 80 ? singleWork.title.slice(0, 77) + '…' : singleWork.title}
+                  </span>
+                  {singleWork.first_author_name && (
+                    <span className="text-gray-500">
+                      {' · '}{singleWork.first_author_name}{singleWork.author_count > 1 ? ' et al.' : ''}
+                    </span>
+                  )}
+                  {singleWork.publication_year && (
+                    <span className="text-gray-500"> · {singleWork.publication_year}</span>
+                  )}
+                </span>
+              ) : !isLibraryMode && includedPapers.length > 0 ? (
+                <span>
+                  <span className="font-medium text-gray-700">
+                    {includedPapers.length} paper{includedPapers.length !== 1 ? 's' : ''} selected:
+                  </span>
+                  {' '}
+                  {entries
+                    .filter((e) => e.included)
+                    .map((e) => `${e.title}${e.year ? ` (${e.year})` : ''}`)
+                    .join(' · ')
+                    .slice(0, 200) +
+                    (entries.filter((e) => e.included).map((e) => `${e.title}${e.year ? ` (${e.year})` : ''}`).join(' · ').length > 200 ? '…' : '')}
+                </span>
+              ) : !isLibraryMode ? (
+                <span className="text-gray-400 italic">No papers selected</span>
+              ) : null}
+            </div>
+          )}
+
           <div ref={threadRef} className="flex-1 overflow-y-auto p-4 space-y-4">
             {messages.length === 0 && (
               <p className="text-sm text-gray-400 text-center mt-8">

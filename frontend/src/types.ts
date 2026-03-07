@@ -361,7 +361,7 @@ export interface ChatSessionMessage {
 
 export interface ChatSessionOut {
   id: number;
-  work_id: number;
+  work_id: number | null;
   project_id: number | null;
   title: string | null;
   is_auto: boolean;

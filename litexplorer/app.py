@@ -166,7 +166,7 @@ def _migrate_schema() -> None:
             db.execute(text(
                 "CREATE TABLE chat_sessions ("
                 "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "  work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,"
+                "  work_id INTEGER REFERENCES works(id) ON DELETE CASCADE,"
                 "  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,"
                 "  title VARCHAR(256),"
                 "  is_auto BOOLEAN DEFAULT 1,"
@@ -175,6 +175,32 @@ def _migrate_schema() -> None:
                 ")"
             ))
             db.commit()
+        else:
+            # Make work_id nullable on existing databases (SQLite requires table rebuild).
+            col_rows = db.execute(text("PRAGMA table_info(chat_sessions)")).fetchall()
+            work_id_col = next((r for r in col_rows if r[1] == "work_id"), None)
+            if work_id_col is not None and work_id_col[3] == 1:  # notnull=1
+                db.execute(text("PRAGMA foreign_keys = OFF"))
+                db.execute(text(
+                    "CREATE TABLE chat_sessions_tmp ("
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "  work_id INTEGER REFERENCES works(id) ON DELETE CASCADE,"
+                    "  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,"
+                    "  title VARCHAR(256),"
+                    "  is_auto BOOLEAN DEFAULT 1,"
+                    "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                    "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    ")"
+                ))
+                db.execute(text(
+                    "INSERT INTO chat_sessions_tmp "
+                    "SELECT id, work_id, project_id, title, is_auto, created_at, updated_at "
+                    "FROM chat_sessions"
+                ))
+                db.execute(text("DROP TABLE chat_sessions"))
+                db.execute(text("ALTER TABLE chat_sessions_tmp RENAME TO chat_sessions"))
+                db.execute(text("PRAGMA foreign_keys = ON"))
+                db.commit()
 
         # Create chat_messages table if it doesn't exist
         if "chat_messages" not in existing_tables:

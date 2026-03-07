@@ -18,8 +18,8 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    work_id: Mapped[int] = mapped_column(
-        ForeignKey("works.id", ondelete="CASCADE"), nullable=False
+    work_id: Mapped[int | None] = mapped_column(
+        ForeignKey("works.id", ondelete="CASCADE"), nullable=True
     )
     project_id: Mapped[int | None] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=True

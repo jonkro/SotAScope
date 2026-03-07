@@ -15,8 +15,8 @@ export function useGetOrCreateAutoSession() {
 export function useListChatSessions(workId: number | null, projectId: number | null) {
   return useQuery({
     queryKey: ['chat-sessions', workId, projectId],
-    queryFn: () => listChatSessions(workId!, projectId),
-    enabled: workId != null,
+    queryFn: () => listChatSessions(workId, projectId),
+    enabled: workId != null || projectId != null,
   });
 }
 

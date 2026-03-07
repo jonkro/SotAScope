@@ -7,6 +7,12 @@ Endpoints:
   POST /api/chat/sessions/{id}/save        — snapshot as a named saved session
   DELETE /api/chat/sessions/{id}           — delete a session
   DELETE /api/chat/sessions/{id}/messages  — clear messages (reset auto-session)
+
+Scoping rules:
+  - Library mode: work_id set, project_id = None  → one auto-session per paper
+  - Project mode: work_id = None, project_id set  → one auto-session per project
+  - Paper-within-project: both set                → one auto-session per (paper, project)
+  work_id is nullable to support project-level discussions with no single paper.
 """
 
 from __future__ import annotations
@@ -41,7 +47,7 @@ class ChatSessionMessageOut(BaseModel):
 
 class ChatSessionOut(BaseModel):
     id: int
-    work_id: int
+    work_id: Optional[int]
     project_id: Optional[int]
     title: Optional[str]
     is_auto: bool
@@ -54,7 +60,7 @@ class ChatSessionOut(BaseModel):
 
 
 class AutoSessionRequest(BaseModel):
-    work_id: int
+    work_id: Optional[int] = None
     project_id: Optional[int] = None
 
 
@@ -91,20 +97,21 @@ def _session_out(session: ChatSession, include_messages: bool = True) -> ChatSes
 
 
 def _find_auto_session(
-    db: Session, work_id: int, project_id: int | None
+    db: Session, work_id: int | None, project_id: int | None
 ) -> ChatSession | None:
     """Return the auto-session for the given scope, or None if it doesn't exist."""
-    stmt = (
-        select(ChatSession)
-        .where(
-            ChatSession.work_id == work_id,
-            ChatSession.is_auto == True,  # noqa: E712
-        )
-    )
+    stmt = select(ChatSession).where(ChatSession.is_auto == True)  # noqa: E712
+
+    if work_id is None:
+        stmt = stmt.where(ChatSession.work_id.is_(None))
+    else:
+        stmt = stmt.where(ChatSession.work_id == work_id)
+
     if project_id is None:
         stmt = stmt.where(ChatSession.project_id.is_(None))
     else:
         stmt = stmt.where(ChatSession.project_id == project_id)
+
     return db.scalars(stmt).one_or_none()
 
 
@@ -117,10 +124,10 @@ def _find_auto_session(
 def get_or_create_auto_session(
     body: AutoSessionRequest, db: Session = Depends(get_db)
 ) -> ChatSessionOut:
-    """Return the auto-session for this work+project scope (creating one if needed).
+    """Return the auto-session for this scope (creating one if needed).
 
-    There is at most one auto-session per scope.  If one already exists it is
-    returned with all its messages.  If not, a new empty session is created.
+    Scope = (work_id, project_id).  At most one auto-session exists per scope.
+    Both fields are optional — project-mode discussions pass work_id=None.
     """
     existing = _find_auto_session(db, body.work_id, body.project_id)
     if existing is not None:
@@ -139,16 +146,27 @@ def get_or_create_auto_session(
 
 @router.get("/sessions", response_model=list[ChatSessionOut])
 def list_sessions(
-    work_id: int = Query(...),
+    work_id: Optional[int] = Query(None),
     project_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ) -> list[ChatSessionOut]:
-    """List all sessions (auto and saved) for a work+project scope, newest first."""
-    stmt = select(ChatSession).where(ChatSession.work_id == work_id)
+    """List all sessions (auto and saved) for a scope, newest first.
+
+    Scope is determined by work_id and/or project_id query params.
+    At least one must be provided.
+    """
+    stmt = select(ChatSession)
+
+    if work_id is None:
+        stmt = stmt.where(ChatSession.work_id.is_(None))
+    else:
+        stmt = stmt.where(ChatSession.work_id == work_id)
+
     if project_id is None:
         stmt = stmt.where(ChatSession.project_id.is_(None))
     else:
         stmt = stmt.where(ChatSession.project_id == project_id)
+
     stmt = stmt.order_by(ChatSession.updated_at.desc())
     sessions = db.scalars(stmt).all()
     return [_session_out(s, include_messages=False) for s in sessions]

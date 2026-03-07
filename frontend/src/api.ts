@@ -557,15 +557,16 @@ export function postLLMChat(data: {
 
 // ---- Chat Sessions ----
 
-export function getOrCreateAutoSession(data: { work_id: number; project_id: number | null }) {
+export function getOrCreateAutoSession(data: { work_id: number | null; project_id: number | null }) {
   return apiFetch<import('./types').ChatSessionOut>('/api/chat/sessions/auto', {
     method: 'POST',
     body: JSON.stringify(data),
   });
 }
 
-export function listChatSessions(workId: number, projectId: number | null) {
-  const params = new URLSearchParams({ work_id: String(workId) });
+export function listChatSessions(workId: number | null, projectId: number | null) {
+  const params = new URLSearchParams();
+  if (workId != null) params.set('work_id', String(workId));
   if (projectId != null) params.set('project_id', String(projectId));
   return apiFetch<import('./types').ChatSessionOut[]>(`/api/chat/sessions?${params}`);
 }

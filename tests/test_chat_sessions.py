@@ -336,6 +336,65 @@ def test_chat_with_session_id_auto_persists(client, db_session):
     assert msgs[1]["content"] == "This paper is about X."
 
 
+def test_auto_session_project_only_no_work(client, db_session):
+    """POST /auto with work_id=None creates a project-scoped session."""
+    project = Project(name="Test Project")
+    db_session.add(project)
+    db_session.commit()
+
+    resp = client.post("/api/chat/sessions/auto", json={"work_id": None, "project_id": project.id})
+    assert resp.status_code == 200
+    session = resp.json()
+    assert session["is_auto"] is True
+    assert session["work_id"] is None
+    assert session["project_id"] == project.id
+    assert session["message_count"] == 0
+
+    # Second call returns the same session
+    resp2 = client.post("/api/chat/sessions/auto", json={"work_id": None, "project_id": project.id})
+    assert resp2.status_code == 200
+    assert resp2.json()["id"] == session["id"]
+
+
+def test_list_sessions_project_only(client, db_session):
+    """GET /sessions?project_id=N with no work_id lists project-scoped sessions."""
+    project = Project(name="Proj")
+    db_session.add(project)
+    db_session.commit()
+
+    client.post("/api/chat/sessions/auto", json={"work_id": None, "project_id": project.id})
+
+    resp = client.get(f"/api/chat/sessions?project_id={project.id}")
+    assert resp.status_code == 200
+    sessions = resp.json()
+    assert len(sessions) == 1
+    assert sessions[0]["work_id"] is None
+    assert sessions[0]["project_id"] == project.id
+
+
+def test_save_session_project_only(client, db_session):
+    """Saving a project-only session (work_id=None) creates a named copy."""
+    project = Project(name="ProjSave")
+    db_session.add(project)
+    db_session.commit()
+
+    resp = client.post("/api/chat/sessions/auto", json={"work_id": None, "project_id": project.id})
+    session_id = resp.json()["id"]
+
+    db_session.add(ChatMessage(session_id=session_id, role="user", content="Q"))
+    db_session.add(ChatMessage(session_id=session_id, role="assistant", content="A"))
+    db_session.commit()
+
+    save_resp = client.post(f"/api/chat/sessions/{session_id}/save", json={"title": "Project discussion"})
+    assert save_resp.status_code == 200
+    saved = save_resp.json()
+    assert saved["is_auto"] is False
+    assert saved["title"] == "Project discussion"
+    assert saved["work_id"] is None
+    assert saved["project_id"] == project.id
+    assert saved["message_count"] == 2
+
+
 def test_chat_without_session_id_no_error(client, db_session):
     """POST /api/llm/chat without session_id still works (no persistence attempted)."""
     _seed_llm_settings(db_session)
