@@ -170,10 +170,11 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **Structured extraction run & review UI**: `ExtractionRunView` component in `ExtractionSchemasPage`; seed paper selector (searchable checkboxes from `useTimeline`); Extract button with per-paper progress indicator; confirmation dialog when re-running on papers with existing notes; results table (rows = papers, columns = schema columns). `ExtractionCell` component: answer text + `ProvenanceBadge` (ai=blue, ai_reviewed=purple, user=green) + ✓ Accept button (ai notes only, sets provenance to `ai_reviewed`) + ✎ Edit (inline — dropdown for constrained columns, textarea for free-form) + ⓘ reasoning toggle + ⚡ single-paper extract for empty cells. Re-extraction skips `ai_reviewed`/`user` notes and deletes+replaces `ai` notes (no duplicates). New endpoint: `GET /api/extraction/schemas/{id}/results?work_ids=1,2,3` → `ExtractionResultsResponse({cells: ExtractionCellResult[]})`. `WorkNoteUpdate` now accepts `provenance` field; explicit provenance overrides auto-upgrade logic. New types: `ExtractionCellResult`, `ExtractionResultsResponse`. New hooks: `useExtractionResults`, `useRunSingleExtraction`, `useRunBatchExtraction`, `useAcceptExtractionNote`, `useEditExtractionNote`.
 - **CSV and LaTeX export**: `GET /api/extraction/schemas/{id}/export?format=csv|latex&work_ids=1,2,3&column_ids=1,2` — download extraction results as a CSV spreadsheet or a LaTeX booktabs table. `work_ids` and `column_ids` are optional: omitting `work_ids` auto-discovers all works with notes for the schema. `litexplorer/services/extraction_export.py` — `export_as_csv()` and `export_as_latex()`; single-pass regex LaTeX escaping; constrained columns use `c` alignment + `\rotatebox{90}` header; free-text columns use `l`. Frontend: "Export CSV" and "Export LaTeX" buttons in `ExtractionRunView` action bar pass selected paper IDs. 28 tests in `tests/test_extraction_export.py`.
 - **Open-access PDF fetch**: `POST /api/works/{work_id}/pdfs/fetch` — fetches a PDF from arXiv (by `work.arxiv_id`) first, then Unpaywall (by `work.doi` + `api_contact_email` if configured). Returns `WorkPDFOut` (201) on success; 400 if the work has neither arXiv ID nor DOI; 404 if no OA source found; 502 if a URL was resolved but the download failed. Reuses `_register_and_extract_pdf()` helper (shared with manual upload; extracts text automatically). Client in `litexplorer/external/pdf_fetch.py` (`fetch_pdf_from_arxiv`, `fetch_pdf_url_from_unpaywall`, `fetch_pdf_from_url`, `fetch_pdf_for_work`, `PDFFetchError`). WorkDetailPanel PDFs section: "Fetch PDF" button with arXiv (blue) / Unpaywall (purple) source badges and inline success/warn/error message. 23 tests in `tests/test_pdf_fetch.py`.
+- **Per-paper chat with session persistence**: `DiscussionPage` at `/projects/:projectId/discuss` and `/works/:workId/discuss`; library mode (single paper) and project mode (multi-paper with context selector). `ChatSession` + `ChatMessage` models in `litexplorer/models/chat.py`; `litexplorer/api/chat.py` (prefix `/api/chat`) with get-or-create auto-session, list, load, save, delete, and clear-messages endpoints. `POST /api/llm/chat` accepts optional `session_id` and auto-saves both turns after each reply. On mount, `DiscussionPage` calls `POST /api/chat/sessions/auto` to restore the last conversation for the current scope; header toolbar has **Save** (prompts for title, creates a named snapshot), **Load** (modal with saved sessions), and **New Chat** (confirm → clears auto-session messages). At most one auto-session per `(work_id, project_id)` scope, enforced in application code. Sessions cascade-delete their messages. 12 tests in `tests/test_chat_sessions.py`.
 
 ### Not yet started
 
-- **Per-paper chat**: discuss a paper with an LLM to accelerate understanding
+- (All Phase 2 items are now implemented)
 
 ### Phase 2 design notes
 
@@ -181,7 +182,7 @@ Timeline settings (citations window, direction, candidates, hops, start year, ac
 - **WorkNote table is LLM-ready**: `provenance` ("user"/"ai"/"ai_reviewed") and `model_id` fields already exist. Per-paper chat turns or LLM summaries can be stored as WorkNotes. `project_id` scoping allows associating results with a specific project.
 - **`llm_base_url`**: optional. When set, overrides the provider's default cloud endpoint. Enables local inference servers (Ollama, vLLM, LM Studio, llama.cpp) that expose an OpenAI-compatible API (e.g., `http://localhost:11434/v1`). `llm_api_key` may be left blank when using a local endpoint.
 - **PDF vision mode (Anthropic-only)**: sending the PDF binary directly to the model (vision input) is only supported when `llm_provider = "anthropic"`. When any other provider is configured — including local OpenAI-compatible servers — the "use PDF" toggle in the per-paper chat UI is disabled and the fallback is extracted `.txt` text.
-- **Conversation history — stateless backend**: full conversation history is sent with every chat request; the backend does not persist conversation turns. Conversations are lost on page refresh. This is intentional for Phase 2.
+- **Conversation history — stateless LLM calls, persistent sessions**: full conversation history is sent with every LLM request (the model backend remains stateless). Chat sessions are persisted in the `ChatSession`/`ChatMessage` tables; the auto-session for each `(work_id, project_id)` scope is restored on page mount. Users can also save named session snapshots (Load them later as context to continue from).
 - **Structured extraction — tables now exist**: `ExtractionSchema` (title, description, nullable project_id) + `ExtractionColumn` (name, prompt, description, allowed_values JSON, sort_order). Results stored as `WorkNote` rows (`provenance="ai"`, `note_type="{schema.title} / {column.name}"`). CSV and LaTeX export available via `GET /api/extraction/schemas/{id}/export`.
 - **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
 - **Context window strategy**: typical extracted PDF text is 5k–40k tokens. Send abstract+title first; include full text only when available. For very long papers, consider truncating to the first N tokens or chunking by section.
@@ -228,6 +229,7 @@ litexplorer/
 │   ├── project.py        # Project, TopicList, TopicListWork, ProjectIgnoredWork
 │   ├── extraction.py     # ExtractionSchema (title, description, nullable project_id),
 │   │                     #   ExtractionColumn (name, prompt, description, allowed_values JSON, sort_order)
+│   ├── chat.py           # ChatSession (work_id, project_id, title, is_auto), ChatMessage (session_id, role, content)
 │   ├── cache.py          # ApiCache (permanent / timestamped)
 │   └── settings.py       # Setting (key-value store)
 ├── schemas/              # Pydantic v2 request/response models
@@ -263,6 +265,9 @@ litexplorer/
 │   ├── notes.py          # /api/projects/{id}/notes — project-scoped notes aggregation
 │   ├── settings.py       # /api/settings — key-value settings CRUD
 │   ├── filesystem.py     # /api/filesystem — directory browser + mkdir
+│   ├── llm.py            # /api/llm — model listing, POST /chat (session_id auto-saves turns)
+│   ├── chat.py           # /api/chat — session CRUD: POST /sessions/auto, GET/DELETE /sessions/{id},
+│   │                     #   POST /sessions/{id}/save, DELETE /sessions/{id}/messages, GET /sessions
 │   └── extraction.py     # /api/extraction — schema/column CRUD, extraction execution,
 │                         #   GET /schemas/{id}/results?work_ids=... (ExtractionResultsResponse)
 │                         #   GET /schemas/{id}/export?format=csv|latex (CSV/LaTeX download)
@@ -314,6 +319,8 @@ frontend/src/
 │   ├── useWorkPDFs.ts    # useWorkPDFs(), useUploadWorkPDF(), useSetWorkPDFPrimary(),
 │   │                     #   useDeleteWorkPDF(), useExtractWorkPDFText(), useFetchWorkPDF()
 │   ├── useSettings.ts
+│   ├── useChatSessions.ts # useGetOrCreateAutoSession(), useListChatSessions(), useGetChatSession(),
+│   │                      #   useSaveChatSession(), useDeleteChatSession(), useClearChatMessages()
 │   └── useExtraction.ts  # useExtractionSchemas(), useExtractionSchema(),
 │                         #   useCreateExtractionSchema(), useUpdateExtractionSchema(),
 │                         #   useDeleteExtractionSchema(), useCreateExtractionColumn(),
@@ -327,6 +334,8 @@ frontend/src/
 │   │                            #   "Extraction Tables" button → /projects/:id/extraction
 │   ├── ExtractionSchemasPage.tsx # Schema list / new-schema form / schema editor (Schema + Extract & Review tabs)
 │   │                            #   ExtractionRunView, ExtractionCell, ProvenanceBadge, ColumnFormModal
+│   ├── DiscussionPage.tsx       # Per-paper + per-project LLM chat; session restore on mount;
+│   │                            #   Save/Load/New Chat toolbar; PaperContextSelector (project mode)
 │   ├── LibraryPage.tsx          # Work listing with search, pagination, venue filter
 │   ├── VenuesPage.tsx           # Venues tab (sortable table) + Fields tab (CRUD with delete)
 │   └── SettingsPage.tsx         # Database-stored settings editor + PDF folder browser
@@ -371,6 +380,7 @@ tests/
 ├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints (34 tests)
 ├── test_extraction_export.py  # CSV/LaTeX export service unit tests + API endpoint tests (28 tests)
 ├── test_pdf_fetch.py          # OA PDF fetch: arXiv, Unpaywall, fetch_pdf_for_work, API endpoint (23 tests)
+├── test_chat_sessions.py      # Chat session CRUD, auto-session uniqueness, save/load/clear, chat auto-persist (12 tests)
 └── fixtures/
     ├── openalex_responses.py  # Sample API response fixtures
     ├── generate_fixtures.py   # One-off script to regenerate synthetic PDF fixtures (fpdf2 + matplotlib)
@@ -384,7 +394,7 @@ tests/
 ## Startup lifecycle (app.py lifespan)
 
 1. `init_db()` — create engine and tables
-2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois, extraction_schemas, extraction_columns)
+2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois, extraction_schemas, extraction_columns, chat_sessions, chat_messages)
 3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
 4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, `s2_api_key`, `llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`, `llm_system_prompt_prefix` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
@@ -438,6 +448,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Multi-DOI support added**: A work can have multiple valid DOIs. Primary DOI stays on `Work.doi`; secondary DOIs use the new `WorkDOI` table. `doi_aliases` included in `WorkOut`. WorkDetailPanel allows editing the primary DOI and managing secondary DOIs, with a Jaccard title-similarity check against the DOI's resolved title to warn about mismatches.
 - **Structured extraction added**: `ExtractionSchema` + `ExtractionColumn` models, full CRUD API at `/api/extraction`, and `litexplorer/services/extraction.py`. Results stored as `WorkNote` rows (provenance tracking built-in). Frontend `ExtractionSchemasPage` provides schema management and an Extract & Review tab for running extraction against project seed papers and reviewing/accepting/editing results. CSV and LaTeX export implemented via `GET /api/extraction/schemas/{id}/export?format=csv|latex`; 28 tests in `tests/test_extraction_export.py`.
 - **Open-access PDF fetch added**: Not in original spec. One-click fetch of PDFs from arXiv (by `arxiv_id`) and Unpaywall (by DOI). Integrated into WorkDetailPanel alongside manual upload. arXiv fetch requires no auth; Unpaywall fetch requires `api_contact_email` to be configured (the same setting used for OpenAlex/Crossref polite pool). `_register_and_extract_pdf()` helper extracted from upload flow so both paths share the save-to-disk + WorkPDF creation + text extraction logic.
+- **Per-paper chat added with session persistence**: Not in original spec. `DiscussionPage` replaces the "stateless chat" Phase 2 stub with full session persistence. `ChatSession` + `ChatMessage` tables store conversations scoped by `(work_id, project_id)`. The auto-session is automatically restored on mount; a toolbar provides Save (named snapshot), Load (modal), and New Chat (clears auto-session). The LLM backend remains stateless (full history sent per request), but the session layer persists all turns to SQLite.
 
 ---
 
@@ -447,7 +458,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 - **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
-- **LLM Phase 2 remaining work**: structured extraction (run UI + CSV/LaTeX export) is complete. Remaining: per-paper chat (store conversation turns as WorkNotes). Design constraints: stateless backend (full history sent per request), PDF vision Anthropic-only, local server auth (most local servers accept `Bearer local` from the openai SDK).
+- **Phase 2 complete**: all planned Phase 2 features (LLM configuration, structured extraction, per-paper chat with session persistence) are implemented. No remaining Phase 2 items.
 - **Unpaywall requires contact email**: OA PDF fetch via Unpaywall is only attempted when `api_contact_email` is configured in Settings. Without it, only arXiv is tried (works that have `arxiv_id`). Works that have only a DOI but no `arxiv_id` and no configured email will return 404 from the fetch endpoint.
 - **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 
@@ -456,7 +467,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (316 tests)
+python -m pytest tests/ -v          # all tests (328 tests)
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 
