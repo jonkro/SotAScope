@@ -219,7 +219,12 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         if session is not None and session.context_id is not None:
             schema = db.get(_ExtractionSchema, session.context_id)
 
-        system_prompt = build_schema_discussion_prompt(schema, system_prefix=system_prefix)
+        system_prompt = build_schema_discussion_prompt(
+            schema,
+            system_prefix=system_prefix,
+            provider=provider,
+            model_id=model_id,
+        )
 
     try:
         llm_client = make_llm_client(provider, api_key, model_id, base_url)

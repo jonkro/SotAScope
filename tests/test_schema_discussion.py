@@ -11,9 +11,9 @@ Covers:
   8. POST /api/llm/chat — normal paper mode unaffected (no session)
   9. GET /api/extraction/schemas/{id}/summary — returns schema + columns
  10. GET /api/extraction/schemas/{id}/summary — 404 for unknown schema
- 11. parse_column_proposals — single valid block
+ 11. parse_column_proposals — single valid block → fenced_block strategy
  12. parse_column_proposals — multiple blocks in one response
- 13. parse_column_proposals — no blocks → empty list
+ 13. parse_column_proposals — no blocks → empty list, "failed"
  14. parse_column_proposals — malformed JSON → skipped
  15. parse_column_proposals — missing name/prompt → skipped; missing description/allowed_values → defaults
  16. parse_column_proposals — missing closing fence (lenient)
@@ -23,6 +23,22 @@ Covers:
  20. POST /api/extraction/schemas/from-discussion — creates schema, returns it
  21. POST /api/extraction/schemas/from-discussion — with project_id
  22. POST /api/extraction/schemas/from-discussion — missing title → 422
+ 23. parse_column_proposals — thinking tags stripped; fenced block inside still parsed
+ 24. parse_column_proposals — ```json fenced block → json_fence strategy
+ 25. parse_column_proposals — bare JSON object in prose → bare_json strategy
+ 26. parse_column_proposals — JSON array of proposals → bare_json strategy
+ 27. parse_column_proposals — field name variants (question/values/title) mapped correctly
+ 28. parse_column_proposals — allowed_values as comma-separated string normalized to list
+ 29. parse_column_proposals — allowed_values null-like string normalized to None
+ 30. parse_column_proposals — markdown key-value list → markdown_list strategy
+ 31. parse_column_proposals — completely non-compliant response → empty list, "failed"
+ 32. parse_column_proposals — malformed JSON (missing closing brace) → no crash
+ 33. parse_column_proposals — returns tuple (list, str) — verify shape
+ 34. parse_column_proposals — wrapper key "proposals" in JSON object → multiple proposals
+ 35. build_schema_discussion_prompt — FORMAT CRITICAL added for local/non-GPT model
+ 36. build_schema_discussion_prompt — FORMAT CRITICAL not added for gpt- model
+ 37. build_schema_discussion_prompt — FORMAT CRITICAL not added for anthropic model
+ 38. build_schema_discussion_prompt — concrete realistic example present in prompt
 """
 
 from __future__ import annotations
@@ -262,7 +278,7 @@ def test_get_schema_summary_not_found(client, db_session):
 
 
 def test_parse_single_valid_proposal():
-    """A single well-formed column-proposal block is returned."""
+    """A single well-formed column-proposal block is returned via fenced_block strategy."""
     response = (
         "Here is my suggestion:\n\n"
         "```column-proposal\n"
@@ -270,7 +286,8 @@ def test_parse_single_valid_proposal():
         '"description": "The ML method", "allowed_values": null}\n'
         "```"
     )
-    proposals = parse_column_proposals(response)
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
     assert len(proposals) == 1
     p = proposals[0]
     assert p["name"] == "Method"
@@ -292,7 +309,8 @@ def test_parse_multiple_proposals():
         '"allowed_values": ["CIFAR", "ImageNet"]}\n'
         "```"
     )
-    proposals = parse_column_proposals(response)
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
     assert len(proposals) == 2
     assert proposals[0]["name"] == "Method"
     assert proposals[1]["name"] == "Dataset"
@@ -300,13 +318,15 @@ def test_parse_multiple_proposals():
 
 
 def test_parse_no_proposals_returns_empty():
-    """A response with no column-proposal blocks returns an empty list."""
+    """A response with no column-proposal blocks returns an empty list with method 'failed'."""
     response = "I'd be happy to help! What's your research topic?"
-    assert parse_column_proposals(response) == []
+    proposals, method = parse_column_proposals(response)
+    assert proposals == []
+    assert method == "failed"
 
 
 def test_parse_malformed_json_block_skipped():
-    """A block with invalid JSON is silently skipped."""
+    """A column-proposal block with invalid JSON is silently skipped."""
     response = (
         "```column-proposal\n"
         "this is not json\n"
@@ -315,7 +335,8 @@ def test_parse_malformed_json_block_skipped():
         '{"name": "Good", "prompt": "Fine?", "description": "", "allowed_values": null}\n'
         "```"
     )
-    proposals = parse_column_proposals(response)
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
     assert len(proposals) == 1
     assert proposals[0]["name"] == "Good"
 
@@ -336,7 +357,8 @@ def test_parse_missing_name_or_prompt_skipped_missing_optional_fields_defaulted(
         '{"name": "Complete", "prompt": "Is it complete?"}\n'
         "```"
     )
-    proposals = parse_column_proposals(response)
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
     assert len(proposals) == 1
     p = proposals[0]
     assert p["name"] == "Complete"
@@ -352,7 +374,8 @@ def test_parse_missing_closing_fence_accepted():
         '"description": "Lenient", "allowed_values": null}'
         # intentionally no closing ```
     )
-    proposals = parse_column_proposals(response)
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
     assert len(proposals) == 1
     assert proposals[0]["name"] == "OpenEnded"
 
@@ -447,3 +470,268 @@ def test_create_schema_from_discussion_missing_title_returns_422(client, db_sess
         json={"description": "No title provided"},
     )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 23–34: Multi-strategy parse_column_proposals tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_thinking_tags_stripped():
+    """<think>...</think> tags are stripped; the fenced block inside is still parsed."""
+    response = (
+        "<think>Let me think about what column to propose...</think>\n"
+        "Here is my suggestion:\n\n"
+        "```column-proposal\n"
+        '{"name": "Method", "prompt": "What method is used?", '
+        '"description": "The ML method", "allowed_values": null}\n'
+        "```"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
+    assert len(proposals) == 1
+    assert proposals[0]["name"] == "Method"
+
+
+def test_parse_thinking_tags_only_wrapper_for_reasoning_model():
+    """A full <thinking> block followed by a proposal block is parsed correctly."""
+    response = (
+        "<thinking>\n"
+        "The researcher is studying network protocols. I should suggest columns about\n"
+        "packet size, latency, and error rates.\n"
+        "</thinking>\n"
+        "I suggest starting with a column about packet size:\n\n"
+        "```column-proposal\n"
+        '{"name": "Packet Size", "prompt": "What is the typical packet size used?", '
+        '"description": "Network packet size in bytes", "allowed_values": null}\n'
+        "```"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
+    assert len(proposals) == 1
+    assert proposals[0]["name"] == "Packet Size"
+
+
+def test_parse_json_fence_strategy():
+    """A ```json fenced block containing a proposal is parsed via json_fence strategy."""
+    response = (
+        "Here is the column I'd propose:\n\n"
+        "```json\n"
+        '{"name": "Sample Size", "prompt": "How many participants?", '
+        '"description": "Number of subjects", "allowed_values": null}\n'
+        "```"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "json_fence"
+    assert len(proposals) == 1
+    assert proposals[0]["name"] == "Sample Size"
+    assert proposals[0]["prompt"] == "How many participants?"
+
+
+def test_parse_bare_json_object_in_prose():
+    """A bare JSON object embedded in prose is parsed via bare_json strategy."""
+    response = (
+        "I think you should add this column: "
+        '{"name": "Evaluation Metric", "prompt": "What metric is used?", '
+        '"description": "Primary evaluation metric", "allowed_values": null}'
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "bare_json"
+    assert len(proposals) == 1
+    assert proposals[0]["name"] == "Evaluation Metric"
+
+
+def test_parse_json_array_of_proposals():
+    """A JSON array of proposal objects is parsed via bare_json strategy."""
+    response = (
+        "Here are some columns I'd suggest:\n\n"
+        '[{"name": "Method", "prompt": "What method?", "description": "ML method"}, '
+        '{"name": "Dataset", "prompt": "What dataset?", "description": "Eval data"}]'
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "bare_json"
+    assert len(proposals) == 2
+    assert proposals[0]["name"] == "Method"
+    assert proposals[1]["name"] == "Dataset"
+
+
+def test_parse_json_wrapper_key():
+    """A JSON object with a 'proposals' wrapper key yields all contained proposals."""
+    response = (
+        '{"proposals": ['
+        '{"name": "A", "prompt": "Question A?"}, '
+        '{"name": "B", "prompt": "Question B?", "allowed_values": ["Yes", "No"]}'
+        "]}"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "bare_json"
+    assert len(proposals) == 2
+    assert proposals[0]["name"] == "A"
+    assert proposals[1]["allowed_values"] == ["Yes", "No"]
+
+
+def test_parse_field_variant_question_for_prompt():
+    """Field name 'question' is mapped to 'prompt'."""
+    response = (
+        "```column-proposal\n"
+        '{"name": "Accuracy", "question": "What accuracy is reported?"}\n'
+        "```"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
+    assert len(proposals) == 1
+    assert proposals[0]["prompt"] == "What accuracy is reported?"
+
+
+def test_parse_field_variant_title_for_name():
+    """Field name 'title' is mapped to 'name'."""
+    response = (
+        '{"title": "Latency", "prompt": "What is the reported latency?", '
+        '"description": "End-to-end latency"}'
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "bare_json"
+    assert len(proposals) == 1
+    assert proposals[0]["name"] == "Latency"
+
+
+def test_parse_field_variant_values_for_allowed_values():
+    """Field name 'values' is mapped to 'allowed_values'."""
+    response = (
+        "```column-proposal\n"
+        '{"name": "Supervised", "prompt": "Is the method supervised?", '
+        '"values": ["Yes", "No", "Partially"]}\n'
+        "```"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
+    assert len(proposals) == 1
+    assert proposals[0]["allowed_values"] == ["Yes", "No", "Partially"]
+
+
+def test_parse_allowed_values_comma_string_normalized():
+    """allowed_values given as a comma-separated string is normalized to a list."""
+    response = (
+        "```column-proposal\n"
+        '{"name": "Scale", "prompt": "What scale?", "allowed_values": "small, medium, large"}\n'
+        "```"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "fenced_block"
+    assert len(proposals) == 1
+    assert proposals[0]["allowed_values"] == ["small", "medium", "large"]
+
+
+def test_parse_allowed_values_null_like_string_normalized():
+    """allowed_values of 'null', 'N/A', or empty string are normalized to None."""
+    for null_str in ("null", "none", "N/A", "free-form", ""):
+        response = (
+            "```column-proposal\n"
+            f'{{"name": "X", "prompt": "X?", "allowed_values": "{null_str}"}}\n'
+            "```"
+        )
+        proposals, _ = parse_column_proposals(response)
+        assert len(proposals) == 1, f"failed for null_str={null_str!r}"
+        assert proposals[0]["allowed_values"] is None, f"expected None for {null_str!r}"
+
+
+def test_parse_markdown_list_strategy():
+    """A markdown key-value list is parsed via markdown_list strategy."""
+    response = (
+        "Here is my proposal:\n\n"
+        "**Name**: Sample Size\n"
+        "**Prompt**: How many participants are in the study?\n"
+        "**Description**: Number of subjects or data points\n"
+        "**Allowed Values**: small, medium, large\n"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "markdown_list"
+    assert len(proposals) == 1
+    assert proposals[0]["name"] == "Sample Size"
+    assert proposals[0]["prompt"] == "How many participants are in the study?"
+    assert proposals[0]["allowed_values"] == ["small", "medium", "large"]
+
+
+def test_parse_completely_non_compliant_returns_empty():
+    """A completely non-compliant response returns empty list with method 'failed'."""
+    response = (
+        "I can help you design a schema! What is your research topic?\n"
+        "Here are some ideas to consider: methodology, evaluation, limitations, etc.\n"
+        "Just let me know what you'd like to extract."
+    )
+    proposals, method = parse_column_proposals(response)
+    assert proposals == []
+    assert method == "failed"
+
+
+def test_parse_malformed_bare_json_no_crash():
+    """Malformed JSON (missing closing brace) does not raise; returns empty or partial."""
+    response = (
+        'Here: {"name": "X", "prompt": "Y?"'
+        # intentionally no closing }
+    )
+    # Must not raise
+    proposals, method = parse_column_proposals(response)
+    # If it managed to parse something, great; if not, must be empty/failed
+    assert isinstance(proposals, list)
+    assert isinstance(method, str)
+
+
+def test_parse_returns_tuple_with_method_string():
+    """parse_column_proposals always returns a (list, str) tuple."""
+    for response in [
+        "Nothing here",
+        '{"name": "X", "prompt": "Y?"}',
+        "```column-proposal\n{}\n```",
+    ]:
+        result = parse_column_proposals(response)
+        assert isinstance(result, tuple) and len(result) == 2
+        proposals, method = result
+        assert isinstance(proposals, list)
+        assert isinstance(method, str)
+
+
+# ---------------------------------------------------------------------------
+# 35–38: build_schema_discussion_prompt — new param and format tests
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_format_critical_added_for_local_model(db_session):
+    """[FORMAT CRITICAL] block is present when provider='openai' and model is not gpt-."""
+    prompt = build_schema_discussion_prompt(
+        None,
+        provider="openai",
+        model_id="llama3:8b",
+    )
+    assert "[FORMAT CRITICAL]" in prompt
+
+
+def test_prompt_format_critical_not_added_for_gpt_model(db_session):
+    """[FORMAT CRITICAL] block is absent for official gpt- models."""
+    prompt = build_schema_discussion_prompt(
+        None,
+        provider="openai",
+        model_id="gpt-4o",
+    )
+    assert "[FORMAT CRITICAL]" not in prompt
+
+
+def test_prompt_format_critical_not_added_for_anthropic(db_session):
+    """[FORMAT CRITICAL] block is absent for anthropic provider."""
+    prompt = build_schema_discussion_prompt(
+        None,
+        provider="anthropic",
+        model_id="claude-opus-4-6",
+    )
+    assert "[FORMAT CRITICAL]" not in prompt
+
+
+def test_prompt_contains_concrete_example(db_session):
+    """The system prompt includes a concrete realistic example of a column-proposal block."""
+    prompt = build_schema_discussion_prompt(None)
+    # The concrete 'Sample Size' example should appear
+    assert "Sample Size" in prompt
+    # Bookend reminder is present
+    assert "Remember:" in prompt
+    # Negative instructions are present
+    assert "Do NOT" in prompt
