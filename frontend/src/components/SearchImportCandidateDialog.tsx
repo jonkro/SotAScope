@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { searchImportConfirm } from '../api';
-import type { SearchImportCandidate } from '../types';
+import type { SearchImportCandidate, WorkOut } from '../types';
 
 interface Props {
   candidates: SearchImportCandidate[];
   onClose: () => void;
-  onImported: (title: string) => void;
+  onImported: (work: WorkOut) => void;
 }
 
 export default function SearchImportCandidateDialog({ candidates, onClose, onImported }: Props) {
@@ -19,7 +19,7 @@ export default function SearchImportCandidateDialog({ candidates, onClose, onImp
       searchImportConfirm({ doi: candidate.doi, semantic_scholar_id: candidate.semantic_scholar_id }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['works'] });
-      onImported(data.work.title);
+      onImported(data.work);
     },
     onError: (err) => {
       const msg = err instanceof Error ? err.message : String(err);

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { enrichDOI, enrichDOIBatch, importBibtex, resolveDOIBatch, searchImportCandidates } from '../api';
-import type { DOIResolutionResult, SearchImportCandidate } from '../types';
+import type { DOIResolutionResult, SearchImportCandidate, TopicListOut, WorkOut } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 import SearchImportCandidateDialog from './SearchImportCandidateDialog';
 
@@ -29,7 +29,15 @@ function formatError(err: unknown): string {
   return `Error: ${msg}`;
 }
 
-export default function ImportDialog({ onClose }: { onClose: () => void }) {
+interface Props {
+  onClose: () => void;
+  /** When provided, shows a topic list assignment step after each successful import. */
+  projectTopicLists?: TopicListOut[];
+  /** Called for each (topicListId, workId) pair the user selects; handles assignment + enrichment. */
+  onAddToTopicList?: (topicListId: number, workId: number) => void;
+}
+
+export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicList }: Props) {
   const [tab, setTab] = useState<Tab>('doi');
   const [doiInput, setDoiInput] = useState('');
   const [bibtexInput, setBibtexInput] = useState('');
@@ -44,7 +52,23 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
   const [searchCandidates, setSearchCandidates] = useState<SearchImportCandidate[] | null>(null);
   const [importedTitle, setImportedTitle] = useState<string | null>(null);
 
+  // Project context: assign step
+  const [showAssign, setShowAssign] = useState(false);
+  const [assignWorkIds, setAssignWorkIds] = useState<number[]>([]);
+  // Work IDs waiting for DOI resolution to complete (BibTeX flow)
+  const [pendingBibtexWorkIds, setPendingBibtexWorkIds] = useState<number[] | null>(null);
+  const [selectedTopicListIds, setSelectedTopicListIds] = useState<Set<number>>(new Set());
+
   const qc = useQueryClient();
+
+  const inProjectContext = !!projectTopicLists && !!onAddToTopicList;
+
+  function maybeTransitionToAssign(workIds: number[]) {
+    if (inProjectContext && workIds.length > 0) {
+      setAssignWorkIds(workIds);
+      setShowAssign(true);
+    }
+  }
 
   const doiMutation = useMutation({
     mutationFn: async () => {
@@ -55,7 +79,10 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
       if (dois.length === 0) throw new Error('Enter at least one DOI');
       if (dois.length === 1) {
         const r = await enrichDOI(dois[0]);
-        return `Imported: "${r.work.title}"${r.cached ? ' (cached)' : ''}`;
+        return {
+          msg: `Imported: "${r.work.title}"${r.cached ? ' (cached)' : ''}`,
+          workIds: [r.work.id],
+        };
       }
       const r = await enrichDOIBatch(dois);
       const parts: string[] = [];
@@ -64,11 +91,12 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
       if (r.errors.length > 0) {
         parts.push('\nErrors:\n' + r.errors.map((e) => `  ${e.doi}: ${e.error}`).join('\n'));
       }
-      return parts.join(', ');
+      return { msg: parts.join(', '), workIds: r.results.map((res) => res.work.id) };
     },
-    onSuccess: (msg) => {
+    onSuccess: ({ msg, workIds }) => {
       setResult(msg);
       qc.invalidateQueries({ queryKey: ['works'] });
+      maybeTransitionToAssign(workIds);
     },
     onError: (err) => setResult(formatError(err)),
   });
@@ -81,6 +109,8 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
     onSuccess: async (data) => {
       let msg = `Imported ${data.imported} works, skipped ${data.skipped}`;
       qc.invalidateQueries({ queryKey: ['works'] });
+
+      const importedIds = data.works.map((w) => w.id);
 
       if (data.needs_doi_resolution.length > 0) {
         setIsResolving(true);
@@ -98,16 +128,24 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
           qc.invalidateQueries({ queryKey: ['works'] });
 
           if (needsConfirm.length > 0) {
+            // Save work IDs to assign after the DOI resolution dialog closes
+            if (inProjectContext && importedIds.length > 0) {
+              setPendingBibtexWorkIds(importedIds);
+            }
             setDoiResolutionResults(results);
+          } else {
+            maybeTransitionToAssign(importedIds);
           }
         } catch (err) {
           msg += `\nDOI resolution error: ${formatError(err)}`;
           setResult(msg);
+          maybeTransitionToAssign(importedIds);
         } finally {
           setIsResolving(false);
         }
       } else {
         setResult(msg);
+        maybeTransitionToAssign(importedIds);
       }
     },
     onError: (err) => setResult(formatError(err)),
@@ -138,6 +176,23 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
     setImportedTitle(null);
   }
 
+  function handleAssign() {
+    for (const tlId of selectedTopicListIds) {
+      for (const wId of assignWorkIds) {
+        onAddToTopicList!(tlId, wId);
+      }
+    }
+    onClose();
+  }
+
+  function toggleTopicList(tlId: number, checked: boolean) {
+    setSelectedTopicListIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(tlId); else next.delete(tlId);
+      return next;
+    });
+  }
+
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -146,143 +201,199 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center justify-between px-6 pt-5 pb-3">
-            <h2 className="text-lg font-semibold text-gray-900">Import Works</h2>
+            <h2 className="text-lg font-semibold text-gray-900">
+              {showAssign ? 'Add to Topic Lists' : 'Import Works'}
+            </h2>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
           </div>
 
-          {/* Tabs */}
-          <div className="flex border-b border-gray-200 px-6">
-            <button
-              onClick={() => switchTab('doi')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 ${
-                tab === 'doi' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              DOI Import
-            </button>
-            <button
-              onClick={() => switchTab('bibtex')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 ${
-                tab === 'bibtex' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              BibTeX Import
-            </button>
-            <button
-              onClick={() => switchTab('search')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 ${
-                tab === 'search' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Search by Title
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-6 py-4">
-            {tab === 'doi' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  DOIs (one per line, or comma-separated)
-                </label>
-                <textarea
-                  rows={5}
-                  value={doiInput}
-                  onChange={(e) => setDoiInput(e.target.value)}
-                  placeholder="10.1145/1234567.1234568&#10;10.1109/TNET.2020.1234567"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
-                />
-                <button
-                  onClick={() => doiMutation.mutate()}
-                  disabled={isPending}
-                  className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {doiMutation.isPending ? 'Importing...' : 'Import DOIs'}
-                </button>
-              </div>
-            )}
-
-            {tab === 'bibtex' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">BibTeX content</label>
-                <textarea
-                  rows={8}
-                  value={bibtexInput}
-                  onChange={(e) => setBibtexInput(e.target.value)}
-                  placeholder="@article{key, ...}"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
-                />
-                <button
-                  onClick={() => bibtexMutation.mutate()}
-                  disabled={isPending}
-                  className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {bibtexMutation.isPending ? 'Importing...' : isResolving ? 'Resolving DOIs...' : 'Import BibTeX'}
-                </button>
-              </div>
-            )}
-
-            {tab === 'search' && (
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Title <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={searchTitle}
-                    onChange={(e) => setSearchTitle(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && searchTitle.trim()) searchMutation.mutate(); }}
-                    placeholder="e.g. Attention Is All You Need"
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
-                  />
+          {showAssign ? (
+            /* ---- Assign step ---- */
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <p className="text-sm text-gray-600 mb-4">
+                {assignWorkIds.length} paper{assignWorkIds.length !== 1 ? 's' : ''} imported.
+                Select topic lists to add {assignWorkIds.length !== 1 ? 'them' : 'it'} to:
+              </p>
+              {projectTopicLists!.length === 0 ? (
+                <p className="text-sm text-gray-400 italic">No topic lists in this project yet.</p>
+              ) : (
+                <div className="space-y-1">
+                  {projectTopicLists!.map((tl) => (
+                    <label
+                      key={tl.id}
+                      className="flex items-center gap-3 px-3 py-2 rounded hover:bg-gray-50 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedTopicListIds.has(tl.id)}
+                        onChange={(e) => toggleTopicList(tl.id, e.target.checked)}
+                        className="rounded"
+                      />
+                      <span
+                        className="w-3 h-3 rounded-sm shrink-0 border border-black/10"
+                        style={{ backgroundColor: tl.color }}
+                      />
+                      <span className="text-sm text-gray-700">{tl.name}</span>
+                    </label>
+                  ))}
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Authors <span className="text-gray-400 font-normal">(optional)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={searchAuthors}
-                    onChange={(e) => setSearchAuthors(e.target.value)}
-                    placeholder="e.g. Vaswani Shazeer"
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Year <span className="text-gray-400 font-normal">(optional)</span>
-                  </label>
-                  <input
-                    type="number"
-                    value={searchYear}
-                    onChange={(e) => setSearchYear(e.target.value)}
-                    placeholder="e.g. 2017"
-                    min={1900}
-                    max={2100}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
-                  />
-                </div>
-                {importedTitle && (
-                  <div className="p-3 bg-green-50 border border-green-200 rounded text-sm text-green-700">
-                    Imported: &ldquo;{importedTitle}&rdquo;
-                  </div>
-                )}
+              )}
+              <div className="flex items-center gap-3 mt-6">
                 <button
-                  onClick={() => searchMutation.mutate()}
-                  disabled={isPending || !searchTitle.trim()}
+                  onClick={handleAssign}
+                  disabled={selectedTopicListIds.size === 0}
                   className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {searchMutation.isPending ? 'Searching...' : 'Search'}
+                  {selectedTopicListIds.size > 0
+                    ? `Add to ${selectedTopicListIds.size} list${selectedTopicListIds.size !== 1 ? 's' : ''}`
+                    : 'Add to selected lists'}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                >
+                  Skip
                 </button>
               </div>
-            )}
+            </div>
+          ) : (
+            /* ---- Normal import step ---- */
+            <>
+              {/* Tabs */}
+              <div className="flex border-b border-gray-200 px-6">
+                <button
+                  onClick={() => switchTab('doi')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                    tab === 'doi' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  DOI Import
+                </button>
+                <button
+                  onClick={() => switchTab('bibtex')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                    tab === 'bibtex' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  BibTeX Import
+                </button>
+                <button
+                  onClick={() => switchTab('search')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                    tab === 'search' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Search by Title
+                </button>
+              </div>
 
-            {result && (
-              <pre className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded text-sm text-gray-700 whitespace-pre-wrap">
-                {result}
-              </pre>
-            )}
-          </div>
+              <div className="flex-1 overflow-y-auto px-6 py-4">
+                {tab === 'doi' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      DOIs (one per line, or comma-separated)
+                    </label>
+                    <textarea
+                      rows={5}
+                      value={doiInput}
+                      onChange={(e) => setDoiInput(e.target.value)}
+                      placeholder="10.1145/1234567.1234568&#10;10.1109/TNET.2020.1234567"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                    />
+                    <button
+                      onClick={() => doiMutation.mutate()}
+                      disabled={isPending}
+                      className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {doiMutation.isPending ? 'Importing...' : 'Import DOIs'}
+                    </button>
+                  </div>
+                )}
+
+                {tab === 'bibtex' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">BibTeX content</label>
+                    <textarea
+                      rows={8}
+                      value={bibtexInput}
+                      onChange={(e) => setBibtexInput(e.target.value)}
+                      placeholder="@article{key, ...}"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                    />
+                    <button
+                      onClick={() => bibtexMutation.mutate()}
+                      disabled={isPending}
+                      className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {bibtexMutation.isPending ? 'Importing...' : isResolving ? 'Resolving DOIs...' : 'Import BibTeX'}
+                    </button>
+                  </div>
+                )}
+
+                {tab === 'search' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Title <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={searchTitle}
+                        onChange={(e) => setSearchTitle(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && searchTitle.trim()) searchMutation.mutate(); }}
+                        placeholder="e.g. Attention Is All You Need"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Authors <span className="text-gray-400 font-normal">(optional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={searchAuthors}
+                        onChange={(e) => setSearchAuthors(e.target.value)}
+                        placeholder="e.g. Vaswani Shazeer"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Year <span className="text-gray-400 font-normal">(optional)</span>
+                      </label>
+                      <input
+                        type="number"
+                        value={searchYear}
+                        onChange={(e) => setSearchYear(e.target.value)}
+                        placeholder="e.g. 2017"
+                        min={1900}
+                        max={2100}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
+                      />
+                    </div>
+                    {importedTitle && (
+                      <div className="p-3 bg-green-50 border border-green-200 rounded text-sm text-green-700">
+                        Imported: &ldquo;{importedTitle}&rdquo;
+                      </div>
+                    )}
+                    <button
+                      onClick={() => searchMutation.mutate()}
+                      disabled={isPending || !searchTitle.trim()}
+                      className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {searchMutation.isPending ? 'Searching...' : 'Search'}
+                    </button>
+                  </div>
+                )}
+
+                {result && (
+                  <pre className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded text-sm text-gray-700 whitespace-pre-wrap">
+                    {result}
+                  </pre>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -292,6 +403,12 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
           onClose={() => {
             setDoiResolutionResults(null);
             qc.invalidateQueries({ queryKey: ['works'] });
+            // If there are pending work IDs (BibTeX flow), transition to assign step now
+            if (pendingBibtexWorkIds) {
+              const ids = pendingBibtexWorkIds;
+              setPendingBibtexWorkIds(null);
+              maybeTransitionToAssign(ids);
+            }
           }}
         />
       )}
@@ -300,9 +417,10 @@ export default function ImportDialog({ onClose }: { onClose: () => void }) {
         <SearchImportCandidateDialog
           candidates={searchCandidates}
           onClose={() => setSearchCandidates(null)}
-          onImported={(title) => {
+          onImported={(work: WorkOut) => {
             setSearchCandidates(null);
-            setImportedTitle(title);
+            setImportedTitle(work.title);
+            maybeTransitionToAssign([work.id]);
           }}
         />
       )}
