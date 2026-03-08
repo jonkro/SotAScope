@@ -404,110 +404,6 @@ function PaperContextSelector({
   );
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Schema context selector panel (extraction_schema mode)
-// ---------------------------------------------------------------------------
-
-function SchemaContextSelector({
-  projectId,
-  selectedSchemaId,
-  locked,
-  onSchemaChange,
-}: {
-  projectId: number;
-  selectedSchemaId: number | null;
-  locked: boolean;
-  onSchemaChange: (schemaId: number | null) => void;
-}) {
-  const { data: schemas = [], isLoading: schemasLoading } = useQuery({
-    queryKey: ['extraction', 'schemas', projectId],
-    queryFn: () => getExtractionSchemas(projectId),
-  });
-
-  const { data: selectedSchema, isLoading: schemaDetailLoading } = useQuery({
-    queryKey: ['extraction', 'schema', selectedSchemaId],
-    queryFn: () => getExtractionSchema(selectedSchemaId!),
-    enabled: selectedSchemaId != null,
-  });
-
-  return (
-    <div className="flex flex-col flex-1 min-h-0 bg-gray-50">
-      {/* Picker header */}
-      <div className="p-3 border-b border-gray-200 shrink-0">
-        <h2 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1.5">
-          Extraction Schema
-        </h2>
-        {locked && (
-          <p className="text-[10px] text-amber-600 mb-1.5">Locked · start a new chat to change</p>
-        )}
-        <select
-          value={selectedSchemaId ?? ''}
-          onChange={(e) => {
-            const val = e.target.value;
-            onSchemaChange(val === '' ? null : Number(val));
-          }}
-          disabled={locked || schemasLoading}
-          className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-        >
-          <option value="">New schema</option>
-          {schemas.map((s: ExtractionSchema) => (
-            <option key={s.id} value={s.id}>
-              {s.title}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Schema detail / new-schema note */}
-      <div className="flex-1 overflow-y-auto p-3">
-        {selectedSchemaId == null ? (
-          <p className="text-xs text-gray-400 italic leading-relaxed">
-            Start a conversation to design a new extraction schema. You'll be able to name it when
-            you accept the first column.
-          </p>
-        ) : schemaDetailLoading ? (
-          <p className="text-xs text-gray-400">Loading…</p>
-        ) : selectedSchema ? (
-          <div className="space-y-3">
-            <div>
-              <p className="text-xs font-semibold text-gray-700">{selectedSchema.title}</p>
-              {selectedSchema.description && (
-                <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
-                  {selectedSchema.description}
-                </p>
-              )}
-            </div>
-            {selectedSchema.columns.length > 0 ? (
-              <div>
-                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">
-                  Columns ({selectedSchema.columns.length})
-                </p>
-                <ul className="space-y-1.5">
-                  {selectedSchema.columns.map((col) => (
-                    <li key={col.id} className="text-xs">
-                      <span className="font-medium text-gray-700">{col.name}</span>
-                      {col.description && (
-                        <span className="text-gray-400 ml-1">
-                          {'— '}
-                          {col.description.length > 70
-                            ? col.description.slice(0, 67) + '…'
-                            : col.description}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="text-xs text-gray-400 italic">No columns defined yet.</p>
-            )}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Load session modal
@@ -616,6 +512,13 @@ export default function DiscussionPage() {
   // Project mode: load timeline to get seeds
   const { data: timeline } = useTimeline(projectId ?? 0);
 
+  // Extraction schemas for the schema dropdown (project mode only)
+  const { data: schemas = [], isLoading: schemasLoading } = useQuery({
+    queryKey: ['extraction', 'schemas', projectId],
+    queryFn: () => getExtractionSchemas(projectId!),
+    enabled: !isLibraryMode && projectId != null,
+  });
+
   // Paper entries state (project mode only)
   const [entries, setEntries] = useState<PaperEntry[]>([]);
   const [entriesInitialized, setEntriesInitialized] = useState(false);
@@ -687,6 +590,20 @@ export default function DiscussionPage() {
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('papers');
   // context_id: schema ID when in extraction_schema mode, null otherwise.
   const [contextId, setContextId] = useState<number | null>(null);
+
+  // Schema detail for the summary card (loaded when an existing schema is selected)
+  const { data: selectedSchemaDetail, isLoading: schemaDetailLoading } = useQuery({
+    queryKey: ['extraction', 'schema', contextId],
+    queryFn: () => getExtractionSchema(contextId!),
+    enabled: !isLibraryMode && contextId != null && discussionMode === 'extraction_schema',
+  });
+
+  // Dropdown value derived from mode + contextId:
+  //   ""      = General discussion (papers mode)
+  //   "new"   = New schema (extraction_schema, contextId=null)
+  //   "{id}"  = Existing schema (extraction_schema, contextId=id)
+  const schemaDropdownValue =
+    discussionMode === 'papers' ? '' : contextId != null ? String(contextId) : 'new';
 
   // ---------------------------------------------------------------------------
   // Session persistence
@@ -836,18 +753,13 @@ export default function DiscussionPage() {
     return entries.filter((e) => e.included).map((e) => ({ work_id: e.work_id, title: e.title }));
   }, [isLibraryMode, singleWork, entries]);
 
-  // In schema mode no papers are required, so noPapersSelected only gates papers mode.
-  const noPapersSelected =
-    !isLibraryMode && discussionMode === 'papers' && includedPapers.length === 0;
-
-  // Lock the paper selection and mode selector once the discussion has started; unlock on New Chat.
+  // Lock the paper selection and schema dropdown once the discussion has started; unlock on New Chat.
   const discussionActive = messages.some((m) => m.role === 'user' || m.role === 'assistant');
 
   const chatDisabled =
     chatMutation.isPending ||
     llmNotConfigured ||
-    libraryModeNoContent ||
-    noPapersSelected;
+    libraryModeNoContent;
 
   // Prompt preview
   const [showPromptPreview, setShowPromptPreview] = useState(false);
@@ -856,7 +768,16 @@ export default function DiscussionPage() {
     const parts: string[] = [];
 
     parts.push('━━━ System ━━━');
-    parts.push('You are a research assistant helping analyze academic literature.');
+    if (discussionMode === 'extraction_schema') {
+      if (contextId != null && selectedSchemaDetail) {
+        parts.push(`[Schema discussion prompt for: "${selectedSchemaDetail.title}"]`);
+      } else {
+        parts.push('[Schema discussion prompt (designing a new schema)]');
+      }
+      parts.push('(Instructs the AI to help design extraction schema columns.)');
+    } else {
+      parts.push('You are a research assistant helping analyze academic literature.');
+    }
     parts.push('');
 
     // Context papers with content placeholders
@@ -900,8 +821,6 @@ export default function DiscussionPage() {
     ? 'Configure LLM in Settings first'
     : libraryModeNoContent
     ? 'No extracted text — upload and extract a PDF first'
-    : noPapersSelected
-    ? 'No papers with extracted text selected'
     : discussionMode === 'extraction_schema'
     ? 'Describe the schema you want to build… (Ctrl+Enter to send)'
     : 'Type a message… (Ctrl+Enter to send)';
@@ -1001,21 +920,35 @@ export default function DiscussionPage() {
     }
   };
 
-  // Mode change — switches between Papers and Extraction Schema discussion.
-  // Disabled once discussionActive. Fetches / creates the auto-session for the
-  // new context_type and restores its message history (if any).
-  const handleModeChange = (newMode: DiscussionMode) => {
-    if (newMode === discussionMode || discussionActive) return;
+  // Unified schema dropdown change handler.
+  // value: "" = General discussion (papers), "new" = new schema, "{id}" = existing schema.
+  // Disabled once discussionActive.
+  const handleSchemaDropdownChange = (value: string) => {
+    if (discussionActive) return;
+    let newMode: DiscussionMode;
+    let newContextId: number | null;
+    if (value === '') {
+      newMode = 'papers';
+      newContextId = null;
+    } else if (value === 'new') {
+      newMode = 'extraction_schema';
+      newContextId = null;
+    } else {
+      newMode = 'extraction_schema';
+      newContextId = Number(value);
+    }
+    if (newMode === discussionMode && newContextId === contextId) return;
     setMessages([]);
     setSaveNoteForIdx(null);
     if (selKey) localStorage.removeItem(selKey);
     restoredSelectionRef.current = null;
-    // Reset context_id when switching modes (schema selection cleared on mode switch)
-    const newContextId: number | null = null;
-    setContextId(newContextId);
-    if (contextIdKey) localStorage.removeItem(contextIdKey);
     setDiscussionMode(newMode);
+    setContextId(newContextId);
     if (modeKey) localStorage.setItem(modeKey, newMode);
+    if (contextIdKey) {
+      if (newContextId != null) localStorage.setItem(contextIdKey, String(newContextId));
+      else localStorage.removeItem(contextIdKey);
+    }
     getOrCreateAuto.mutate(
       { work_id: workId, project_id: projectId, context_type: newMode, context_id: newContextId },
       {
@@ -1025,32 +958,17 @@ export default function DiscussionPage() {
             setMessages(
               session.messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
             );
-          }
-        },
-      },
-    );
-  };
-
-  // Schema selection change — switches the active schema within extraction_schema mode.
-  // Disabled once discussionActive. Switches to the auto-session for the selected schema.
-  const handleSchemaChange = (schemaId: number | null) => {
-    if (schemaId === contextId || discussionActive) return;
-    setMessages([]);
-    setSaveNoteForIdx(null);
-    setContextId(schemaId);
-    if (contextIdKey) {
-      if (schemaId != null) localStorage.setItem(contextIdKey, String(schemaId));
-      else localStorage.removeItem(contextIdKey);
-    }
-    getOrCreateAuto.mutate(
-      { work_id: workId, project_id: projectId, context_type: 'extraction_schema', context_id: schemaId },
-      {
-        onSuccess: (session) => {
-          setAutoSessionId(session.id);
-          if (session.messages.length > 0) {
-            setMessages(
-              session.messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-            );
+            // Restore paper selection if we have a saved one for this scope.
+            if (selKey) {
+              const stored = localStorage.getItem(selKey);
+              if (stored) {
+                const storedIds = new Set<number>(JSON.parse(stored) as number[]);
+                restoredSelectionRef.current = storedIds;
+                setEntries((prev) =>
+                  prev.map((e) => (e.pdfsLoaded ? { ...e, included: storedIds.has(e.work_id) } : e))
+                );
+              }
+            }
           }
         },
       },
@@ -1217,74 +1135,91 @@ export default function DiscussionPage() {
 
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
-        {/* Left panel: mode selector + context (project mode only) */}
+        {/* Left panel: schema dropdown + paper selector (project mode only) */}
         {!isLibraryMode && (
           <div
             className="flex flex-col h-full border-r border-gray-200 shrink-0"
             style={{ minWidth: 260, maxWidth: 320 }}
           >
-            {/* Mode selector (segmented control) */}
-            <div className="px-2 py-2 border-b border-gray-200 bg-gray-50 shrink-0">
-              <div className="flex rounded border border-gray-200 overflow-hidden text-xs">
-                <button
-                  onClick={() => handleModeChange('papers')}
-                  disabled={discussionActive}
-                  className={`flex-1 py-1.5 font-medium transition-colors ${
-                    discussionMode === 'papers'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-white text-gray-600 hover:bg-gray-50'
-                  } disabled:opacity-60 disabled:cursor-not-allowed`}
-                >
-                  Papers
-                </button>
-                <button
-                  onClick={() => handleModeChange('extraction_schema')}
-                  disabled={discussionActive}
-                  className={`flex-1 py-1.5 font-medium transition-colors border-l border-gray-200 ${
-                    discussionMode === 'extraction_schema'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-white text-gray-600 hover:bg-gray-50'
-                  } disabled:opacity-60 disabled:cursor-not-allowed`}
-                >
-                  Schema
-                </button>
-              </div>
+            {/* Compact schema / focus dropdown */}
+            <div className="px-3 py-2 border-b border-gray-200 bg-white shrink-0">
+              <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                Discussion focus
+              </label>
               {discussionActive && (
-                <p className="text-[10px] text-amber-600 mt-1 text-center">
-                  Locked · start a new chat to change
-                </p>
+                <p className="text-[10px] text-amber-600 mb-1">Locked · start a new chat to change</p>
               )}
+              <select
+                value={schemaDropdownValue}
+                onChange={(e) => handleSchemaDropdownChange(e.target.value)}
+                disabled={discussionActive || schemasLoading}
+                className="w-full border border-gray-200 rounded px-2 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:bg-gray-50 disabled:cursor-not-allowed"
+              >
+                <option value="">General discussion</option>
+                {schemas.map((s: ExtractionSchema) => (
+                  <option key={s.id} value={String(s.id)}>
+                    {s.title}
+                  </option>
+                ))}
+                <option value="new">New schema</option>
+              </select>
             </div>
 
-            {/* Context panel — depends on mode */}
-            {discussionMode === 'papers' ? (
-              <PaperContextSelector
-                entries={entries}
-                topicLists={topicLists}
-                topicListColorMap={topicListColorMap}
-                anthropicProvider={isAnthropicProvider}
-                locked={discussionActive}
-                onChangeEntry={handleChangeEntry}
-                onGlobalToggle={handleGlobalToggle}
-                onBulkTopicListToggle={handleBulkTopicListToggle}
-              />
-            ) : (
-              <SchemaContextSelector
-                projectId={projectId!}
-                selectedSchemaId={contextId}
-                locked={discussionActive}
-                onSchemaChange={handleSchemaChange}
-              />
+            {/* Schema summary (only when an existing schema is selected) */}
+            {discussionMode === 'extraction_schema' && (
+              contextId != null ? (
+                <div className="px-3 py-2 border-b border-gray-100 bg-indigo-50 shrink-0">
+                  {schemaDetailLoading ? (
+                    <p className="text-[10px] text-gray-400">Loading…</p>
+                  ) : selectedSchemaDetail ? (
+                    <div className="space-y-0.5">
+                      <p className="text-xs font-medium text-indigo-800">{selectedSchemaDetail.title}</p>
+                      {selectedSchemaDetail.description && (
+                        <p className="text-[10px] text-indigo-600 leading-relaxed">
+                          {selectedSchemaDetail.description.length > 80
+                            ? selectedSchemaDetail.description.slice(0, 77) + '…'
+                            : selectedSchemaDetail.description}
+                        </p>
+                      )}
+                      {selectedSchemaDetail.columns.length > 0 && (
+                        <p className="text-[10px] text-indigo-500">
+                          {selectedSchemaDetail.columns.length} column{selectedSchemaDetail.columns.length !== 1 ? 's' : ''}
+                          {': '}
+                          {selectedSchemaDetail.columns.map((c) => c.name).join(', ').slice(0, 80)}
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="px-3 py-2 border-b border-gray-100 bg-amber-50 shrink-0">
+                  <p className="text-[10px] text-amber-700 italic leading-relaxed">
+                    Designing a new schema. Accepted column proposals will be saved to a new schema.
+                  </p>
+                </div>
+              )
             )}
+
+            {/* Paper selector — always visible */}
+            <PaperContextSelector
+              entries={entries}
+              topicLists={topicLists}
+              topicListColorMap={topicListColorMap}
+              anthropicProvider={isAnthropicProvider}
+              locked={discussionActive}
+              onChangeEntry={handleChangeEntry}
+              onGlobalToggle={handleGlobalToggle}
+              onBulkTopicListToggle={handleBulkTopicListToggle}
+            />
           </div>
         )}
 
         {/* Chat panel */}
         <div className="flex flex-col flex-1 min-w-0">
 
-          {/* Context annotation — paper(s) being discussed */}
+          {/* Context annotation — schema and/or papers being discussed */}
           {(isLibraryMode ? !!singleWork : true) && (
-            <div className="px-4 py-2 border-b border-slate-200 bg-slate-50 text-xs text-gray-600 shrink-0">
+            <div className="px-4 py-2 border-b border-slate-200 bg-slate-50 text-xs text-gray-600 shrink-0 flex flex-wrap gap-x-3 gap-y-0.5 items-center">
               {isLibraryMode && singleWork ? (
                 <span>
                   <span className="font-medium text-gray-800">
@@ -1299,23 +1234,32 @@ export default function DiscussionPage() {
                     <span className="text-gray-500"> · {singleWork.publication_year}</span>
                   )}
                 </span>
-              ) : !isLibraryMode && discussionMode === 'extraction_schema' ? (
-                <span className="text-indigo-600 font-medium">Schema design mode</span>
-              ) : !isLibraryMode && includedPapers.length > 0 ? (
-                <span>
-                  <span className="font-medium text-gray-700">
-                    {includedPapers.length} paper{includedPapers.length !== 1 ? 's' : ''} selected:
-                  </span>
-                  {' '}
-                  {entries
-                    .filter((e) => e.included)
-                    .map((e) => `${e.title}${e.year ? ` (${e.year})` : ''}`)
-                    .join(' · ')
-                    .slice(0, 200) +
-                    (entries.filter((e) => e.included).map((e) => `${e.title}${e.year ? ` (${e.year})` : ''}`).join(' · ').length > 200 ? '…' : '')}
-                </span>
               ) : !isLibraryMode ? (
-                <span className="text-gray-400 italic">No papers selected</span>
+                <>
+                  {discussionMode === 'extraction_schema' && (
+                    <span className="text-indigo-600 font-medium">
+                      {contextId != null && selectedSchemaDetail
+                        ? `Schema: ${selectedSchemaDetail.title}`
+                        : 'New schema design'}
+                    </span>
+                  )}
+                  {includedPapers.length > 0 ? (
+                    <span>
+                      <span className="font-medium text-gray-700">
+                        {includedPapers.length} paper{includedPapers.length !== 1 ? 's' : ''}:
+                      </span>
+                      {' '}
+                      {entries
+                        .filter((e) => e.included)
+                        .map((e) => `${e.title}${e.year ? ` (${e.year})` : ''}`)
+                        .join(' · ')
+                        .slice(0, 200) +
+                        (entries.filter((e) => e.included).map((e) => `${e.title}${e.year ? ` (${e.year})` : ''}`).join(' · ').length > 200 ? '…' : '')}
+                    </span>
+                  ) : (
+                    <span className="text-gray-400 italic">No papers selected</span>
+                  )}
+                </>
               ) : null}
             </div>
           )}
@@ -1327,10 +1271,8 @@ export default function DiscussionPage() {
                   ? 'Configure an LLM provider in Settings to start chatting.'
                   : libraryModeNoContent
                   ? 'No extracted text available for this paper.'
-                  : noPapersSelected
-                  ? 'No papers with extracted text are available in this project.'
                   : discussionMode === 'extraction_schema'
-                  ? 'Describe the extraction schema you want to build.'
+                  ? 'Describe the extraction schema you want to build, or ask about selected papers.'
                   : 'Start the conversation below.'}
               </p>
             )}

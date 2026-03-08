@@ -101,7 +101,7 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
 
     - ``"papers"`` (default): paper text / PDF blocs are included as context.
     - ``"extraction_schema"``: the schema definition is used as the system prompt;
-      no paper documents are sent.
+      paper documents are also included when provided.
 
     - Returns HTTP 400 if ``llm_provider`` or ``llm_model_id`` is not configured.
     - Returns HTTP 400 if ``use_pdf=True`` is requested for a non-Anthropic provider.
@@ -131,9 +131,86 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     # Assemble full message list (history + current user turn).
     messages = list(body.history) + [{"role": "user", "content": body.message}]
 
+    # Always build paper context documents (both modes can include papers).
+    if any(p.use_pdf for p in body.papers) and provider != "anthropic":
+        raise HTTPException(
+            status_code=400,
+            detail="PDF vision requires Anthropic provider",
+        )
+
+    pdf_root = _get_pdf_root(db)
+    context_documents: list[ContextDocument] = []
+    for entry in body.papers:
+        work = db.get(Work, entry.work_id)
+        if work is None:
+            raise HTTPException(status_code=404, detail=f"Work {entry.work_id} not found")
+
+        pdf_bytes: bytes | None = None
+        text: str | None = None
+
+        if entry.use_pdf:
+            # Find the primary PDF (is_primary=True first, then lowest id)
+            primary_pdf = db.scalars(
+                select(WorkPDF)
+                .where(WorkPDF.work_id == entry.work_id, WorkPDF.is_primary == True)  # noqa: E712
+                .limit(1)
+            ).one_or_none()
+            if primary_pdf is None:
+                primary_pdf = db.scalars(
+                    select(WorkPDF)
+                    .where(WorkPDF.work_id == entry.work_id)
+                    .order_by(WorkPDF.id)
+                    .limit(1)
+                ).one_or_none()
+
+            if primary_pdf is not None:
+                pdf_path = pdf_root / str(entry.work_id) / primary_pdf.filename
+                if pdf_path.is_file():
+                    pdf_bytes = pdf_path.read_bytes()
+                # else: file missing on disk — fall back to no content gracefully
+        else:
+            # Find the primary PDF with extraction_status="ready"
+            ready_pdf = db.scalars(
+                select(WorkPDF)
+                .where(
+                    WorkPDF.work_id == entry.work_id,
+                    WorkPDF.is_primary == True,  # noqa: E712
+                    WorkPDF.extraction_status == "ready",
+                )
+                .limit(1)
+            ).one_or_none()
+            if ready_pdf is None:
+                # Fall back to any ready PDF for this work
+                ready_pdf = db.scalars(
+                    select(WorkPDF)
+                    .where(
+                        WorkPDF.work_id == entry.work_id,
+                        WorkPDF.extraction_status == "ready",
+                    )
+                    .order_by(WorkPDF.id)
+                    .limit(1)
+                ).one_or_none()
+
+            if ready_pdf is not None:
+                txt_path = pdf_root / str(entry.work_id) / Path(ready_pdf.filename).with_suffix(".txt")
+                if txt_path.is_file():
+                    text = txt_path.read_text(encoding="utf-8")
+            # No ready PDF → text stays None; frontend prevents sending such papers
+
+        context_documents.append(
+            ContextDocument(
+                work_id=entry.work_id,
+                title=work.title,
+                year=work.publication_year,
+                text=text,
+                pdf_bytes=pdf_bytes,
+                remark=entry.remark,
+            )
+        )
+
+    # Determine system prompt based on context_type.
+    system_prompt: str | None = None
     if context_type == "extraction_schema":
-        # Schema discussion mode — send the schema definition as the system prompt;
-        # no paper context documents.
         from litexplorer.models.extraction import ExtractionSchema as _ExtractionSchema
         from litexplorer.services.schema_discussion import build_schema_discussion_prompt
 
@@ -142,88 +219,7 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         if session is not None and session.context_id is not None:
             schema = db.get(_ExtractionSchema, session.context_id)
 
-        schema_prompt = build_schema_discussion_prompt(schema, system_prefix=system_prefix)
-        context_documents: list[ContextDocument] = []
-        system_prompt: str | None = schema_prompt
-    else:
-        # Paper-context mode (existing behaviour).
-        if any(p.use_pdf for p in body.papers) and provider != "anthropic":
-            raise HTTPException(
-                status_code=400,
-                detail="PDF vision requires Anthropic provider",
-            )
-
-        pdf_root = _get_pdf_root(db)
-        context_documents = []
-        for entry in body.papers:
-            work = db.get(Work, entry.work_id)
-            if work is None:
-                raise HTTPException(status_code=404, detail=f"Work {entry.work_id} not found")
-
-            pdf_bytes: bytes | None = None
-            text: str | None = None
-
-            if entry.use_pdf:
-                # Find the primary PDF (is_primary=True first, then lowest id)
-                primary_pdf = db.scalars(
-                    select(WorkPDF)
-                    .where(WorkPDF.work_id == entry.work_id, WorkPDF.is_primary == True)  # noqa: E712
-                    .limit(1)
-                ).one_or_none()
-                if primary_pdf is None:
-                    primary_pdf = db.scalars(
-                        select(WorkPDF)
-                        .where(WorkPDF.work_id == entry.work_id)
-                        .order_by(WorkPDF.id)
-                        .limit(1)
-                    ).one_or_none()
-
-                if primary_pdf is not None:
-                    pdf_path = pdf_root / str(entry.work_id) / primary_pdf.filename
-                    if pdf_path.is_file():
-                        pdf_bytes = pdf_path.read_bytes()
-                    # else: file missing on disk — fall back to no content gracefully
-            else:
-                # Find the primary PDF with extraction_status="ready"
-                ready_pdf = db.scalars(
-                    select(WorkPDF)
-                    .where(
-                        WorkPDF.work_id == entry.work_id,
-                        WorkPDF.is_primary == True,  # noqa: E712
-                        WorkPDF.extraction_status == "ready",
-                    )
-                    .limit(1)
-                ).one_or_none()
-                if ready_pdf is None:
-                    # Fall back to any ready PDF for this work
-                    ready_pdf = db.scalars(
-                        select(WorkPDF)
-                        .where(
-                            WorkPDF.work_id == entry.work_id,
-                            WorkPDF.extraction_status == "ready",
-                        )
-                        .order_by(WorkPDF.id)
-                        .limit(1)
-                    ).one_or_none()
-
-                if ready_pdf is not None:
-                    txt_path = pdf_root / str(entry.work_id) / Path(ready_pdf.filename).with_suffix(".txt")
-                    if txt_path.is_file():
-                        text = txt_path.read_text(encoding="utf-8")
-                # No ready PDF → text stays None; frontend prevents sending such papers
-
-            context_documents.append(
-                ContextDocument(
-                    work_id=entry.work_id,
-                    title=work.title,
-                    year=work.publication_year,
-                    text=text,
-                    pdf_bytes=pdf_bytes,
-                    remark=entry.remark,
-                )
-            )
-
-        system_prompt = None
+        system_prompt = build_schema_discussion_prompt(schema, system_prefix=system_prefix)
 
     try:
         llm_client = make_llm_client(provider, api_key, model_id, base_url)
