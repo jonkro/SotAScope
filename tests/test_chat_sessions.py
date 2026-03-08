@@ -395,6 +395,70 @@ def test_save_session_project_only(client, db_session):
     assert saved["message_count"] == 2
 
 
+# ---------------------------------------------------------------------------
+# context_type / context_id tests
+# ---------------------------------------------------------------------------
+
+
+def test_auto_session_extraction_schema_with_context_id(client, db_session):
+    """context_type='extraction_schema' + context_id scopes the auto-session correctly."""
+    resp = client.post("/api/chat/sessions/auto", json={
+        "context_type": "extraction_schema",
+        "context_id": 42,
+    })
+    assert resp.status_code == 200
+    session = resp.json()
+    assert session["context_type"] == "extraction_schema"
+    assert session["context_id"] == 42
+    assert session["work_id"] is None
+    assert session["project_id"] is None
+    assert session["is_auto"] is True
+
+    # Second call with same scope returns existing session.
+    resp2 = client.post("/api/chat/sessions/auto", json={
+        "context_type": "extraction_schema",
+        "context_id": 42,
+    })
+    assert resp2.status_code == 200
+    assert resp2.json()["id"] == session["id"], "Same scope should return existing session"
+
+    # Different context_id → different session.
+    resp3 = client.post("/api/chat/sessions/auto", json={
+        "context_type": "extraction_schema",
+        "context_id": 99,
+    })
+    assert resp3.status_code == 200
+    assert resp3.json()["id"] != session["id"], "Different context_id must yield a distinct session"
+
+
+def test_auto_session_extraction_schema_no_context_id(client, db_session):
+    """context_type='extraction_schema' with no context_id (new/unsaved schema) works."""
+    resp = client.post("/api/chat/sessions/auto", json={
+        "context_type": "extraction_schema",
+    })
+    assert resp.status_code == 200
+    session = resp.json()
+    assert session["context_type"] == "extraction_schema"
+    assert session["context_id"] is None
+
+    # Second call with same scope returns same session.
+    resp2 = client.post("/api/chat/sessions/auto", json={
+        "context_type": "extraction_schema",
+    })
+    assert resp2.status_code == 200
+    assert resp2.json()["id"] == session["id"]
+
+
+def test_existing_paper_sessions_default_context_fields(client, db_session):
+    """Paper-based sessions created without context_type default to 'papers'/None."""
+    work = _make_work(db_session, doi_suffix="ctx_default")
+    resp = client.post("/api/chat/sessions/auto", json={"work_id": work.id})
+    assert resp.status_code == 200
+    session = resp.json()
+    assert session["context_type"] == "papers"
+    assert session["context_id"] is None
+
+
 def test_chat_without_session_id_no_error(client, db_session):
     """POST /api/llm/chat without session_id still works (no persistence attempted)."""
     _seed_llm_settings(db_session)

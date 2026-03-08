@@ -49,6 +49,8 @@ class ChatSessionOut(BaseModel):
     id: int
     work_id: Optional[int]
     project_id: Optional[int]
+    context_type: str
+    context_id: Optional[int]
     title: Optional[str]
     is_auto: bool
     message_count: int
@@ -62,6 +64,8 @@ class ChatSessionOut(BaseModel):
 class AutoSessionRequest(BaseModel):
     work_id: Optional[int] = None
     project_id: Optional[int] = None
+    context_type: str = "papers"
+    context_id: Optional[int] = None
 
 
 class SaveSessionRequest(BaseModel):
@@ -79,6 +83,8 @@ def _session_out(session: ChatSession, include_messages: bool = True) -> ChatSes
         id=session.id,
         work_id=session.work_id,
         project_id=session.project_id,
+        context_type=session.context_type,
+        context_id=session.context_id,
         title=session.title,
         is_auto=session.is_auto,
         message_count=len(session.messages),
@@ -97,9 +103,16 @@ def _session_out(session: ChatSession, include_messages: bool = True) -> ChatSes
 
 
 def _find_auto_session(
-    db: Session, work_id: int | None, project_id: int | None
+    db: Session,
+    work_id: int | None,
+    project_id: int | None,
+    context_type: str = "papers",
+    context_id: int | None = None,
 ) -> ChatSession | None:
-    """Return the auto-session for the given scope, or None if it doesn't exist."""
+    """Return the auto-session for the given scope, or None if it doesn't exist.
+
+    Scope = (work_id, project_id, context_type, context_id).
+    """
     stmt = select(ChatSession).where(ChatSession.is_auto == True)  # noqa: E712
 
     if work_id is None:
@@ -111,6 +124,13 @@ def _find_auto_session(
         stmt = stmt.where(ChatSession.project_id.is_(None))
     else:
         stmt = stmt.where(ChatSession.project_id == project_id)
+
+    stmt = stmt.where(ChatSession.context_type == context_type)
+
+    if context_id is None:
+        stmt = stmt.where(ChatSession.context_id.is_(None))
+    else:
+        stmt = stmt.where(ChatSession.context_id == context_id)
 
     return db.scalars(stmt).one_or_none()
 
@@ -129,13 +149,17 @@ def get_or_create_auto_session(
     Scope = (work_id, project_id).  At most one auto-session exists per scope.
     Both fields are optional — project-mode discussions pass work_id=None.
     """
-    existing = _find_auto_session(db, body.work_id, body.project_id)
+    existing = _find_auto_session(
+        db, body.work_id, body.project_id, body.context_type, body.context_id
+    )
     if existing is not None:
         return _session_out(existing)
 
     session = ChatSession(
         work_id=body.work_id,
         project_id=body.project_id,
+        context_type=body.context_type,
+        context_id=body.context_id,
         is_auto=True,
     )
     db.add(session)
@@ -201,6 +225,8 @@ def save_session(
     saved = ChatSession(
         work_id=source.work_id,
         project_id=source.project_id,
+        context_type=source.context_type,
+        context_id=source.context_id,
         title=title,
         is_auto=False,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -87,6 +88,24 @@ def create_schema(body: ExtractionSchemaCreate, db: Session = Depends(get_db)):
     return ExtractionSchemaOut.model_validate(schema)
 
 
+@router.post("/schemas/from-discussion", response_model=ExtractionSchemaOut, status_code=201)
+def create_schema_from_discussion(body: ExtractionSchemaCreate, db: Session = Depends(get_db)):
+    """Create a new extraction schema materialised from a schema design discussion.
+
+    Semantically identical to ``POST /schemas`` but named distinctly so the
+    frontend can signal that the schema originated from an LLM conversation.
+    """
+    schema = ExtractionSchema(
+        title=body.title,
+        description=body.description,
+        project_id=body.project_id,
+    )
+    db.add(schema)
+    db.commit()
+    db.refresh(schema)
+    return ExtractionSchemaOut.model_validate(schema)
+
+
 @router.get("/schemas", response_model=list[ExtractionSchemaOut])
 def list_schemas(project_id: int | None = None, db: Session = Depends(get_db)):
     """List extraction schemas, optionally filtered by project."""
@@ -100,6 +119,15 @@ def list_schemas(project_id: int | None = None, db: Session = Depends(get_db)):
 @router.get("/schemas/{schema_id}", response_model=ExtractionSchemaOut)
 def get_schema(schema_id: int, db: Session = Depends(get_db)):
     """Get an extraction schema with its columns."""
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+    return ExtractionSchemaOut.model_validate(schema)
+
+
+@router.get("/schemas/{schema_id}/summary", response_model=ExtractionSchemaOut)
+def get_schema_summary(schema_id: int, db: Session = Depends(get_db)):
+    """Return schema title, description, and columns for context display (e.g. discussion sidebar)."""
     schema = db.get(ExtractionSchema, schema_id)
     if schema is None:
         raise HTTPException(status_code=404, detail="Extraction schema not found")
@@ -134,6 +162,51 @@ def delete_schema(schema_id: int, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Column CRUD
 # ---------------------------------------------------------------------------
+
+
+class ColumnFromProposalRequest(BaseModel):
+    """Request body for creating a column from an LLM-proposed definition."""
+
+    name: str
+    prompt: str
+    description: str = ""
+    allowed_values: list[str] | None = None
+
+
+@router.post(
+    "/schemas/{schema_id}/columns/from-proposal",
+    response_model=ExtractionColumnOut,
+    status_code=201,
+)
+def create_column_from_proposal(
+    schema_id: int,
+    body: ColumnFromProposalRequest,
+    db: Session = Depends(get_db),
+):
+    """Accept an LLM-proposed column and append it to the schema.
+
+    The column is automatically assigned ``sort_order = max_existing + 1`` so it
+    lands at the end of the schema.  Returns 404 if the schema does not exist.
+    """
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+
+    existing_orders = [c.sort_order for c in schema.columns]
+    next_order = (max(existing_orders) + 1) if existing_orders else 0
+
+    col = ExtractionColumn(
+        schema_id=schema_id,
+        name=body.name,
+        prompt=body.prompt,
+        description=body.description if body.description else None,
+        allowed_values=body.allowed_values,
+        sort_order=next_order,
+    )
+    db.add(col)
+    db.commit()
+    db.refresh(col)
+    return ExtractionColumnOut.model_validate(col)
 
 
 @router.post("/schemas/{schema_id}/columns", response_model=ExtractionColumnOut, status_code=201)

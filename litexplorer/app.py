@@ -168,6 +168,8 @@ def _migrate_schema() -> None:
                 "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
                 "  work_id INTEGER REFERENCES works(id) ON DELETE CASCADE,"
                 "  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,"
+                "  context_type VARCHAR(32) NOT NULL DEFAULT 'papers',"
+                "  context_id INTEGER,"
                 "  title VARCHAR(256),"
                 "  is_auto BOOLEAN DEFAULT 1,"
                 "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
@@ -186,6 +188,8 @@ def _migrate_schema() -> None:
                     "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
                     "  work_id INTEGER REFERENCES works(id) ON DELETE CASCADE,"
                     "  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,"
+                    "  context_type VARCHAR(32) NOT NULL DEFAULT 'papers',"
+                    "  context_id INTEGER,"
                     "  title VARCHAR(256),"
                     "  is_auto BOOLEAN DEFAULT 1,"
                     "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
@@ -194,13 +198,27 @@ def _migrate_schema() -> None:
                 ))
                 db.execute(text(
                     "INSERT INTO chat_sessions_tmp "
-                    "SELECT id, work_id, project_id, title, is_auto, created_at, updated_at "
+                    "SELECT id, work_id, project_id, 'papers', NULL, title, is_auto, created_at, updated_at "
                     "FROM chat_sessions"
                 ))
                 db.execute(text("DROP TABLE chat_sessions"))
                 db.execute(text("ALTER TABLE chat_sessions_tmp RENAME TO chat_sessions"))
                 db.execute(text("PRAGMA foreign_keys = ON"))
                 db.commit()
+            else:
+                # Add context_type / context_id columns if they were introduced later.
+                col_names = {r[1] for r in col_rows}
+                if "context_type" not in col_names:
+                    db.execute(text(
+                        "ALTER TABLE chat_sessions ADD COLUMN "
+                        "context_type VARCHAR(32) NOT NULL DEFAULT 'papers'"
+                    ))
+                    db.commit()
+                if "context_id" not in col_names:
+                    db.execute(text(
+                        "ALTER TABLE chat_sessions ADD COLUMN context_id INTEGER"
+                    ))
+                    db.commit()
 
         # Create chat_messages table if it doesn't exist
         if "chat_messages" not in existing_tables:

@@ -95,7 +95,13 @@ def list_llm_models(db: Session = Depends(get_db)) -> dict:
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
-    """Send a chat message with optional paper context to the configured LLM.
+    """Send a chat message to the configured LLM.
+
+    Supports two context modes detected from the linked session:
+
+    - ``"papers"`` (default): paper text / PDF blocs are included as context.
+    - ``"extraction_schema"``: the schema definition is used as the system prompt;
+      no paper documents are sent.
 
     - Returns HTTP 400 if ``llm_provider`` or ``llm_model_id`` is not configured.
     - Returns HTTP 400 if ``use_pdf=True`` is requested for a non-Anthropic provider.
@@ -115,101 +121,125 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     api_key = get_setting_value(db, "llm_api_key") or ""
     base_url = get_setting_value(db, "llm_base_url") or None
 
-    # Validate PDF vision requirement before touching files
-    if any(p.use_pdf for p in body.papers) and provider != "anthropic":
-        raise HTTPException(
-            status_code=400,
-            detail="PDF vision requires Anthropic provider",
-        )
+    # Load session early — needed for context_type detection and message persistence.
+    session: ChatSession | None = None
+    if body.session_id is not None:
+        session = db.get(ChatSession, body.session_id)
 
-    pdf_root = _get_pdf_root(db)
+    context_type = session.context_type if session is not None else "papers"
 
-    # Build context documents
-    context_documents: list[ContextDocument] = []
-    for entry in body.papers:
-        work = db.get(Work, entry.work_id)
-        if work is None:
-            raise HTTPException(status_code=404, detail=f"Work {entry.work_id} not found")
+    # Assemble full message list (history + current user turn).
+    messages = list(body.history) + [{"role": "user", "content": body.message}]
 
-        pdf_bytes: bytes | None = None
-        text: str | None = None
+    if context_type == "extraction_schema":
+        # Schema discussion mode — send the schema definition as the system prompt;
+        # no paper context documents.
+        from litexplorer.models.extraction import ExtractionSchema as _ExtractionSchema
+        from litexplorer.services.schema_discussion import build_schema_discussion_prompt
 
-        if entry.use_pdf:
-            # Find the primary PDF (is_primary=True first, then lowest id)
-            primary_pdf = db.scalars(
-                select(WorkPDF)
-                .where(WorkPDF.work_id == entry.work_id, WorkPDF.is_primary == True)  # noqa: E712
-                .limit(1)
-            ).one_or_none()
-            if primary_pdf is None:
+        system_prefix = get_setting_value(db, "llm_system_prompt_prefix") or ""
+        schema = None
+        if session is not None and session.context_id is not None:
+            schema = db.get(_ExtractionSchema, session.context_id)
+
+        schema_prompt = build_schema_discussion_prompt(schema, system_prefix=system_prefix)
+        context_documents: list[ContextDocument] = []
+        system_prompt: str | None = schema_prompt
+    else:
+        # Paper-context mode (existing behaviour).
+        if any(p.use_pdf for p in body.papers) and provider != "anthropic":
+            raise HTTPException(
+                status_code=400,
+                detail="PDF vision requires Anthropic provider",
+            )
+
+        pdf_root = _get_pdf_root(db)
+        context_documents = []
+        for entry in body.papers:
+            work = db.get(Work, entry.work_id)
+            if work is None:
+                raise HTTPException(status_code=404, detail=f"Work {entry.work_id} not found")
+
+            pdf_bytes: bytes | None = None
+            text: str | None = None
+
+            if entry.use_pdf:
+                # Find the primary PDF (is_primary=True first, then lowest id)
                 primary_pdf = db.scalars(
                     select(WorkPDF)
-                    .where(WorkPDF.work_id == entry.work_id)
-                    .order_by(WorkPDF.id)
+                    .where(WorkPDF.work_id == entry.work_id, WorkPDF.is_primary == True)  # noqa: E712
                     .limit(1)
                 ).one_or_none()
+                if primary_pdf is None:
+                    primary_pdf = db.scalars(
+                        select(WorkPDF)
+                        .where(WorkPDF.work_id == entry.work_id)
+                        .order_by(WorkPDF.id)
+                        .limit(1)
+                    ).one_or_none()
 
-            if primary_pdf is not None:
-                pdf_path = pdf_root / str(entry.work_id) / primary_pdf.filename
-                if pdf_path.is_file():
-                    pdf_bytes = pdf_path.read_bytes()
-                # else: file missing on disk — fall back to no content gracefully
-        else:
-            # Find the primary PDF with extraction_status="ready"
-            ready_pdf = db.scalars(
-                select(WorkPDF)
-                .where(
-                    WorkPDF.work_id == entry.work_id,
-                    WorkPDF.is_primary == True,  # noqa: E712
-                    WorkPDF.extraction_status == "ready",
-                )
-                .limit(1)
-            ).one_or_none()
-            if ready_pdf is None:
-                # Fall back to any ready PDF for this work
+                if primary_pdf is not None:
+                    pdf_path = pdf_root / str(entry.work_id) / primary_pdf.filename
+                    if pdf_path.is_file():
+                        pdf_bytes = pdf_path.read_bytes()
+                    # else: file missing on disk — fall back to no content gracefully
+            else:
+                # Find the primary PDF with extraction_status="ready"
                 ready_pdf = db.scalars(
                     select(WorkPDF)
                     .where(
                         WorkPDF.work_id == entry.work_id,
+                        WorkPDF.is_primary == True,  # noqa: E712
                         WorkPDF.extraction_status == "ready",
                     )
-                    .order_by(WorkPDF.id)
                     .limit(1)
                 ).one_or_none()
+                if ready_pdf is None:
+                    # Fall back to any ready PDF for this work
+                    ready_pdf = db.scalars(
+                        select(WorkPDF)
+                        .where(
+                            WorkPDF.work_id == entry.work_id,
+                            WorkPDF.extraction_status == "ready",
+                        )
+                        .order_by(WorkPDF.id)
+                        .limit(1)
+                    ).one_or_none()
 
-            if ready_pdf is not None:
-                txt_path = pdf_root / str(entry.work_id) / Path(ready_pdf.filename).with_suffix(".txt")
-                if txt_path.is_file():
-                    text = txt_path.read_text(encoding="utf-8")
-            # No ready PDF → text stays None; frontend prevents sending such papers
+                if ready_pdf is not None:
+                    txt_path = pdf_root / str(entry.work_id) / Path(ready_pdf.filename).with_suffix(".txt")
+                    if txt_path.is_file():
+                        text = txt_path.read_text(encoding="utf-8")
+                # No ready PDF → text stays None; frontend prevents sending such papers
 
-        context_documents.append(
-            ContextDocument(
-                work_id=entry.work_id,
-                title=work.title,
-                year=work.publication_year,
-                text=text,
-                pdf_bytes=pdf_bytes,
-                remark=entry.remark,
+            context_documents.append(
+                ContextDocument(
+                    work_id=entry.work_id,
+                    title=work.title,
+                    year=work.publication_year,
+                    text=text,
+                    pdf_bytes=pdf_bytes,
+                    remark=entry.remark,
+                )
             )
-        )
 
-    # Assemble full message list (history + current user turn)
-    messages = list(body.history) + [{"role": "user", "content": body.message}]
+        system_prompt = None
 
     try:
         llm_client = make_llm_client(provider, api_key, model_id, base_url)
-        reply = llm_client.chat(messages=messages, context_documents=context_documents)
+        reply = llm_client.chat(
+            messages=messages,
+            context_documents=context_documents,
+            system_prompt=system_prompt,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     # Auto-persist both turns to the session when a session_id is provided.
-    if body.session_id is not None:
-        session = db.get(ChatSession, body.session_id)
-        if session is not None:
-            db.add(ChatMessage(session_id=session.id, role="user", content=body.message))
-            db.add(ChatMessage(session_id=session.id, role="assistant", content=reply))
-            session.updated_at = datetime.now(timezone.utc)
-            db.commit()
+    if session is not None:
+        db.add(ChatMessage(session_id=session.id, role="user", content=body.message))
+        db.add(ChatMessage(session_id=session.id, role="assistant", content=reply))
+        session.updated_at = datetime.now(timezone.utc)
+        db.commit()
 
     return ChatResponse(reply=reply)

@@ -53,7 +53,12 @@ class LLMClient(ABC):
     """Abstract base for LLM provider clients."""
 
     @abstractmethod
-    def chat(self, messages: list[dict], context_documents: list[ContextDocument]) -> str:
+    def chat(
+        self,
+        messages: list[dict],
+        context_documents: list[ContextDocument],
+        system_prompt: str | None = None,
+    ) -> str:
         """Send a chat request and return the assistant's reply.
 
         Args:
@@ -62,6 +67,8 @@ class LLMClient(ABC):
                       The last entry is the current user turn.
             context_documents: Papers to include as context. Prepended to the first
                                 user message as structured content blocks.
+            system_prompt: Override the default system prompt. When ``None``, the
+                           built-in ``_SYSTEM_PROMPT`` is used.
 
         Returns:
             The assistant's response text.
@@ -94,7 +101,12 @@ class AnthropicLLMClient(LLMClient):
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model_id = model_id
 
-    def chat(self, messages: list[dict], context_documents: list[ContextDocument]) -> str:
+    def chat(
+        self,
+        messages: list[dict],
+        context_documents: list[ContextDocument],
+        system_prompt: str | None = None,
+    ) -> str:
         """Build Anthropic messages with document content blocks and call the API."""
         context_blocks: list[dict] = []
         for doc in context_documents:
@@ -130,7 +142,7 @@ class AnthropicLLMClient(LLMClient):
         result = self._client.messages.create(
             model=self._model_id,
             max_tokens=4096,
-            system=_SYSTEM_PROMPT,
+            system=system_prompt if system_prompt is not None else _SYSTEM_PROMPT,
             messages=api_messages,
         )
         return result.content[0].text
@@ -175,7 +187,12 @@ class OpenAILLMClient(LLMClient):
         self._model_id = model_id
         self._base_url = base_url
 
-    def chat(self, messages: list[dict], context_documents: list[ContextDocument]) -> str:
+    def chat(
+        self,
+        messages: list[dict],
+        context_documents: list[ContextDocument],
+        system_prompt: str | None = None,
+    ) -> str:
         """Build an OpenAI-compatible messages list and call the API.
 
         PDF bytes are silently ignored — only extracted text is used.
@@ -189,7 +206,9 @@ class OpenAILLMClient(LLMClient):
             else:
                 context_parts.append(f"{header}\n\nNo content available for this paper.")
 
-        api_messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        api_messages: list[dict] = [
+            {"role": "system", "content": system_prompt if system_prompt is not None else _SYSTEM_PROMPT}
+        ]
 
         if context_parts:
             context_str = "\n\n".join(context_parts)

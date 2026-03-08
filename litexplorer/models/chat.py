@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from litexplorer.models.base import Base
@@ -24,6 +24,11 @@ class ChatSession(Base):
     project_id: Mapped[int | None] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
+    # Discussion mode — "papers" (default) or "extraction_schema"
+    context_type: Mapped[str] = mapped_column(String(32), nullable=False, default="papers")
+    # Auxiliary context ID — for "extraction_schema" mode this holds the schema PK.
+    context_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # User-set title for saved snapshots; None for auto-sessions.
     title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     # True = the auto-saved "last conversation". False = explicitly saved by user.
