@@ -72,6 +72,17 @@ class SaveSessionRequest(BaseModel):
     title: str
 
 
+class PatchSessionRequest(BaseModel):
+    """Fields that can be mutated on an existing session.
+
+    Currently only ``context_id`` is patchable — used when a "New schema"
+    discussion materialises into a real schema and the session must be
+    re-scoped to that schema ID so session-restore works next time.
+    """
+
+    context_id: Optional[int] = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -138,6 +149,26 @@ def _find_auto_session(
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.patch("/sessions/{session_id}", response_model=ChatSessionOut)
+def patch_session(
+    session_id: int, body: PatchSessionRequest, db: Session = Depends(get_db)
+) -> ChatSessionOut:
+    """Update mutable fields on a session.
+
+    Currently supports patching ``context_id`` — called when an LLM discussion
+    that started in "New schema" mode materialises a real schema, so the session
+    is re-scoped to the new schema ID and can be restored on the next page load.
+    """
+    session = db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    session.context_id = body.context_id
+    session.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return _session_out(session, include_messages=False)
 
 
 @router.post("/sessions/auto", response_model=ChatSessionOut)

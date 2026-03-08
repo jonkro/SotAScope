@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useWork } from '../hooks/useWorks';
 import { useTimeline } from '../hooks/useTimeline';
 import { useWorkPDFs } from '../hooks/useWorkPDFs';
@@ -12,8 +12,20 @@ import {
   useDeleteChatSession,
   useClearChatMessages,
 } from '../hooks/useChatSessions';
-import { getChatSession, postLLMChat, createWorkNote, getExtractionSchemas, getExtractionSchema } from '../api';
+import {
+  getChatSession,
+  postLLMChat,
+  createWorkNote,
+  getExtractionSchemas,
+  getExtractionSchema,
+  createColumnFromProposal,
+  createSchemaFromDiscussion,
+  patchChatSession,
+} from '../api';
 import type { ChatMessage, ChatSessionOut, ExtractionSchema, TopicListOut, WorkPDFOut } from '../types';
+import { parseProposals } from '../utils/proposalParser';
+import type { ColumnProposal } from '../utils/proposalParser';
+import { ColumnProposalCard, UserCancelledError } from '../components/ColumnProposalCard';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -406,6 +418,170 @@ function PaperContextSelector({
 
 
 // ---------------------------------------------------------------------------
+// Assistant message — renders plain text or proposal cards depending on mode
+// ---------------------------------------------------------------------------
+
+function AssistantMessage({
+  content,
+  showProposals,
+  saveNoteOpen,
+  contextWorkIds,
+  projectId,
+  modelId,
+  onSaveNote,
+  onSaveNoteDone,
+  onAcceptProposal,
+  onRejectProposal,
+}: {
+  content: string;
+  showProposals: boolean;
+  saveNoteOpen: boolean;
+  contextWorkIds: { work_id: number; title: string }[];
+  projectId: number | null;
+  modelId: string;
+  onSaveNote: () => void;
+  onSaveNoteDone: () => void;
+  onAcceptProposal: (proposal: ColumnProposal) => Promise<void>;
+  onRejectProposal: () => void;
+}) {
+  // Only parse when in extraction_schema mode — skip for general discussion
+  const segments = showProposals ? parseProposals(content) : null;
+  const hasProposals = segments?.some((s) => s.type === 'proposal') ?? false;
+
+  return (
+    <div className="flex justify-start">
+      <div className={hasProposals ? 'w-full max-w-2xl' : 'max-w-[75%]'}>
+        {hasProposals && segments ? (
+          <div className="space-y-2">
+            {segments.map((seg, i) =>
+              seg.type === 'text' ? (
+                <div
+                  key={i}
+                  className="bg-gray-100 rounded-lg px-3 py-2 text-sm text-gray-800 whitespace-pre-wrap"
+                >
+                  {seg.content}
+                </div>
+              ) : (
+                <ColumnProposalCard
+                  key={i}
+                  proposal={seg.proposal}
+                  onAccept={onAcceptProposal}
+                  onReject={onRejectProposal}
+                />
+              ),
+            )}
+          </div>
+        ) : (
+          <div className="bg-gray-100 rounded-lg px-3 py-2 text-sm text-gray-800 whitespace-pre-wrap">
+            {content}
+          </div>
+        )}
+
+        {saveNoteOpen ? (
+          <SaveNoteForm
+            content={content}
+            contextWorkIds={contextWorkIds}
+            projectId={projectId}
+            modelId={modelId}
+            onDone={onSaveNoteDone}
+          />
+        ) : (
+          <button
+            onClick={onSaveNote}
+            className="text-[10px] text-gray-400 hover:text-blue-600 mt-1 underline"
+          >
+            Save as note
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// New schema dialog — shown when first Accept fires with no existing schema
+// ---------------------------------------------------------------------------
+
+function NewSchemaDialog({
+  isLoading,
+  errorMsg,
+  onSubmit,
+  onCancel,
+}: {
+  isLoading: boolean;
+  errorMsg: string;
+  onSubmit: (title: string, description: string) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm mx-4">
+        <div className="px-4 py-3 border-b border-gray-200">
+          <h2 className="text-sm font-semibold text-gray-900">Name the new schema</h2>
+          <p className="text-xs text-gray-500 mt-0.5">
+            This column will be the first entry in a new extraction schema.
+          </p>
+        </div>
+        <div className="px-4 py-3 space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Schema title <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && title.trim()) onSubmit(title.trim(), description.trim());
+              }}
+              placeholder="e.g. Methodology review"
+              autoFocus
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Description (optional)
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What is this schema for?"
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+          </div>
+          {errorMsg && (
+            <p className="text-xs text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200">
+              {errorMsg}
+            </p>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-gray-200 flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            disabled={isLoading}
+            className="px-3 py-1.5 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSubmit(title.trim(), description.trim())}
+            disabled={!title.trim() || isLoading}
+            className="px-3 py-1.5 text-xs text-white bg-indigo-600 rounded hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {isLoading ? 'Creating…' : 'Create & Accept'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Load session modal
 // ---------------------------------------------------------------------------
 
@@ -482,6 +658,7 @@ export default function DiscussionPage() {
     projectId?: string;
   }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const isLibraryMode = workIdParam != null;
   const workId = workIdParam != null ? Number(workIdParam) : null;
@@ -685,6 +862,20 @@ export default function DiscussionPage() {
   // Re-run only when the scope key becomes known (stable after first render).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
+
+  // ---------------------------------------------------------------------------
+  // New-schema dialog state (for Accept on a "New schema" discussion)
+  // ---------------------------------------------------------------------------
+
+  // When context_id is null and the user accepts a proposal, we show a dialog
+  // asking for a schema title.  The promise callbacks let the card await the result.
+  const [newSchemaDialog, setNewSchemaDialog] = useState<{
+    proposal: ColumnProposal;
+    resolve: () => void;
+    reject: (err: Error) => void;
+  } | null>(null);
+  const [newSchemaLoading, setNewSchemaLoading] = useState(false);
+  const [newSchemaError, setNewSchemaError] = useState('');
 
   // ---------------------------------------------------------------------------
   // Chat state
@@ -905,6 +1096,75 @@ export default function DiscussionPage() {
         return { ...e, use_pdf: newUsePdf && canUsePdf };
       });
     });
+  };
+
+  // ---------------------------------------------------------------------------
+  // Proposal Accept / Reject handlers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Accept a column proposal from the LLM.
+   *
+   * - Existing schema (contextId set): POST the column directly, then invalidate.
+   * - New schema (contextId null): open the NewSchemaDialog and wait for the user
+   *   to provide a title. Resolves/rejects the card's promise accordingly.
+   */
+  const handleAcceptProposal = (proposal: ColumnProposal): Promise<void> => {
+    if (contextId != null) {
+      // Existing schema — add column directly
+      return createColumnFromProposal(contextId, proposal).then(() => {
+        queryClient.invalidateQueries({ queryKey: ['extraction', 'schema', contextId] });
+        queryClient.invalidateQueries({ queryKey: ['extraction', 'schemas', projectId] });
+      });
+    }
+    // New schema — open dialog and expose resolve/reject to the dialog handler
+    return new Promise<void>((resolve, reject) => {
+      setNewSchemaError('');
+      setNewSchemaDialog({ proposal, resolve, reject });
+    });
+  };
+
+  /** Called when the user submits the new-schema title form. */
+  const handleCreateSchemaAndColumn = async (title: string, description: string) => {
+    if (!newSchemaDialog) return;
+    setNewSchemaLoading(true);
+    setNewSchemaError('');
+    try {
+      const schema = await createSchemaFromDiscussion(title, description || null, projectId);
+      await createColumnFromProposal(schema.id, newSchemaDialog.proposal);
+
+      // Promote context from "new schema" to the real schema ID
+      setContextId(schema.id);
+      if (contextIdKey) localStorage.setItem(contextIdKey, String(schema.id));
+      if (modeKey) localStorage.setItem(modeKey, 'extraction_schema');
+
+      // Patch the auto-session so session-restore lands on the correct scope
+      if (autoSessionId != null) {
+        await patchChatSession(autoSessionId, { context_id: schema.id });
+      }
+
+      // Refresh caches so the dropdown and sidebar reflect the new schema
+      queryClient.invalidateQueries({ queryKey: ['extraction', 'schemas', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['extraction', 'schema', schema.id] });
+
+      newSchemaDialog.resolve();
+      setNewSchemaDialog(null);
+    } catch (e) {
+      let msg = e instanceof Error ? e.message : String(e);
+      try { const p = JSON.parse(msg) as { detail?: string }; msg = p.detail ?? msg; } catch { /* not JSON */ }
+      setNewSchemaError(msg);
+      // Don't close the dialog on API error — let user retry or cancel
+    } finally {
+      setNewSchemaLoading(false);
+    }
+  };
+
+  /** Called when the user cancels the new-schema dialog. */
+  const handleCancelNewSchema = () => {
+    if (!newSchemaDialog) return;
+    newSchemaDialog.reject(new UserCancelledError());
+    setNewSchemaDialog(null);
+    setNewSchemaError('');
   };
 
   // New Chat — clears messages from the auto-session
@@ -1292,29 +1552,18 @@ export default function DiscussionPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex justify-start">
-                    <div className="max-w-[75%]">
-                      <div className="bg-gray-100 rounded-lg px-3 py-2 text-sm text-gray-800 whitespace-pre-wrap">
-                        {msg.content}
-                      </div>
-                      {saveNoteForIdx === idx ? (
-                        <SaveNoteForm
-                          content={msg.content}
-                          contextWorkIds={contextWorkIds}
-                          projectId={projectId}
-                          modelId={llmModelId}
-                          onDone={() => setSaveNoteForIdx(null)}
-                        />
-                      ) : (
-                        <button
-                          onClick={() => setSaveNoteForIdx(idx)}
-                          className="text-[10px] text-gray-400 hover:text-blue-600 mt-1 underline"
-                        >
-                          Save as note
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                  <AssistantMessage
+                    content={msg.content}
+                    showProposals={discussionMode === 'extraction_schema'}
+                    saveNoteOpen={saveNoteForIdx === idx}
+                    contextWorkIds={contextWorkIds}
+                    projectId={projectId}
+                    modelId={llmModelId}
+                    onSaveNote={() => setSaveNoteForIdx(idx)}
+                    onSaveNoteDone={() => setSaveNoteForIdx(null)}
+                    onAcceptProposal={handleAcceptProposal}
+                    onRejectProposal={() => { /* purely visual — card manages its own state */ }}
+                  />
                 )}
               </div>
             ))}
@@ -1405,6 +1654,16 @@ export default function DiscussionPage() {
           onLoad={handleLoadSession}
           onClose={() => setShowLoadModal(false)}
           onDelete={handleDeleteSession}
+        />
+      )}
+
+      {/* New schema dialog — shown when Accept fires with no existing schema */}
+      {newSchemaDialog !== null && (
+        <NewSchemaDialog
+          isLoading={newSchemaLoading}
+          errorMsg={newSchemaError}
+          onSubmit={handleCreateSchemaAndColumn}
+          onCancel={handleCancelNewSchema}
         />
       )}
     </div>

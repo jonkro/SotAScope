@@ -597,6 +597,13 @@ export function clearChatMessages(sessionId: number) {
   });
 }
 
+export function patchChatSession(sessionId: number, data: { context_id?: number | null }) {
+  return apiFetch<import('./types').ChatSessionOut>(`/api/chat/sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
 // ---- Extraction ----
 
 export function getExtractionSchemas(projectId?: number) {
@@ -700,4 +707,27 @@ export function getExtractionPromptPreview(schemaId: number, workId: number) {
   return apiFetch<{ system_text: string; user_message: string }>(
     `/api/extraction/schemas/${schemaId}/preview-prompt?work_id=${workId}`,
   );
+}
+
+/** Create a column from an LLM proposal. Auto-assigns sort_order at the end of the schema. */
+export function createColumnFromProposal(
+  schemaId: number,
+  data: { name: string; prompt: string; description?: string; allowed_values?: string[] | null },
+) {
+  return apiFetch<ExtractionColumn>(`/api/extraction/schemas/${schemaId}/columns/from-proposal`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+/** Create an extraction schema materialised from a schema design discussion. */
+export function createSchemaFromDiscussion(
+  title: string,
+  description: string | null,
+  projectId: number | null,
+) {
+  return apiFetch<ExtractionSchema>('/api/extraction/schemas/from-discussion', {
+    method: 'POST',
+    body: JSON.stringify({ title, description: description || null, project_id: projectId }),
+  });
 }
