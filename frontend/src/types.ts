@@ -365,6 +365,8 @@ export interface ChatSessionOut {
   project_id: number | null;
   title: string | null;
   is_auto: boolean;
+  context_type: string;
+  context_id: number | null;
   message_count: number;
   created_at: string;
   updated_at: string;

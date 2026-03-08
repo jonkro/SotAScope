@@ -557,7 +557,12 @@ export function postLLMChat(data: {
 
 // ---- Chat Sessions ----
 
-export function getOrCreateAutoSession(data: { work_id: number | null; project_id: number | null }) {
+export function getOrCreateAutoSession(data: {
+  work_id: number | null;
+  project_id: number | null;
+  context_type?: string;
+  context_id?: number | null;
+}) {
   return apiFetch<import('./types').ChatSessionOut>('/api/chat/sessions/auto', {
     method: 'POST',
     body: JSON.stringify(data),
