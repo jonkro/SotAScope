@@ -42,6 +42,12 @@ export interface ColumnProposalCardProps {
   /** Initial proposal values from the LLM response. */
   proposal: ColumnProposal;
   /**
+   * Pre-set the card state on mount — used when restoring a session to mark
+   * proposals that were already accepted (column already exists in the schema).
+   * Defaults to 'pending'.
+   */
+  initialState?: 'pending' | 'accepted';
+  /**
    * Called when the user clicks Accept. Must return a Promise:
    * - Resolves → card transitions to 'accepted'.
    * - Rejects with UserCancelledError → card returns to 'pending' silently.
@@ -54,8 +60,8 @@ export interface ColumnProposalCardProps {
   onReject: () => void;
 }
 
-export function ColumnProposalCard({ proposal, onAccept, onReject }: ColumnProposalCardProps) {
-  const [cardState, setCardState] = useState<CardState>('pending');
+export function ColumnProposalCard({ proposal, onAccept, onReject, initialState }: ColumnProposalCardProps) {
+  const [cardState, setCardState] = useState<CardState>(initialState ?? 'pending');
   const [error, setError] = useState('');
 
   // Editable copies of the proposal fields

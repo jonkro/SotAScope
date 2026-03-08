@@ -424,6 +424,7 @@ function PaperContextSelector({
 function AssistantMessage({
   content,
   showProposals,
+  acceptedColumnNames,
   saveNoteOpen,
   contextWorkIds,
   projectId,
@@ -435,6 +436,8 @@ function AssistantMessage({
 }: {
   content: string;
   showProposals: boolean;
+  /** Column names already in the schema — proposal cards matching these start as 'accepted'. */
+  acceptedColumnNames?: Set<string>;
   saveNoteOpen: boolean;
   contextWorkIds: { work_id: number; title: string }[];
   projectId: number | null;
@@ -465,6 +468,7 @@ function AssistantMessage({
                 <ColumnProposalCard
                   key={i}
                   proposal={seg.proposal}
+                  initialState={acceptedColumnNames?.has(seg.proposal.name) ? 'accepted' : undefined}
                   onAccept={onAcceptProposal}
                   onReject={onRejectProposal}
                 />
@@ -769,11 +773,36 @@ export default function DiscussionPage() {
   const [contextId, setContextId] = useState<number | null>(null);
 
   // Schema detail for the summary card (loaded when an existing schema is selected)
-  const { data: selectedSchemaDetail, isLoading: schemaDetailLoading } = useQuery({
+  const { data: selectedSchemaDetail, isLoading: schemaDetailLoading, isError: schemaDetailError } = useQuery({
     queryKey: ['extraction', 'schema', contextId],
     queryFn: () => getExtractionSchema(contextId!),
     enabled: !isLibraryMode && contextId != null && discussionMode === 'extraction_schema',
+    retry: 1,
   });
+
+  // Edge case: schema was deleted externally — fall back to General discussion.
+  // Runs at most once per error event (ref prevents double-fire from React's
+  // concurrent mode re-renders after the state updates settle).
+  const schemaFallbackAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!schemaDetailError || contextId == null || discussionMode !== 'extraction_schema') {
+      if (!schemaDetailError) schemaFallbackAppliedRef.current = false;
+      return;
+    }
+    if (schemaFallbackAppliedRef.current) return;
+    schemaFallbackAppliedRef.current = true;
+
+    setDiscussionMode('papers');
+    setContextId(null);
+    if (modeKey) localStorage.setItem(modeKey, 'papers');
+    if (contextIdKey) localStorage.removeItem(contextIdKey);
+    setMessages((prev) => [
+      ...prev,
+      { role: 'error' as const, content: 'The extraction schema this conversation referenced has been deleted.' },
+    ]);
+  // modeKey and contextIdKey are derived from stable route params — safe to omit
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schemaDetailError, contextId, discussionMode]);
 
   // Dropdown value derived from mode + contextId:
   //   ""      = General discussion (papers mode)
@@ -961,11 +990,20 @@ export default function DiscussionPage() {
     parts.push('━━━ System ━━━');
     if (discussionMode === 'extraction_schema') {
       if (contextId != null && selectedSchemaDetail) {
-        parts.push(`[Schema discussion prompt for: "${selectedSchemaDetail.title}"]`);
+        parts.push(`[Schema discussion system prompt for "${selectedSchemaDetail.title}"]`);
+        if (selectedSchemaDetail.description) {
+          parts.push(`Schema purpose: ${selectedSchemaDetail.description}`);
+        }
+        const cols = selectedSchemaDetail.columns;
+        if (cols.length > 0) {
+          parts.push(`Current columns (${cols.length}): ${cols.map((c) => c.name).join(', ')}`);
+        } else {
+          parts.push('No columns defined yet.');
+        }
       } else {
-        parts.push('[Schema discussion prompt (designing a new schema)]');
+        parts.push('[Schema discussion system prompt — designing a new schema from scratch]');
       }
-      parts.push('(Instructs the AI to help design extraction schema columns.)');
+      parts.push('(Guides the AI to propose extraction columns using column-proposal blocks.)');
     } else {
       parts.push('You are a research assistant helping analyze academic literature.');
     }
@@ -1069,6 +1107,12 @@ export default function DiscussionPage() {
     [topicLists],
   );
 
+  // Set of column names already in the selected schema — used to pre-mark restored proposals.
+  const acceptedColumnNames = useMemo(
+    () => new Set((selectedSchemaDetail?.columns ?? []).map((c) => c.name)),
+    [selectedSchemaDetail],
+  );
+
   const handleChangeEntry = (wid: number, updated: Partial<PaperEntry>) => {
     setEntries((prev) => prev.map((e) => (e.work_id === wid ? { ...e, ...updated } : e)));
   };
@@ -1167,17 +1211,34 @@ export default function DiscussionPage() {
     setNewSchemaError('');
   };
 
-  // New Chat — clears messages from the auto-session
+  // New Chat — clears messages and resets all context (schema dropdown + paper selection).
   const handleNewChat = () => {
     setMessages([]);
     setSaveNoteForIdx(null);
     setConfirmClear(false);
-    // Clear persisted selection so the next discussion starts with a fresh slate
+
+    // Reset schema dropdown to "General discussion" (unlocked)
+    setDiscussionMode('papers');
+    setContextId(null);
+    if (modeKey) localStorage.setItem(modeKey, 'papers');
+    if (contextIdKey) localStorage.removeItem(contextIdKey);
+
+    // Clear persisted paper selection so the next discussion starts fresh
     if (selKey) localStorage.removeItem(selKey);
     restoredSelectionRef.current = null;
-    if (autoSessionId != null) {
-      clearMutation.mutate(autoSessionId);
-    }
+    // Re-enable all papers that have extracted text
+    setEntries((prev) => prev.map((e) => ({ ...e, included: e.canInclude })));
+
+    // Switch to (or create) the papers-mode auto-session and clear any prior messages in it
+    getOrCreateAuto.mutate(
+      { work_id: workId, project_id: projectId, context_type: 'papers', context_id: null },
+      {
+        onSuccess: (session) => {
+          setAutoSessionId(session.id);
+          clearMutation.mutate(session.id);
+        },
+      },
+    );
   };
 
   // Unified schema dropdown change handler.
@@ -1555,6 +1616,7 @@ export default function DiscussionPage() {
                   <AssistantMessage
                     content={msg.content}
                     showProposals={discussionMode === 'extraction_schema'}
+                    acceptedColumnNames={discussionMode === 'extraction_schema' ? acceptedColumnNames : undefined}
                     saveNoteOpen={saveNoteForIdx === idx}
                     contextWorkIds={contextWorkIds}
                     projectId={projectId}
@@ -1600,6 +1662,7 @@ export default function DiscussionPage() {
               <button
                 onClick={handleSend}
                 disabled={chatDisabled || !input.trim()}
+                title={llmNotConfigured ? 'Configure an LLM provider in Settings to enable chat' : undefined}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 self-end"
               >
                 {isPending ? (
