@@ -472,6 +472,34 @@ def build_schema_discussion_prompt(
     )
 
     parts.append(
+        "\n## Examples of correctly formatted proposals"
+        "\n"
+        "Study these two examples before proposing any columns. "
+        "They show the exact fenced-block format the system expects — "
+        "one constrained column (with allowed_values) and one free-form column (allowed_values is null)."
+        "\n\n"
+        "**Example A — constrained column:**\n"
+        "```column-proposal\n"
+        "{\n"
+        '  "name": "Model family",\n'
+        '  "prompt": "Which broad family of model architecture does this paper use or propose?",\n'
+        '  "description": "The high-level architecture family. Use Other if the model does not fit the listed categories.",\n'
+        '  "allowed_values": ["Transformer", "CNN", "GNN", "RNN", "Other"]\n'
+        "}\n"
+        "```"
+        "\n\n"
+        "**Example B — free-form column:**\n"
+        "```column-proposal\n"
+        "{\n"
+        '  "name": "Key contribution",\n'
+        '  "prompt": "What is the primary technical contribution of this paper in one or two sentences?",\n'
+        '  "description": "A concise statement of what is novel — the main algorithmic idea, dataset, or theoretical result.",\n'
+        '  "allowed_values": null\n'
+        "}\n"
+        "```"
+    )
+
+    parts.append(
         "\n## Conversation style"
         "\n"
         "Engage conversationally. Ask clarifying questions to understand the research topic "
@@ -494,8 +522,11 @@ def build_schema_discussion_prompt(
 
     # Bookend reminder (weak models pay more attention to instructions near the end)
     parts.append(
-        "\nRemember: each column proposal MUST appear in a ```column-proposal fenced JSON "
-        'block with exactly these four fields: "name", "prompt", "description", "allowed_values".'
+        "\nRemember: every column you propose MUST be wrapped in a ```column-proposal``` "
+        "fenced JSON block, exactly as shown in the examples above. "
+        "Do NOT use markdown tables, numbered lists, bullet points, or plain prose descriptions "
+        "instead of fenced blocks — those formats cannot be automatically parsed and accepted. "
+        'The four required JSON fields are: "name", "prompt", "description", "allowed_values".'
     )
 
     return "\n".join(parts)
