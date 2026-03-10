@@ -313,6 +313,112 @@ function strategy3(text: string): MessageSegment[] {
 }
 
 // ---------------------------------------------------------------------------
+// Table/list parsing helpers (strategies 4 and 5)
+// ---------------------------------------------------------------------------
+
+function parseTableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((c) => c.trim());
+}
+
+function stripInlineMarkdown(text: string): string {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .trim();
+}
+
+function cleanNameCell(cell: string): string {
+  // Prefer the bold span as the primary name — the parenthetical (if any) is after it
+  const boldMatch = cell.match(/\*\*([^*]+)\*\*/);
+  if (boldMatch) return boldMatch[1].trim();
+  // Otherwise strip all inline markdown then drop a trailing parenthetical
+  let s = stripInlineMarkdown(cell);
+  s = s.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return s;
+}
+
+// Strategy 4: markdown table whose header contains a cell matching /column|name/i
+const TABLE_SEP_RE = /^\|[-\s|:]+\|?\s*$/;
+
+function strategy4(text: string): MessageSegment[] {
+  const lines = text.split('\n');
+  const proposals: ColumnProposal[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (!line.startsWith('|')) { i++; continue; }
+
+    // The very next line must be a separator row (|---|---|)
+    if (i + 1 >= lines.length || !TABLE_SEP_RE.test(lines[i + 1].trim())) {
+      i++;
+      continue;
+    }
+
+    const headers = parseTableCells(lines[i]);
+    const nameColIdx = headers.findIndex((h) => /column|name/i.test(h));
+    if (nameColIdx === -1) { i += 2; continue; }
+
+    const descColIdx = headers.findIndex((h) => /why|description|purpose/i.test(h));
+    i += 2; // skip header row + separator row
+
+    while (i < lines.length && lines[i].trim().startsWith('|')) {
+      const cells = parseTableCells(lines[i]);
+      if (cells.length > nameColIdx) {
+        const name = cleanNameCell(cells[nameColIdx]);
+        const desc =
+          descColIdx !== -1 && cells.length > descColIdx
+            ? stripInlineMarkdown(cells[descColIdx])
+            : '';
+        if (name) {
+          proposals.push({ name, prompt: desc || name, description: desc, allowed_values: null });
+        }
+      }
+      i++;
+    }
+  }
+
+  if (proposals.length === 0) return [];
+
+  // Return the full message as a single text segment, then all proposals after it.
+  // (We can't cleanly splice them into the table rows as with fenced blocks.)
+  const segments: MessageSegment[] = [{ type: 'text', content: text }];
+  for (const p of proposals) segments.push({ type: 'proposal', proposal: p });
+  return segments;
+}
+
+// Strategy 5: numbered/bulleted list with bold headings
+// Matches: "1. **Name**: description" | "- **Name** — description" | "* **Name**: …"
+const BOLD_LIST_RE = /^(?:\d+[.)]\s+|[-*•]\s+)\*\*([^*]+)\*\*\s*(?::|—|–|-)\s*(.+)/;
+
+function strategy5(text: string): MessageSegment[] {
+  const proposals: ColumnProposal[] = [];
+
+  for (const line of text.split('\n')) {
+    const m = line.trim().match(BOLD_LIST_RE);
+    if (m) {
+      const name = m[1].trim();
+      const desc = stripInlineMarkdown(m[2].trim());
+      if (name) {
+        proposals.push({ name, prompt: desc || name, description: desc, allowed_values: null });
+      }
+    }
+  }
+
+  if (proposals.length === 0) return [];
+
+  const segments: MessageSegment[] = [{ type: 'text', content: text }];
+  for (const p of proposals) segments.push({ type: 'proposal', proposal: p });
+  return segments;
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -350,6 +456,18 @@ export function parseProposals(message: string): MessageSegment[] {
   // Strategy 3: bare JSON objects/arrays
   {
     const segs = strategy3(text);
+    if (segs.some((s) => s.type === 'proposal')) return segs;
+  }
+
+  // Strategy 4: markdown table with a header matching /column|name/i
+  {
+    const segs = strategy4(text);
+    if (segs.some((s) => s.type === 'proposal')) return segs;
+  }
+
+  // Strategy 5: numbered/bulleted list with bold headings ("1. **Name**: …")
+  {
+    const segs = strategy5(text);
     if (segs.some((s) => s.type === 'proposal')) return segs;
   }
 

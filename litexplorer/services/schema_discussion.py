@@ -195,7 +195,98 @@ _GENERIC_FENCE_RE = re.compile(
     re.DOTALL,
 )
 
-# Strategy 4: key-value lines like "**Name**: Sample Size" or "- Prompt: ..."
+# Strategy 4: markdown table (header cell matching /column|name/)
+_TABLE_SEPARATOR_RE = re.compile(r"^\|[-\s|:]+\|?\s*$")
+
+
+def _parse_table_cells(line: str) -> list[str]:
+    """Split a markdown table row into stripped cell strings."""
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _strip_inline_markdown(text: str) -> str:
+    """Remove **bold** and *italic* and `code` markers from inline text."""
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    return text.strip()
+
+
+def _clean_name_cell(cell: str) -> str:
+    """Extract the primary column name from a table cell.
+
+    Prefers the bold span (``**...**``) as the name, ignoring any trailing
+    parenthetical.  Falls back to stripping all inline markdown and removing a
+    trailing ``(...)`` parenthetical.
+    """
+    bold_match = re.search(r"\*\*([^*]+)\*\*", cell)
+    if bold_match:
+        return bold_match.group(1).strip()
+    s = _strip_inline_markdown(cell)
+    s = re.sub(r"\s*\([^)]*\)\s*$", "", s)
+    return s.strip()
+
+
+def _strategy4_markdown_table(text: str) -> list[dict]:
+    """Strategy 4: parse a markdown table with a column/name header.
+
+    Looks for a table header row followed immediately by a separator row
+    (``|---|---|``).  The header cell matching ``/column|name/i`` becomes the
+    name source; the cell matching ``/why|description|purpose/i`` (if any)
+    becomes the description.  ``prompt`` is set equal to the description (no
+    separate prompt column is expected in this output style).
+    ``allowed_values`` is always ``None``.
+    """
+    lines = text.splitlines()
+    proposals: list[dict] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line.startswith("|"):
+            i += 1
+            continue
+        # Next line must be a separator row
+        if i + 1 >= len(lines) or not _TABLE_SEPARATOR_RE.match(lines[i + 1].strip()):
+            i += 1
+            continue
+
+        headers = _parse_table_cells(lines[i])
+        name_col = next(
+            (j for j, h in enumerate(headers) if re.search(r"column|name", h, re.IGNORECASE)),
+            -1,
+        )
+        if name_col == -1:
+            i += 2
+            continue
+
+        desc_col = next(
+            (j for j, h in enumerate(headers) if re.search(r"why|description|purpose", h, re.IGNORECASE)),
+            -1,
+        )
+        i += 2  # skip header + separator
+
+        while i < len(lines) and lines[i].strip().startswith("|"):
+            cells = _parse_table_cells(lines[i])
+            if len(cells) > name_col:
+                name = _clean_name_cell(cells[name_col])
+                desc = (
+                    _strip_inline_markdown(cells[desc_col])
+                    if desc_col != -1 and len(cells) > desc_col
+                    else ""
+                )
+                if name:
+                    proposals.append({
+                        "name": name,
+                        "prompt": desc or name,
+                        "description": desc,
+                        "allowed_values": None,
+                    })
+            i += 1
+
+    return proposals
+
+
+# Strategy 5: key-value lines like "**Name**: Sample Size" or "- Prompt: ..."
 # Use [ \t]* (horizontal whitespace only) around the colon so the pattern
 # cannot span across lines via \s* matching \n characters.
 _KV_LINE_RE = re.compile(
@@ -262,8 +353,8 @@ def _strategy3_bare_json(text: str) -> list[dict]:
     return results
 
 
-def _strategy4_markdown_list(text: str) -> list[dict]:
-    """Strategy 4: extract a proposal from markdown key-value patterns.
+def _strategy5_markdown_list(text: str) -> list[dict]:
+    """Strategy 5: extract a proposal from markdown key-value patterns.
 
     Looks for lines like::
 
@@ -310,9 +401,11 @@ def parse_column_proposals(llm_response: str) -> tuple[list[dict], str]:
        that contain JSON with recognizable proposal fields.
     3. **bare_json**: Bare ``{...}`` or ``[...]`` JSON structures embedded in
        prose, including JSON arrays of proposal objects.
-    4. **markdown_list**: Markdown key-value patterns
+    4. **markdown_table**: A markdown table whose header row contains a cell
+       matching ``/column|name/i``.  Each body row yields one proposal.
+    5. **markdown_list**: Markdown key-value patterns
        (``**Name**: ..., **Prompt**: ...``).
-    5. **failed**: All strategies exhausted — returns an empty list.
+    6. **failed**: All strategies exhausted — returns an empty list.
 
     Pre-processing (always applied before strategy 1):
 
@@ -340,7 +433,7 @@ def parse_column_proposals(llm_response: str) -> tuple[list[dict], str]:
         of dicts with keys ``name``, ``prompt``, ``description``,
         ``allowed_values``, and *parsing_method* is one of
         ``"fenced_block"``, ``"json_fence"``, ``"bare_json"``,
-        ``"markdown_list"``, or ``"failed"``.
+        ``"markdown_table"``, ``"markdown_list"``, or ``"failed"``.
     """
     text = _strip_thinking_tags(llm_response)
 
@@ -356,7 +449,11 @@ def parse_column_proposals(llm_response: str) -> tuple[list[dict], str]:
     if proposals:
         return proposals, "bare_json"
 
-    proposals = _strategy4_markdown_list(text)
+    proposals = _strategy4_markdown_table(text)
+    if proposals:
+        return proposals, "markdown_table"
+
+    proposals = _strategy5_markdown_list(text)
     if proposals:
         return proposals, "markdown_list"
 

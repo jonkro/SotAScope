@@ -635,6 +635,50 @@ def test_parse_allowed_values_null_like_string_normalized():
         assert proposals[0]["allowed_values"] is None, f"expected None for {null_str!r}"
 
 
+def test_parse_markdown_table_real_world_example():
+    """Markdown table from GPT-OSS:120B output is parsed via markdown_table strategy."""
+    response = (
+        "| # | Column (what to list) | Why it helps to differentiate the two papers |\n"
+        "|---|-----------------------|----------------------------------------------|\n"
+        "| 1 | **Reference** (authors, year, venue) | Basic bibliographic identifier. |\n"
+        "| 2 | **Model name** | *MOIRAI-MoE* vs. *MOIRAI-MoE (with token-clustering gating)* |\n"
+        "| 3 | **Model family** (e.g., Decoder-only MoE, Encoder-decoder Transformer) | One paper introduces a **decoder-only MoE** architecture. |\n"
+        "| 4 | **Number of experts** (and expert size) | The MoE paper varies the number of experts. |\n"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert method == "markdown_table"
+    assert len(proposals) == 4
+    assert proposals[0]["name"] == "Reference"
+    assert proposals[1]["name"] == "Model name"
+    assert proposals[2]["name"] == "Model family"
+    assert proposals[3]["name"] == "Number of experts"
+    # No bold markers or parentheticals in names
+    for p in proposals:
+        assert "**" not in p["name"]
+        assert "(" not in p["name"]
+    # Descriptions populated from the "Why" column
+    assert "bibliographic" in proposals[0]["description"]
+    assert "experts" in proposals[3]["description"]
+    # prompt equals description (no separate prompt column)
+    for p in proposals:
+        assert p["prompt"] == p["description"]
+    # allowed_values always None
+    for p in proposals:
+        assert p["allowed_values"] is None
+
+
+def test_parse_markdown_table_no_name_header_falls_through():
+    """A table with no column/name header is not parsed as markdown_table."""
+    response = (
+        "| A | B | C |\n"
+        "|---|---|---|\n"
+        "| x | y | z |\n"
+    )
+    proposals, method = parse_column_proposals(response)
+    assert proposals == []
+    assert method == "failed"
+
+
 def test_parse_markdown_list_strategy():
     """A markdown key-value list is parsed via markdown_list strategy."""
     response = (
