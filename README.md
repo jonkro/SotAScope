@@ -117,6 +117,17 @@ Most configuration is done through the **Settings page** in the UI (`/settings`)
 | `llm_api_key` | API key for the selected provider. Optional when `llm_base_url` points to a local server. |
 | `llm_model_id` | Model to use (e.g. `claude-sonnet-4-6`, `gpt-4o`). The Settings page loads available models from the provider API and shows a dropdown. |
 | `llm_base_url` | Override the provider's default API endpoint. Use this to point to a local inference server (e.g. `http://localhost:11434/v1` for Ollama). If you omit the `/v1` suffix (e.g. enter `http://localhost:11434`), LitExplorer appends it automatically. |
+| `grobid_url` | GROBID service URL (e.g. `http://localhost:8070`). Empty = disabled. See [GROBID (optional)](#grobid-optional) below. |
+
+### GROBID (optional)
+
+GROBID extracts references directly from PDFs — useful for arXiv papers where OpenAlex has no reference data. Install via Docker:
+
+```bash
+docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf
+```
+
+Then set the GROBID URL in Settings to `http://localhost:8070`. A "Extract refs (GROBID)" button appears in the paper detail panel when a PDF is uploaded and GROBID is reachable.
 
 Environment variables (all prefixed `LITEXPLORER_`) can be set in a shell or in the `env` file (see `env.example`):
 

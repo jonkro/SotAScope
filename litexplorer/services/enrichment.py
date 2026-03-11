@@ -10,7 +10,9 @@ import json
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,8 +29,11 @@ from litexplorer.models.library import (
     VenueAlias,
     Work,
     WorkAuthor,
+    WorkDOI,
     WorkLocation,
+    WorkPDF,
 )
+from litexplorer.models.settings import Setting
 from litexplorer.schemas.enrichment import DOICandidate, DOIResolutionResult, SearchImportCandidate
 
 logger = logging.getLogger(__name__)
@@ -94,6 +99,59 @@ def _extract_first_author_from_bibtex(bibtex_entry: str) -> str | None:
     # "First Last" format → return last word
     parts = first.split()
     return parts[-1] if parts else None
+
+
+@dataclass
+class GrobidEnrichResult:
+    """Summary of a GROBID reference extraction and resolution run."""
+
+    new_count: int       # References resolved to works newly imported into the library
+    existing_count: int  # References resolved to works already in the library
+    failed_count: int    # References that could not be resolved to any work
+    total_extracted: int  # Total references GROBID extracted from the PDF
+
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    """Jaccard similarity between the word sets of two already-normalized strings."""
+    sa = set(a.split())
+    sb = set(b.split())
+    if not sa and not sb:
+        return 1.0
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def _grobid_ref_to_dict(ref) -> dict:
+    """Serialize a GrobidReference to a plain dict for JSON caching."""
+    return {
+        "title": ref.title,
+        "authors": ref.authors,
+        "doi": ref.doi,
+        "arxiv_id": ref.arxiv_id,
+        "journal": ref.journal,
+        "volume": ref.volume,
+        "pages": ref.pages,
+        "year": ref.year,
+        "raw_string": ref.raw_string,
+    }
+
+
+def _dict_to_grobid_ref(d: dict):
+    """Deserialize a plain dict back to a GrobidReference."""
+    from litexplorer.external.grobid import GrobidReference
+
+    return GrobidReference(
+        title=d.get("title"),
+        authors=d.get("authors") or [],
+        doi=d.get("doi"),
+        arxiv_id=d.get("arxiv_id"),
+        journal=d.get("journal"),
+        volume=d.get("volume"),
+        pages=d.get("pages"),
+        year=d.get("year"),
+        raw_string=d.get("raw_string"),
+    )
 
 
 class EnrichmentService:
@@ -976,6 +1034,298 @@ class EnrichmentService:
             "existing_citing": existing_citing,
             "raw_citing": raw_citing,
         }
+
+    # -- GROBID reference resolution ------------------------------------------
+
+    def enrich_from_grobid(self, work_id: int) -> GrobidEnrichResult:
+        """Extract and resolve references from a work's primary PDF via GROBID.
+
+        Steps:
+        1. Load the work's primary PDF and read its bytes.
+        2. Send to the configured GROBID instance (``grobid_url`` setting).
+           The raw reference list is cached permanently so subsequent calls
+           skip the GROBID network round-trip and re-attempt only resolution.
+        3. Resolve each reference through three paths:
+           A. DOI  → library lookup → import_by_doi()
+           B. arXiv ID (no DOI) → library lookup → OpenAlex lookup
+           C. Title only → search_import_candidates() with Jaccard / author / year matching
+        4. Create Citation edges for all successfully resolved works.
+        5. Return a :class:`GrobidEnrichResult` summary.
+
+        Raises:
+            ValueError: work not found, has no primary PDF, PDF missing on
+                        disk, or ``grobid_url`` is not configured in Settings.
+            GrobidError: GROBID service is unreachable or returns an HTTP error.
+        """
+        from litexplorer.external.grobid import GrobidClient
+
+        # ------------------------------------------------------------------
+        # Step 1: Load work and locate primary PDF
+        # ------------------------------------------------------------------
+        work = self.db.get(Work, work_id)
+        if work is None:
+            raise ValueError(f"Work {work_id} not found")
+
+        pdfs = self.db.execute(
+            select(WorkPDF).where(WorkPDF.work_id == work_id)
+        ).scalars().all()
+
+        primary_pdf = next((p for p in pdfs if p.is_primary), None)
+        if primary_pdf is None and pdfs:
+            primary_pdf = pdfs[0]
+        if primary_pdf is None:
+            raise ValueError(
+                f"Work {work_id} has no PDF — attach a PDF before running GROBID extraction"
+            )
+
+        # ------------------------------------------------------------------
+        # Step 2: Resolve PDF storage path and read bytes
+        # ------------------------------------------------------------------
+        pdf_storage_row = self.db.execute(
+            select(Setting).where(Setting.key == "pdf_storage_path")
+        ).scalar_one_or_none()
+        pdf_storage_val = (pdf_storage_row.value or "").strip() if pdf_storage_row else ""
+        pdf_root = Path(pdf_storage_val) if pdf_storage_val else settings.pdf_dir
+
+        pdf_path = pdf_root / str(work_id) / primary_pdf.filename
+        if not pdf_path.exists():
+            raise ValueError(f"PDF file not found on disk: {pdf_path}")
+
+        pdf_bytes = pdf_path.read_bytes()
+
+        # ------------------------------------------------------------------
+        # Step 3: Extract references — use cache when available
+        # ------------------------------------------------------------------
+        cache_key = f"grobid_references:{work_id}"
+        cached = self._get_cache("grobid", cache_key)
+
+        if cached is not None:
+            refs_data: list[dict] = json.loads(cached.response_json)
+            references = [_dict_to_grobid_ref(r) for r in refs_data]
+            logger.info(
+                "GROBID: loaded %d references from cache for work=%d",
+                len(references), work_id,
+            )
+        else:
+            grobid_url_row = self.db.execute(
+                select(Setting).where(Setting.key == "grobid_url")
+            ).scalar_one_or_none()
+            grobid_url = (grobid_url_row.value or "").strip() if grobid_url_row else ""
+            if not grobid_url:
+                raise ValueError(
+                    "GROBID URL is not configured — set 'grobid_url' in Settings"
+                )
+
+            ssl_verify_row = self.db.execute(
+                select(Setting).where(Setting.key == "ssl_verify")
+            ).scalar_one_or_none()
+            ssl_val = (ssl_verify_row.value or "true").strip() if ssl_verify_row else "true"
+            ssl_verify = ssl_val.lower() not in ("false", "0", "no")
+
+            grobid_client = GrobidClient(base_url=grobid_url, ssl_verify=ssl_verify)
+            try:
+                references = grobid_client.extract_references(pdf_bytes)
+            finally:
+                grobid_client.close()
+
+            refs_data = [_grobid_ref_to_dict(r) for r in references]
+            self._set_cache("grobid", cache_key, json.dumps(refs_data), "permanent")
+            logger.info(
+                "GROBID: extracted %d references from work=%d PDF",
+                len(references), work_id,
+            )
+
+        # ------------------------------------------------------------------
+        # Steps 4–6: Resolve each reference, create citation edges, count
+        # ------------------------------------------------------------------
+        new_count = 0
+        existing_count = 0
+        failed_count = 0
+
+        for ref in references:
+            try:
+                resolved_id, is_new_import = self._resolve_grobid_reference(ref)
+                if resolved_id is not None:
+                    self._ensure_citation(
+                        citing_work_id=work_id,
+                        cited_work_id=resolved_id,
+                        source="grobid",
+                    )
+                    if is_new_import:
+                        new_count += 1
+                    else:
+                        existing_count += 1
+                else:
+                    failed_count += 1
+            except Exception as exc:
+                label = (ref.title or ref.raw_string or "")[:80]
+                logger.warning(
+                    "GROBID: error resolving reference %r for work=%d: %s",
+                    label, work_id, exc,
+                )
+                failed_count += 1
+
+        self.db.commit()
+
+        logger.info(
+            "GROBID enrichment work=%d: total=%d new=%d existing=%d failed=%d",
+            work_id, len(references), new_count, existing_count, failed_count,
+        )
+        return GrobidEnrichResult(
+            new_count=new_count,
+            existing_count=existing_count,
+            failed_count=failed_count,
+            total_extracted=len(references),
+        )
+
+    def _resolve_grobid_reference(self, ref) -> tuple[int | None, bool]:
+        """Resolve a single GrobidReference to a (work_id, is_new_import) pair.
+
+        Tries three paths in order:
+        A. DOI → library lookup then import_by_doi()
+        B. arXiv ID (only when no DOI) → library lookup then OpenAlex
+        C. Title-only fallback → search_import_candidates() with strict matching
+
+        Returns ``(None, False)`` when all paths fail.
+        ``is_new_import`` is True when a new Work was added to the library.
+        """
+        # ---- PATH A: DOI present ------------------------------------------
+        if ref.doi:
+            doi = ref.doi.lower().strip()
+
+            # Check primary DOI
+            work = self.db.execute(
+                select(Work).where(Work.doi == doi)
+            ).scalar_one_or_none()
+
+            # Also check secondary DOIs (WorkDOI table)
+            if work is None:
+                wdoi = self.db.execute(
+                    select(WorkDOI).where(WorkDOI.doi == doi)
+                ).scalar_one_or_none()
+                if wdoi is not None:
+                    work = self.db.get(Work, wdoi.work_id)
+
+            if work is not None:
+                return work.id, False
+
+            # Not in library — import via OpenAlex / Crossref pipeline
+            imported = self.import_by_doi(doi)
+            if imported is not None:
+                # Cross-check title similarity; log warning but still accept
+                # (GROBID DOI extraction is high-precision)
+                if ref.title and imported.title and imported.title != "(untitled)":
+                    norm_ref = _normalize_title_for_cmp(ref.title)
+                    norm_imp = _normalize_title_for_cmp(imported.title)
+                    sim = _jaccard_similarity(norm_ref, norm_imp)
+                    if sim < 0.7:
+                        logger.warning(
+                            "GROBID: DOI %r resolved but title Jaccard %.2f < 0.7 "
+                            "(ref=%r, imported=%r)",
+                            doi, sim, ref.title[:80], imported.title[:80],
+                        )
+                return imported.id, True
+
+            # DOI present but import failed — fall through to title search
+            logger.debug(
+                "GROBID: DOI %r not importable, falling back to title search", doi
+            )
+
+        # ---- PATH B: arXiv ID present (no DOI) ----------------------------
+        if ref.arxiv_id and not ref.doi:
+            arxiv_id = ref.arxiv_id.strip()
+
+            work = self.db.execute(
+                select(Work).where(Work.arxiv_id == arxiv_id)
+            ).scalar_one_or_none()
+            if work is not None:
+                return work.id, False
+
+            # Attempt OpenAlex lookup via works/arxiv:{id}
+            try:
+                raw = self.client.get_work_by_id_raw(f"arxiv:{arxiv_id}")
+                if raw is not None:
+                    ext = parse_work(raw)
+                    oa_cache_key = (
+                        f"work:doi:{ext.doi}" if ext.doi
+                        else f"work:openalex:{ext.external_id}" if ext.external_id
+                        else f"work:arxiv:{arxiv_id}"
+                    )
+                    self._set_cache("openalex", oa_cache_key, json.dumps(raw), "permanent")
+                    imported = self._upsert_work(ext)
+                    return imported.id, True
+            except Exception as exc:
+                logger.debug(
+                    "GROBID: OpenAlex arXiv lookup failed for %r: %s", arxiv_id, exc
+                )
+
+            # Fall through to title search
+
+        # ---- PATH C: Title-only fallback ----------------------------------
+        if not ref.title:
+            return None, False
+
+        if self.crossref_client is None:
+            logger.debug("GROBID: no Crossref client configured — cannot search by title")
+            return None, False
+
+        norm_ref_title = _normalize_title_for_cmp(ref.title)
+
+        # Extract first-author surname (last word of the first author string)
+        ref_first_surname: str | None = None
+        if ref.authors:
+            parts = ref.authors[0].strip().split()
+            ref_first_surname = parts[-1].lower() if parts else None
+
+        candidates = self.search_import_candidates(
+            title=ref.title,
+            authors=None,
+            year=None,
+            crossref_client=self.crossref_client,
+        )
+
+        best_cand = None
+        for cand in candidates:
+            # Condition 1: title Jaccard >= 0.7
+            norm_cand_title = _normalize_title_for_cmp(cand.title)
+            if _jaccard_similarity(norm_ref_title, norm_cand_title) < 0.7:
+                continue
+
+            # Condition 2: first-author surname match (if both sides have data)
+            if ref_first_surname and cand.authors:
+                cand_parts = cand.authors[0].strip().split()
+                cand_surname = cand_parts[-1].lower() if cand_parts else ""
+                if cand_surname and cand_surname != ref_first_surname:
+                    continue
+
+            # Condition 3: year ±1 (if both sides have data)
+            if ref.year and cand.year:
+                try:
+                    if abs(cand.year - int(ref.year)) > 1:
+                        continue
+                except (ValueError, TypeError):
+                    pass  # Unparseable year — ignore this condition
+
+            best_cand = cand
+            break
+
+        if best_cand is None:
+            return None, False
+
+        # Import the best candidate
+        if best_cand.doi:
+            work = self.db.execute(
+                select(Work).where(Work.doi == best_cand.doi)
+            ).scalar_one_or_none()
+            if work is not None:
+                return work.id, False
+
+            imported = self.import_by_doi(best_cand.doi)
+            if imported is not None:
+                return imported.id, True
+
+        # Candidate matched but has no DOI — cannot import
+        return None, False
 
     # -- Cache helpers --------------------------------------------------------
 

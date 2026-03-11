@@ -36,6 +36,7 @@ import type {
   ExtractionWorkResult,
   ExtractionBatchResult,
   ExtractionResultsResponse,
+  GrobidEnrichResult,
 } from './types';
 
 class ApiError extends Error {
@@ -730,4 +731,12 @@ export function createSchemaFromDiscussion(
     method: 'POST',
     body: JSON.stringify({ title, description: description || null, project_id: projectId }),
   });
+}
+
+export function fetchGrobidStatus(): Promise<{ available: boolean; url: string }> {
+  return apiFetch<{ available: boolean; url: string }>('/api/grobid/status');
+}
+
+export function enrichFromGrobid(workId: number): Promise<GrobidEnrichResult> {
+  return apiFetch<GrobidEnrichResult>(`/api/enrich/works/${workId}/grobid`, { method: 'POST' });
 }

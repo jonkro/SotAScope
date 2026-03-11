@@ -1,12 +1,12 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useEnrichFromSemanticScholar, useResolveDOI } from '../hooks/useEnrichment';
 import { useUpdateWork, useAddWorkDOIAlias, useRemoveWorkDOIAlias } from '../hooks/useWorks';
 import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF, useExtractWorkPDFText, useFetchWorkPDF } from '../hooks/useWorkPDFs';
 import { useWorkNotes, useCreateWorkNote, useUpdateWorkNote, useDeleteWorkNote } from '../hooks/useWorkNotes';
-import { serveWorkPDFUrl, workPDFTextUrl, getDOIInfo } from '../api';
+import { serveWorkPDFUrl, workPDFTextUrl, getDOIInfo, fetchGrobidStatus, enrichFromGrobid } from '../api';
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 import ConfirmDialog from './ConfirmDialog';
@@ -345,6 +345,16 @@ export default function WorkDetailPanel({
   const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
   const [ssEnrichMsg, setSsEnrichMsg] = useState<string | null>(null);
+  const [grobidEnrichMsg, setGrobidEnrichMsg] = useState<string | null>(null);
+
+  const { data: grobidStatus } = useQuery({
+    queryKey: ['grobid', 'status'],
+    queryFn: fetchGrobidStatus,
+    staleTime: 60 * 1000,
+  });
+  const grobidEnrich = useMutation({
+    mutationFn: (wId: number) => enrichFromGrobid(wId),
+  });
   const [editSsId, setEditSsId] = useState(false);
   const [ssIdDraft, setSsIdDraft] = useState('');
   const [editDoi, setEditDoi] = useState(false);
@@ -1228,6 +1238,42 @@ export default function WorkDetailPanel({
                 {enrichSS.isPending ? 'Fetching...' : 'Fetch references (S2)'}
               </button>
             )}
+            {(() => {
+              const hasPDFs = (pdfsQuery.data?.length ?? 0) > 0;
+              const grobidAvailable = grobidStatus?.available ?? false;
+              const disabled = !hasPDFs || !grobidAvailable || grobidEnrich.isPending;
+              const tooltip = !hasPDFs
+                ? 'Upload a PDF first'
+                : !grobidAvailable
+                ? 'GROBID not configured — see Settings'
+                : undefined;
+              return (
+                <button
+                  onClick={() => {
+                    setGrobidEnrichMsg(null);
+                    grobidEnrich.mutate(workId, {
+                      onSuccess: (result) => {
+                        setGrobidEnrichMsg(
+                          `GROBID: ${result.new_count} new, ${result.existing_count} existing, ${result.failed_count} unresolved (of ${result.total_extracted} extracted)`
+                        );
+                        onEnrichComplete?.();
+                      },
+                      onError: (err) => {
+                        setGrobidEnrichMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                      },
+                    });
+                  }}
+                  disabled={disabled}
+                  title={tooltip}
+                  className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                >
+                  {grobidEnrich.isPending && (
+                    <span className="inline-block w-3 h-3 border border-gray-400 border-t-transparent rounded-full animate-spin" />
+                  )}
+                  {grobidEnrich.isPending ? 'Extracting...' : 'Extract refs (GROBID)'}
+                </button>
+              );
+            })()}
             {(work.doi || work.semantic_scholar_id) && (
               <button
                 onClick={() => {
@@ -1314,6 +1360,11 @@ export default function WorkDetailPanel({
           {ssEnrichMsg && (
             <p className={`text-xs mt-1 ${ssEnrichMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
               {ssEnrichMsg}
+            </p>
+          )}
+          {grobidEnrichMsg && (
+            <p className={`text-xs mt-1 ${grobidEnrichMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+              {grobidEnrichMsg}
             </p>
           )}
           {timelineContext?.direction === 'seed' && timelineContext.forwardCitationsFetchedAt && (

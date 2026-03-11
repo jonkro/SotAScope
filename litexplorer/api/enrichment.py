@@ -24,6 +24,7 @@ from litexplorer.schemas.enrichment import (
     EnrichDOIBatchResult,
     EnrichDOIRequest,
     EnrichDOIResult,
+    GrobidEnrichResult,
     SearchImportCandidatesResult,
     SearchImportConfirmRequest,
     SearchImportRequest,
@@ -382,6 +383,49 @@ def enrich_from_semantic_scholar(
     return SemanticScholarEnrichResult(
         work=WorkOut.model_validate(work),
         **summary,
+    )
+
+
+@router.post("/works/{work_id}/grobid", response_model=GrobidEnrichResult)
+def enrich_from_grobid(work_id: int, db: Session = Depends(get_db)):
+    """Extract and resolve references from a work's primary PDF via GROBID.
+
+    Sends the PDF to the configured GROBID instance, parses the returned
+    reference list, and resolves each reference through DOI → arXiv ID →
+    title-search fallback paths.  The raw GROBID extraction is cached
+    permanently so re-runs skip the GROBID network call and re-attempt only
+    resolution for previously unresolved references.
+    """
+    from litexplorer.external.grobid import GrobidError
+
+    oa_client = _get_client(db)
+    cr_client = _get_crossref_client(db)
+    try:
+        svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+        try:
+            result = svc.enrich_from_grobid(work_id)
+        except ValueError as e:
+            msg = str(e)
+            if "no pdf" in msg.lower():
+                raise HTTPException(status_code=404, detail="No PDF available for this work")
+            if "not configured" in msg.lower():
+                raise HTTPException(status_code=400, detail="GROBID is not configured")
+            raise HTTPException(status_code=404, detail=msg)
+        except GrobidError as e:
+            logger.warning("GROBID service error for work %d: %s", work_id, e)
+            raise HTTPException(status_code=503, detail="GROBID service is not available")
+        except Exception as e:
+            logger.exception("Unexpected error during GROBID enrichment for work %d", work_id)
+            raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        oa_client.close()
+        cr_client.close()
+
+    return GrobidEnrichResult(
+        new_count=result.new_count,
+        existing_count=result.existing_count,
+        failed_count=result.failed_count,
+        total_extracted=result.total_extracted,
     )
 
 

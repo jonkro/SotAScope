@@ -111,3 +111,12 @@ class DOIInfoResult(BaseModel):
     year: int | None = None
     found: bool
 
+
+# -- GROBID reference resolution --
+
+class GrobidEnrichResult(BaseModel):
+    new_count: int        # references resolved to newly imported works
+    existing_count: int   # references resolved to works already in the library
+    failed_count: int     # references that could not be resolved
+    total_extracted: int  # total references extracted by GROBID from the PDF
+

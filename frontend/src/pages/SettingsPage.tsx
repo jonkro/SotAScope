@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import PageHeader from '../components/PageHeader';
 import FolderBrowserDialog from '../components/FolderBrowserDialog';
 import { useSettings, useUpdateSetting, useLLMModels } from '../hooks/useSettings';
-import { migratePDFStorage } from '../api';
+import { migratePDFStorage, fetchGrobidStatus } from '../api';
 import type { PDFMigrationResult } from '../types';
 
-// Keys managed by the dedicated LLM section — excluded from the generic loop.
+// Keys managed by dedicated sub-sections — excluded from the generic loop.
 const LLM_KEYS = new Set(['llm_provider', 'llm_api_key', 'llm_model_id', 'llm_base_url']);
+const SECTION_KEYS = new Set([...LLM_KEYS, 'grobid_url']);
 
 // ---------------------------------------------------------------------------
 // LLM configuration sub-section
@@ -286,6 +287,103 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
 }
 
 // ---------------------------------------------------------------------------
+// GROBID configuration sub-section
+// ---------------------------------------------------------------------------
+
+function GrobidConfigSection({ saveSetting }: { saveSetting: (key: string, value: string) => Promise<void> }) {
+  const { data: settings = [] } = useSettings();
+  const sm = Object.fromEntries(settings.map((s) => [s.key, s.value]));
+
+  const [urlDraft, setUrlDraft] = useState('');
+  const initialized = useRef(false);
+
+  useEffect(() => {
+    if (!initialized.current && settings.length > 0) {
+      setUrlDraft(sm['grobid_url'] ?? '');
+      initialized.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
+
+  const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  useEffect(() => {
+    if (testStatus?.ok) {
+      const t = setTimeout(() => setTestStatus(null), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [testStatus]);
+
+  const { refetch: refetchStatus } = useQuery({
+    queryKey: ['grobid', 'status'],
+    queryFn: fetchGrobidStatus,
+    enabled: false,
+  });
+
+  const handleUrlBlur = async () => {
+    await saveSetting('grobid_url', urlDraft);
+  };
+
+  const handleTestConnection = async () => {
+    setTestStatus(null);
+    const result = await refetchStatus();
+    if (result.data) {
+      if (result.data.available) {
+        setTestStatus({ ok: true, message: 'Connected' });
+      } else {
+        setTestStatus({ ok: false, message: 'Not available' });
+      }
+    } else {
+      setTestStatus({ ok: false, message: 'Not available' });
+    }
+  };
+
+  const inputCls =
+    'w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+
+  return (
+    <div className="border-t border-gray-200 pt-6 space-y-5">
+      <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
+        GROBID (Reference Extraction)
+      </h2>
+
+      {/* GROBID URL */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">GROBID URL</label>
+        <input
+          type="text"
+          className={inputCls}
+          value={urlDraft}
+          onChange={(e) => setUrlDraft(e.target.value)}
+          onBlur={handleUrlBlur}
+          placeholder="http://localhost:8070"
+        />
+        <p className="mt-1 text-xs text-gray-500">
+          GROBID extracts references from PDFs locally. Install with Docker:{' '}
+          <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-700">
+            docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf
+          </code>
+        </p>
+      </div>
+
+      {/* Test connection */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={handleTestConnection}
+          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+        >
+          Test connection
+        </button>
+        {testStatus && (
+          <span className={`text-sm ${testStatus.ok ? 'text-green-600' : 'text-red-600'}`}>
+            {testStatus.message}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main settings page
 // ---------------------------------------------------------------------------
 
@@ -298,24 +396,24 @@ export default function SettingsPage() {
   const [migrating, setMigrating] = useState(false);
   const [migrationResult, setMigrationResult] = useState<PDFMigrationResult | null>(null);
 
-  // Sync drafts when settings load (excludes LLM keys — managed by LLMConfigSection).
+  // Sync drafts when settings load (excludes keys managed by dedicated sub-sections).
   useEffect(() => {
     if (settings) {
       const initial: Record<string, string> = {};
       for (const s of settings) {
-        if (!LLM_KEYS.has(s.key)) initial[s.key] = s.value;
+        if (!SECTION_KEYS.has(s.key)) initial[s.key] = s.value;
       }
       setDrafts(initial);
     }
   }, [settings]);
 
-  // Only track changes in generic (non-LLM) settings.
-  const hasChanges = settings?.some((s) => !LLM_KEYS.has(s.key) && drafts[s.key] !== s.value) ?? false;
+  // Only track changes in generic settings.
+  const hasChanges = settings?.some((s) => !SECTION_KEYS.has(s.key) && drafts[s.key] !== s.value) ?? false;
 
   const handleSave = async () => {
     if (!settings) return;
     const changed = settings.filter(
-      (s) => !LLM_KEYS.has(s.key) && drafts[s.key] !== s.value,
+      (s) => !SECTION_KEYS.has(s.key) && drafts[s.key] !== s.value,
     );
 
     const pdfSetting = changed.find((s) => s.key === 'pdf_storage_path');
@@ -354,8 +452,8 @@ export default function SettingsPage() {
     await updateSetting.mutateAsync({ key, value });
   };
 
-  // Generic settings to display in the main loop (LLM keys excluded).
-  const genericSettings = (settings ?? []).filter((s) => !LLM_KEYS.has(s.key));
+  // Generic settings to display in the main loop (dedicated sub-section keys excluded).
+  const genericSettings = (settings ?? []).filter((s) => !SECTION_KEYS.has(s.key));
 
   if (isLoading) {
     return (
@@ -465,6 +563,9 @@ export default function SettingsPage() {
 
         {/* LLM configuration — per-field save (no Save button) */}
         <LLMConfigSection saveSetting={saveSetting} />
+
+        {/* GROBID configuration — per-field save (no Save button) */}
+        <GrobidConfigSection saveSetting={saveSetting} />
       </div>
 
       {browseOpen && (

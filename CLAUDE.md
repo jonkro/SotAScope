@@ -34,13 +34,14 @@ Two distinct layers:
 
 ## External data sources
 
-Three APIs are actively integrated:
+Four data sources are actively integrated:
 
 | Source | Role |
 |---|---|
 | **OpenAlex** | Primary source: citation graph, forward citations, paper metadata, venue info, per-year citation counts |
 | **Crossref** | DOI resolution (including fuzzy search), authoritative venue metadata (ISSN, publisher), search-by-title candidates |
 | **Semantic Scholar** | Supplemental: on-demand citation enrichment, search-by-title fallback when Crossref returns no results |
+| **GROBID** | Local PDF reference extraction (Docker). Fallback when OA/S2 have no reference list. |
 
 ### API authentication
 All clients support a "polite pool" email for better rate limits. This email is configurable via:
@@ -82,20 +83,14 @@ For works without a DOI (e.g., imported from BibTeX without one), the system can
 
 The main view of a project is a **timeline** (x-axis = publication year, y-axis = log-scaled citation count):
 
-- **Seed papers** (papers in any topic list): shown as filled **squares**, color-coded by topic list. If a paper is in multiple topic lists, vertical color stripes are used.
-- **Backward neighbors** (references of seed papers): shown as **circles** in muted gray
-- **Forward neighbors** (papers citing seed papers): shown as **diamonds** (rotated squares) in muted gray
+- **Seed papers** (papers in any topic list): filled **squares**, color-coded by topic list. Multi-topic-list papers use vertical color stripes.
+- **Backward neighbors** (references of seeds): **circles** in muted gray
+- **Forward neighbors** (papers citing seeds): **diamonds** in muted gray
 
-Dot size scales by `sqrt(connectivity)` where connectivity = 1 + number of seed connections. Within each year column, dots are jittered horizontally using a deterministic hash (Knuth multiplicative) to avoid overlap while maintaining stable positions.
+Dot size scales by `sqrt(connectivity)` where connectivity = 1 + number of seed connections. Within each year column, dots are jittered horizontally using a deterministic Knuth hash to avoid overlap while maintaining stable positions.
 
 ### Y-axis: Citation count with sliding window
-The y-axis shows citation count on a `log(1+x)` scale. A "Count citations" slider controls the time window:
-- **All** (default): uses the all-time `citation_count` from OpenAlex
-- **Of last Ny** (1–10 years): sums `cited_by_count` from `citations_by_year` entries within the window
-
-This is computed client-side via `computeCitationCount()` — no API re-fetch on slider change. Works without `citations_by_year` data fall back to the all-time `citation_count` regardless of slider position.
-
-Y-axis ticks show untransformed integers at powers of 10 (0, 1, 10, 100, 1000...). Label: "Citations".
+Citation count on a `log(1+x)` scale. A "Count citations" slider controls the time window: **All** (all-time `citation_count`) or **Of last Ny** (1–10 years, sums `citations_by_year`). Computed client-side via `computeCitationCount()` — no re-fetch on slider change. Works without `citations_by_year` fall back to all-time count. Ticks at powers of 10; label: "Citations".
 
 ### Paper inclusion logic
 - Papers from tier-3 (ignored) venues are always excluded
@@ -103,91 +98,18 @@ Y-axis ticks show untransformed integers at powers of 10 (0, 1, 10, 100, 1000...
 - No score threshold — all candidates passing the venue/direction filters are shown
 
 ### Interaction
-- **Click a dot**: show a side panel with paper metadata, abstract, venue, citation count, and its connections. When dots overlap, clicking cycles through them.
-- **K-hop connections**: a segmented control (1, 2, 3) visualizes multi-hop graph connectivity from the selected paper. Direct edges are solid indigo lines; farther edges are dashed. Intermediate pathway nodes are highlighted with an amber outline.
-- **Add to topic list**: buttons in the side panel let the user add the paper to any topic list (making it a new seed and triggering auto-enrichment)
-- **Remove from topic list**: buttons to remove the paper from topic lists it belongs to
-- **Mark uninteresting**: for neighbor papers, moves them to the project's ignored list
-- **Citation list markers**: References and Cited-by lists in the side panel show SVG markers matching the timeline shapes (colored squares for seeds, grey circles for backward refs, grey diamonds for forward cites). Entries that are visible in the timeline render as clickable buttons (`cursor-pointer`, `hover:underline`). Clicking navigates to that paper (panel + timeline both update). On every selection change, a brief indigo ripple expands outward from the newly selected dot over 650 ms (D3 transition, fires only on genuine selection changes via `prevSelectedWorkIdRef`).
-- **Collapsible sections**: Abstract, Locations, Actions, References, and Cited-by sections are collapsible. Fold state persists across paper selections within the same page.
+- **Click a dot**: side panel with metadata, abstract, venue, citation count, connections. Overlapping dots cycle on repeated click.
+- **K-hop connections**: segmented control (1–3). Direct edges = solid indigo; farther = dashed; intermediate nodes get amber outline.
+- **Add/remove from topic list**: side panel buttons; adding triggers auto-enrichment.
+- **Mark uninteresting**: for neighbor papers, moves them to the project's ignored list.
+- **Citation list markers**: SVG markers match timeline shapes (colored squares for seeds, grey circles for backward refs, grey diamonds for forward cites). Visible-in-timeline entries are clickable; clicking navigates to that paper. Selection change fires an indigo ripple (D3, 650 ms, via `prevSelectedWorkIdRef`).
+- **Collapsible sections**: Abstract, Locations, Actions, References, Cited-by. Fold state persists across paper selections within the page.
 
 ### Timeline controls
-- **Count citations**: sliding window slider (all / of last 10y down to 1y)
-- **References / Cited by**: checkboxes to toggle direction visibility
-- **Candidates**: dropdown (All / Top venues / None)
-- **Hops**: segmented button (1, 2, 3)
-- **From**: year range slider (when data spans multiple years)
-- **Stats**: "Showing N of M candidates"
+Citation window slider · References/Cited-by checkboxes · Candidates dropdown · Hops (1–3) · Year range slider · "Showing N of M candidates" stat
 
 ### Per-client state persistence
-Timeline settings (citations window, direction, candidates, hops, start year, active tab) are stored in `localStorage` per project (`litexplorer:project:{id}:view`). Each browser client has independent settings. The sidebar "Projects" link remembers the last `/projects/*` path within the current session (via React ref, not localStorage).
-
----
-
-## Phase 1 scope (implemented)
-
-- Library layer: BibTeX import, DOI/arXiv keying, venue tier list, venue aliases with preferred alias
-- Venue normalization and deduplication at startup
-- Library sanitization: duplicate detection, work merge, deletion
-- Project layer: topic lists with color coding, ignored works
-- OpenAlex + Crossref integration with caching
-- DOI auto-resolution via Crossref fuzzy search
-- Auto-enrichment on seed addition
-- Citation timeline visualization with citation count y-axis and sliding window
-- Paper side panel with add/remove from topic list, mark uninteresting, citation browsing
-- K-hop connection visualization (1-3 hops)
-- Import: BibTeX file, list of DOIs, or **search by title** (Crossref with S2 fallback)
-- Settings page for API contact email, PDF storage path, and SSL verification toggle (stored in database)
-- Venue management UI: alias editing, reordering, tier assignment, field association
-- Venues page with Venues tab (sortable table) and Fields tab (CRUD with deletion)
-- PDF management: upload, serve inline, set primary, delete (moved to orphaned folder)
-- **PDF text extraction**: auto-extracted on upload via `litexplorer/services/pdf.py` (pdfplumber); two-column layout detection via x0 histogram heuristics; status tracked in `WorkPDF.extraction_status` (`pending`/`ready`/`failed`); companion `.txt` stored at `{pdf_root}/{work_id}/{stem}.txt`; re-extract endpoint; "View text" / "Extract text" / "Re-extract" UI in WorkDetailPanel
-- Work notes: per-work and project-scoped notes with labels, provenance tracking
-- Project notes tab: aggregated view of all notes for a project, sortable by paper or label
-- Filesystem browser for configuring PDF storage path
-- Per-client timeline state persistence via localStorage
-- **Topic list visibility toggle**: clicking a TL legend entry in the citation timeline hides/shows its seeds (and candidates connected only to that TL). Multi-TL seeds lose the deactivated color stripe. Toggle state persists in `localStorage` alongside other timeline settings. Implemented entirely client-side — no backend changes required.
-- Deployment: `README.md`, `litexplorer.service` (optional systemd unit), `env.example`; pre-built frontend committed to `frontend/dist/` (no Node.js required to run)
-- **Semantic Scholar integration**: `SemanticScholarClient` (`external/semantic_scholar.py`); `Work.semantic_scholar_id` column; on-demand enrichment endpoint `POST /api/enrich/works/{id}/semantic-scholar?direction={both|backward|forward}` (fetches refs/citations by direction, returns new/existing/raw counts); editable S2 ID field in WorkDetailPanel; deduplication by S2 ID as 4th fallback after DOI/openalex_id/arxiv_id; `s2_api_key` DB setting (authenticates requests; S2 enforces 1 req/s with or without key); `SemanticScholarEnrichResult` includes `raw_references` and `raw_citing` (items returned by S2 API before dedup, used by UI to distinguish "S2 has no data" from "already in library"); `enrich_from_semantic_scholar()` falls back to title-search when DOI and S2 ID lookups both fail: normalizes title via `_normalize_title_for_cmp()` (NFKD + Jaccard) and searches S2 by title, taking the first exact-normalized-title match
-- **Multi-DOI support**: `WorkDOI` table stores secondary DOIs per work (CASCADE delete). `doi_aliases` returned in `WorkOut`. `GET/POST/DELETE /api/works/{id}/doi-aliases` endpoints. `GET /api/enrich/doi/info?doi=...` looks up title/year for a DOI without importing (OA cache → live OA → Crossref fallback). WorkDetailPanel shows editable primary DOI and secondary DOI list, both with real-time title similarity check (Jaccard ≥ 0.7 = green, < 0.7 = amber warning, not found = red).
-- **SSL verify toggle**: `ssl_verify` DB setting (default `"true"`); passed as `verify=` to all httpx clients; checkbox in Settings with amber warning; `formatError()` in ImportDialog detects SSL errors; global 503 handler with `SSL_CERTIFICATE_ERROR:` prefix
-- **WorkDetailPanel enrichment buttons**: 5 buttons in Actions section: "Fetch references (OA)", "Fetch citing papers (OA)", "Fetch references (S2)", "Fetch citing papers (S2)", "Enrich from Crossref"; works without a DOI show "Resolve DOI (CrossRef)" instead of Crossref button; each S2 button calls the endpoint with appropriate direction param; status messages distinguish S2 returning 0 items ("S2 has no reference list for this paper") from all-already-existing case; OA "Fetch references" button shows amber "OpenAlex has no reference list for this paper" when `raw_count == 0`
-- **OA zero-references warning**: `CitationResult.raw_count` (int, 0 = OA has no reference list) is returned by the backward citations enrichment endpoint. `TimelineSeedWork.backward_citations_no_oa_data` (bool) is set when the cached `backward_citations:*` entry is `"[]"`. `TimelineEnrichBar` shows `"References: X/Y works fetched (N has no OA data)"` — X excludes no-OA-data seeds so the count reflects seeds with actual reference data.
-- **LLM provider configuration (Phase 2 pre-work)**: four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`) seeded in `_seed_default_settings()`; `litexplorer/external/llm_client.py` — `ContextDocument` dataclass, abstract `LLMClient`, `AnthropicLLMClient`, `OpenAILLMClient`, `make_llm_client()` factory; `GET /api/llm/models` endpoint (reads DB settings, returns model list or soft error); `anthropic` and `openai` added as required dependencies in `pyproject.toml`; Settings page `/settings` has a dedicated **LLM Configuration** section: provider dropdown, API key (password, save on blur), base URL (save on blur, triggers model list re-fetch), model picker (loading spinner → populated dropdown or free-text fallback on error/empty), "Test connection" button, PDF vision note for Anthropic; `OpenAILLMClient.list_models()` uses httpx directly when `base_url` is set (stores `_real_api_key`; sends no auth header when api_key empty, sends `Bearer` only when a real key is provided) — avoids sending `Bearer local` to local servers that validate auth; `_normalize_base_url()` in `llm_client.py` appends `/v1` to bare Ollama-style URLs (path empty or `/`) so users can enter `http://host:11434` without the suffix; Settings page shows "For Ollama, use http://host:11434/v1" hint below the base URL field
-
-- **Topic list UX**: When a work is added from the candidates list, the target topic list auto-expands (`forceExpand` prop on `TopicListCard`); added works are removed from the candidate list to prevent duplicates. `ProjectDetailPage` tracks `expandedListId` and filters `searchedWorks` against already-added members.
-
-### Not yet implemented from Phase 1 spec
-- (All Phase 1 items are now implemented)
-
-## Phase 2 scope
-
-### Implemented
-
-- **LLM provider configuration**: `LLMClient` abstraction with `AnthropicLLMClient` and `OpenAILLMClient`; four DB settings (`llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`); `GET /api/llm/models` endpoint; Settings page UI with model picker, test connection, and PDF vision note
-- **Structured extraction (backend)**: `ExtractionSchema` + `ExtractionColumn` models; `litexplorer/services/extraction.py` with `assemble_extraction_prompt()`, `parse_extraction_response()`, `run_extraction_for_work()`; full CRUD + extraction API at `/api/extraction`; new `llm_system_prompt_prefix` DB setting. Extraction results stored as `WorkNote` rows (`provenance="ai"`), two per column (answer + reasoning). 45 tests in `tests/test_extraction.py`.
-- **Robust extraction parsing**: `parse_extraction_response` uses 5 progressive strategies (direct JSON → JSON embedded in prose → markdown table → key-value pairs → failed) so local/weaker LLMs that return markdown instead of JSON still produce usable results. Thinking-model tags (`<think>`, `<thinking>`, `<reasoning>`, `<scratchpad>`) are stripped before parsing. Fuzzy header matching (parenthetical stripping, containment, Jaccard) maps column headers to columns. On complete parse failure a single `_parse_error` WorkNote is created (no raw response in every column). `parse_extraction_response` returns `tuple[dict, str]` where the string is the `parsing_method`; `run_extraction_for_work` returns `tuple[list[dict], str]`. `ExtractionWorkResult` includes `parsing_method: str`. `assemble_extraction_prompt` gains `provider` and `model_id` params; adds a concrete JSON example with actual column names, format reminders at start+end of the user message, negative instructions (no markdown tables, no code fences), and a `[FORMAT CRITICAL]` block for non-GPT local models. New preview endpoint: `GET /api/extraction/schemas/{id}/preview-prompt?work_id={work_id}` returns `{system_text, user_message}` with paper text replaced by `[Text of "title"]` placeholder.
-- **Structured extraction frontend**: `ExtractionSchemasPage` at `/projects/:projectId/extraction`; schema list view → new-schema form → schema editor with two tabs: **Schema** (edit title/description/columns) and **Extract & Review** (run extraction + results table). `ColumnFormModal` with tag-style allowed-values input; up/down column reordering; `useExtraction.ts` hooks; "Extraction Tables" button in `ProjectDetailPage` header.
-- **Structured extraction run & review UI**: `ExtractionRunView` component in `ExtractionSchemasPage`; seed paper selector (searchable checkboxes from `useTimeline`); Extract button with per-paper progress indicator; confirmation dialog when re-running on papers with existing notes; results table (rows = papers, columns = schema columns). `ExtractionCell` component: answer text + `ProvenanceBadge` (ai=blue, ai_reviewed=purple, user=green) + ✓ Accept button (ai notes only, sets provenance to `ai_reviewed`) + ✎ Edit (inline — dropdown for constrained columns, textarea for free-form) + ⓘ reasoning toggle + ⚡ single-paper extract for empty cells. Re-extraction skips `ai_reviewed`/`user` notes and deletes+replaces `ai` notes (no duplicates). Paper selector row features: topic-list color bars (3 px each) in the title cell, per-topic-list bulk-select checkboxes with indeterminate state via refs (rendered between the action bar and the table), selected papers sorted to the top (`sortedFilteredSeeds` useMemo). New endpoint: `GET /api/extraction/schemas/{id}/results?work_ids=1,2,3` → `ExtractionResultsResponse({cells: ExtractionCellResult[]})`. `WorkNoteUpdate` now accepts `provenance` field; explicit provenance overrides auto-upgrade logic. New types: `ExtractionCellResult`, `ExtractionResultsResponse`. New hooks: `useExtractionResults`, `useRunSingleExtraction`, `useRunBatchExtraction`, `useAcceptExtractionNote`, `useEditExtractionNote`.
-- **CSV and LaTeX export**: `GET /api/extraction/schemas/{id}/export?format=csv|latex&work_ids=1,2,3&column_ids=1,2` — download extraction results as a CSV spreadsheet or a LaTeX booktabs table. `work_ids` and `column_ids` are optional: omitting `work_ids` auto-discovers all works with notes for the schema. `litexplorer/services/extraction_export.py` — `export_as_csv()` and `export_as_latex()`; single-pass regex LaTeX escaping; constrained columns use `c` alignment + `\rotatebox{90}` header; free-text columns use `l`. Frontend: "Export CSV" and "Export LaTeX" buttons in `ExtractionRunView` action bar pass selected paper IDs. 28 tests in `tests/test_extraction_export.py`.
-- **Open-access PDF fetch**: `POST /api/works/{work_id}/pdfs/fetch` — fetches a PDF from arXiv (by `work.arxiv_id`) first, then Unpaywall (by `work.doi` + `api_contact_email` if configured). Returns `WorkPDFOut` (201) on success; 400 if the work has neither arXiv ID nor DOI; 404 if no OA source found; 502 if a URL was resolved but the download failed. Reuses `_register_and_extract_pdf()` helper (shared with manual upload; extracts text automatically). Client in `litexplorer/external/pdf_fetch.py` (`fetch_pdf_from_arxiv`, `fetch_pdf_url_from_unpaywall`, `fetch_pdf_from_url`, `fetch_pdf_for_work`, `PDFFetchError`). WorkDetailPanel PDFs section: "Fetch PDF" button with arXiv (blue) / Unpaywall (purple) source badges and inline success/warn/error message. 23 tests in `tests/test_pdf_fetch.py`.
-- **Per-paper chat with session persistence**: `DiscussionPage` at `/projects/:projectId/discuss` and `/works/:workId/discuss`; library mode (single paper) and project mode (multi-paper with context selector). `ChatSession` + `ChatMessage` models in `litexplorer/models/chat.py`; `litexplorer/api/chat.py` (prefix `/api/chat`) with get-or-create auto-session, list, load, save, delete, clear-messages, and PATCH (update context_id) endpoints. `POST /api/llm/chat` accepts optional `session_id` and auto-saves both turns after each reply. On mount, `DiscussionPage` calls `POST /api/chat/sessions/auto` to restore the last conversation for the current scope; header toolbar has **Save** (prompts for title, creates a named snapshot), **Load** (modal with saved sessions), and **New Chat** (confirm → clears auto-session messages). At most one auto-session per `(work_id, project_id)` scope, enforced in application code; `work_id` is nullable (project-only sessions). Sessions cascade-delete their messages. Project mode: paper selector panel shows topic-list color bars on each paper's left edge, topic list bulk-select checkboxes (with indeterminate state), and selected papers sorted to the top. Paper selection is **locked** once the first message is sent (unlocked by New Chat); selected work IDs are saved to `localStorage` under `litexplorer:discuss:project:{projectId}:sel` and restored on remount (cleared by New Chat). Context annotation bar above the chat shows which papers are included. 15 tests in `tests/test_chat_sessions.py`.
-
-### Not yet started
-
-- (All Phase 2 items are now implemented)
-
-### Phase 2 design notes
-
-- **PDF text is ready for LLM use**: `WorkPDF.extraction_status='ready'` works have a companion `.txt` at `{pdf_root}/{work_id}/{stem}.txt`. Serve via `GET /api/works/{id}/pdfs/{id}/text`. This is the primary per-paper LLM input.
-- **WorkNote table is LLM-ready**: `provenance` ("user"/"ai"/"ai_reviewed") and `model_id` fields already exist. Per-paper chat turns or LLM summaries can be stored as WorkNotes. `project_id` scoping allows associating results with a specific project.
-- **`llm_base_url`**: optional. When set, overrides the provider's default cloud endpoint. Enables local inference servers (Ollama, vLLM, LM Studio, llama.cpp) that expose an OpenAI-compatible API (e.g., `http://localhost:11434/v1`). `llm_api_key` may be left blank when using a local endpoint.
-- **PDF vision mode (Anthropic-only)**: sending the PDF binary directly to the model (vision input) is only supported when `llm_provider = "anthropic"`. When any other provider is configured — including local OpenAI-compatible servers — the "use PDF" toggle in the per-paper chat UI is disabled and the fallback is extracted `.txt` text.
-- **Conversation history — stateless LLM calls, persistent sessions**: full conversation history is sent with every LLM request (the model backend remains stateless). Chat sessions are persisted in the `ChatSession`/`ChatMessage` tables; the auto-session for each `(work_id, project_id)` scope is restored on page mount. Users can also save named session snapshots (Load them later as context to continue from).
-- **Structured extraction — tables now exist**: `ExtractionSchema` (title, description, nullable project_id) + `ExtractionColumn` (name, prompt, description, allowed_values JSON, sort_order). Results stored as `WorkNote` rows (`provenance="ai"`, `note_type="{schema.title} / {column.name}"`). CSV and LaTeX export available via `GET /api/extraction/schemas/{id}/export`.
-- **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
-- **Context window strategy**: typical extracted PDF text is 5k–40k tokens. Send abstract+title first; include full text only when available. For very long papers, consider truncating to the first N tokens or chunking by section.
-- **Anthropic SDK**: `anthropic` Python package; `client.messages.create()` for standard calls, `client.messages.stream()` for streaming. Already a required dependency in `pyproject.toml`.
+Timeline settings stored in `localStorage` per project (`litexplorer:project:{id}:view`). Sidebar "Projects" link remembers last `/projects/*` path via useRef (session-only).
 
 ---
 
@@ -268,11 +190,15 @@ litexplorer/
 │   ├── filesystem.py     # /api/filesystem — directory browser + mkdir
 │   ├── llm.py            # /api/llm — model listing, POST /chat (session_id auto-saves turns)
 │   ├── chat.py           # /api/chat — session CRUD: POST /sessions/auto, GET/DELETE /sessions/{id},
-│   │                     #   POST /sessions/{id}/save, DELETE /sessions/{id}/messages, GET /sessions
-│   └── extraction.py     # /api/extraction — schema/column CRUD, extraction execution,
-│                         #   GET /schemas/{id}/results?work_ids=... (ExtractionResultsResponse)
-│                         #   GET /schemas/{id}/export?format=csv|latex (CSV/LaTeX download)
-│                         #   GET /schemas/{id}/preview-prompt?work_id=... → {system_text, user_message}
+│   │                     #   POST /sessions/{id}/save, DELETE /sessions/{id}/messages, GET /sessions,
+│   │                     #   PATCH /sessions/{id} (update context_id)
+│   ├── extraction.py     # /api/extraction — schema/column CRUD, extraction execution,
+│   │                     #   GET /schemas/{id}/results?work_ids=... (ExtractionResultsResponse)
+│   │                     #   GET /schemas/{id}/export?format=csv|latex (CSV/LaTeX download)
+│   │                     #   GET /schemas/{id}/preview-prompt?work_id=... → {system_text, user_message}
+│   │                     #   GET /schemas/{id}/summary, POST /schemas/from-discussion,
+│   │                     #   POST /schemas/{id}/columns/from-proposal
+│   └── grobid.py         # /api/enrich/works/{id}/grobid, GET /api/grobid/status
 ├── services/
 │   ├── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
 │   │                     #   DOI resolution, cache management, deduplication,
@@ -288,8 +214,11 @@ litexplorer/
 │   │                     #   negative instructions, FORMAT CRITICAL for local models), parses response via 5 strategies,
 │   │                     #   creates WorkNote rows; on failed parse creates single _parse_error note instead;
 │   │                     #   skips ai_reviewed/user notes; deletes stale ai notes before re-creating
-│   └── extraction_export.py  # export_as_csv(), export_as_latex() — booktabs LaTeX with rotatebox
-│                             #   headers for constrained columns; single-pass regex LaTeX escaping
+│   ├── extraction_export.py  # export_as_csv(), export_as_latex() — booktabs LaTeX with rotatebox
+│   │                         #   headers for constrained columns; single-pass regex LaTeX escaping
+│   └── schema_discussion.py  # build_schema_discussion_prompt() — schema-design system prompt with
+│                             #   column-proposal fenced-block spec + two few-shot examples;
+│                             #   parse_column_proposals() — 5-strategy lenient parser (mirrors proposalParser.ts)
 └── external/
     ├── base.py           # ExternalWork (with semantic_scholar_id, citations_by_year),
     │                     #   ExternalVenue, ExternalAuthor, ExternalLocation
@@ -298,8 +227,12 @@ litexplorer/
     ├── crossref.py       # CrossrefClient — DOI lookup, fuzzy search
     ├── semantic_scholar.py # SemanticScholarClient — paper lookup by DOI/S2 ID,
     │                     #   get_references(), get_citations(), search_by_title()
-    └── pdf_fetch.py      # fetch_pdf_from_arxiv(), fetch_pdf_url_from_unpaywall(),
-                          #   fetch_pdf_from_url(), fetch_pdf_for_work(), PDFFetchError
+    ├── llm_client.py     # ContextDocument, abstract LLMClient, AnthropicLLMClient, OpenAILLMClient,
+    │                     #   make_llm_client(); _normalize_base_url() appends /v1 to bare Ollama URLs;
+    │                     #   PDF vision (base64 document block) is Anthropic-only
+    ├── pdf_fetch.py      # fetch_pdf_from_arxiv(), fetch_pdf_url_from_unpaywall(),
+    │                     #   fetch_pdf_from_url(), fetch_pdf_for_work(), PDFFetchError
+    └── grobid.py         # GrobidClient — PDF reference extraction via GROBID REST API
 
 frontend/src/
 ├── App.tsx               # Routes: /projects, /projects/:id, /library, /venues, /settings
@@ -311,7 +244,8 @@ frontend/src/
 ├── lib/
 │   └── timelineFilter.ts # computeCitationCount(), filterNeighbors()
 ├── utils/
-│   └── proposalParser.ts # parseProposals(message) → MessageSegment[]; splits LLM text into text/proposal segments
+│   └── proposalParser.ts # parseProposals(message) → MessageSegment[]; 5-strategy parser (fenced block →
+│                         #   fenced JSON → bare JSON → markdown table → numbered/bulleted bold list)
 ├── hooks/                # React Query hooks for each domain
 │   ├── useWorks.ts
 │   ├── useVenues.ts      # accepts sort_by, sort_dir params
@@ -337,15 +271,18 @@ frontend/src/
 │   ├── ProjectsPage.tsx         # Project listing with create/delete
 │   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes tabs, localStorage persistence
 │   │                            #   "Extraction Tables" button → /projects/:id/extraction
+│   │                            #   "Import Paper" button → ImportDialog with post-import topic list assignment
 │   ├── ExtractionSchemasPage.tsx # Schema list / new-schema form / schema editor (Schema + Extract & Review tabs)
 │   │                            #   ExtractionRunView (paper selector: TL color bars, bulk-select checkboxes,
 │   │                            #   sort-selected-to-top), ExtractionCell, ProvenanceBadge, ColumnFormModal
-│   │                            #   "Show prompt" button → modal showing system + user message with paper text replaced by placeholders
+│   │                            #   "Show prompt" button → modal with paper text replaced by placeholders
 │   ├── DiscussionPage.tsx       # Per-paper + per-project LLM chat; session restore on mount;
-│   │                            #   Save/Load/New Chat toolbar; PaperContextSelector (project mode)
-│   │                            #   "Show prompt" button → modal showing full prompt (client-side, text/PDF replaced by placeholders)
-│   │                            #   AssistantMessage: parses LLM replies via proposalParser when in extraction_schema mode
-│   │                            #   NewSchemaDialog: promise-based flow for "New schema" accepts (stores resolve/reject in state)
+│   │                            #   Save/Load/New Chat toolbar; unified left panel with "Discussion focus"
+│   │                            #   dropdown (General / existing schema / New schema) above PaperContextSelector;
+│   │                            #   AssistantMessage: parses LLM replies via proposalParser in schema mode;
+│   │                            #   NewSchemaDialog: promise-based flow for "New schema" accepts;
+│   │                            #   "Show prompt" button → client-side preview with text/PDF placeholders;
+│   │                            #   selection lock after first send; localStorage persistence for selection+mode
 │   ├── LibraryPage.tsx          # Work listing with search, pagination, venue filter
 │   ├── VenuesPage.tsx           # Venues tab (sortable table) + Fields tab (CRUD with delete)
 │   └── SettingsPage.tsx         # Database-stored settings editor + PDF folder browser
@@ -356,7 +293,8 @@ frontend/src/
     ├── WorkDetailPanel.tsx     # Side panel with collapsible sections, markers, actions, notes
     ├── TimelineControls.tsx    # Filter bar: citation window, direction, candidates, hops, year range
     ├── TimelineEnrichBar.tsx   # Enrichment progress for seed papers
-    ├── ImportDialog.tsx        # 3-tab import: DOI list, BibTeX, Search by title
+    ├── ImportDialog.tsx        # 3-tab import: DOI list, BibTeX, Search by title;
+    │                           #   optional post-import topic list assignment (projectTopicLists prop)
     ├── SearchImportCandidateDialog.tsx # Radio-picker for search-by-title candidates (source badge)
     ├── SanitizeDialog.tsx      # Library cleanup tools
     ├── DOIResolutionDialog.tsx # DOI candidate selection
@@ -392,7 +330,10 @@ tests/
 ├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints (34 tests)
 ├── test_extraction_export.py  # CSV/LaTeX export service unit tests + API endpoint tests (28 tests)
 ├── test_pdf_fetch.py          # OA PDF fetch: arXiv, Unpaywall, fetch_pdf_for_work, API endpoint (23 tests)
-├── test_chat_sessions.py      # Chat session CRUD, auto-session uniqueness, save/load/clear, chat auto-persist (12 tests)
+├── test_chat_sessions.py      # Chat session CRUD, auto-session uniqueness, save/load/clear, chat auto-persist (18 tests)
+├── test_schema_discussion.py  # Schema discussion prompt, parse_column_proposals, endpoints (22 tests)
+├── test_grobid_client.py      # GrobidClient unit tests: parse TEI XML, health check, error handling (23 tests)
+├── test_grobid_enrichment.py  # GROBID enrichment endpoint + status endpoint (10 tests)
 └── fixtures/
     ├── openalex_responses.py  # Sample API response fixtures
     ├── generate_fixtures.py   # One-off script to regenerate synthetic PDF fixtures (fpdf2 + matplotlib)
@@ -408,16 +349,16 @@ tests/
 1. `init_db()` — create engine and tables
 2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, sqlite_sequence tracking, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois, extraction_schemas, extraction_columns, chat_sessions, chat_messages)
 3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
-4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, `s2_api_key`, `llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`, `llm_system_prompt_prefix` settings
+4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, `s2_api_key`, `llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`, `llm_system_prompt_prefix`, `grobid_url` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
 6. `_backfill_citations_by_year()` — populate `citations_by_year` from cached OpenAlex responses (scans `work:doi:*`, `backward_citations:*`, and `forward_citations:*` cache entries)
 
 ---
 
-## Multi-user model (Phase 1 simplified)
+## Multi-user model
 
-The deployment context is a small team of trusted collaborators on a shared local server. In Phase 1:
-- There is no login or authentication
+The deployment context is a small team of trusted collaborators on a shared local server:
+- No login or authentication
 - All users share the same **library layer** (papers, PDFs, venue tier list)
 - Each **project** has an owner (stored in the DB) but is visible and editable by all users — trust is assumed
 - Concurrent writes are handled by SQLite's WAL mode, which is sufficient for a small team
@@ -438,47 +379,9 @@ Authentication and per-user access control are explicitly deferred to a future p
 - `Field.venues` relationship uses `passive_deletes=True` because the DB has `ON DELETE CASCADE` on `VenueField.field_id`. Without this, SQLAlchemy tries to set `field_id = NULL` on eagerly-loaded relationships before delete, which fails because `field_id` is NOT NULL.
 - The `citations_by_year` sliding window only works for works that have the data populated from OpenAlex. Works without it (e.g., imported from Crossref or BibTeX only) fall back to the all-time `citation_count` regardless of slider position. The startup backfill populates from cached responses; re-enriching a work will also populate it.
 - `_update_work()` always overwrites `citation_count` and `citations_by_year` (they change over time), unlike other fields which use update-without-overwrite.
-
----
-
-## Design deviations from original spec
-
-- **Y-axis changed from importance score to citation count**: The original spec defined an importance score formula `(citation_count / age) * decay` with threshold and decay controls. This was replaced with a direct citation count y-axis using `log(1+x)` scale, with a "Count citations of last N years" sliding window. The threshold and decay sliders were removed.
-- **No score-based filtering**: The original spec had a scored tier where candidates were shown above a user-adjustable threshold. This was removed — all candidates passing venue/direction filters are shown.
-- **PDF management fully implemented**: Originally deferred to Phase 2, PDF upload/serve/delete is now fully functional with the `WorkPDF` table (replacing the removed `pdf_path` column on Work).
-- **Work notes system added**: Not in original spec — added to support per-paper annotations with provenance tracking (user vs AI-generated).
-- **Fields tab on Venues page**: Field creation moved from the Venues page header to a dedicated Fields tab, with field deletion support.
-- **Venue table sorting**: Venues table headers are clickable to sort ascending/descending by any column.
-- **PDF text extraction added**: auto-extraction on upload, re-extract endpoint, companion `.txt` file colocated with the PDF. Two-column layout handled by x0-histogram heuristics (gutter gap + right-column margin spike). Deleted PDFs move both the `.pdf` and `.txt` to `_orphaned/`.
-- **Pre-built frontend committed**: `frontend/dist/` is committed to the repo so users only need conda + pip to run the app. Node.js is only needed to rebuild after frontend source changes.
-- **Deployment docs added**: `README.md`, `litexplorer.service` (optional systemd), `env.example` (template for machine-specific env vars).
-- **SSL verification toggle added**: `ssl_verify` DB setting (default `"true"`), threaded to all httpx clients. Checkbox in Settings page. SSL errors return 503 with detectable `SSL_CERTIFICATE_ERROR:` prefix.
-- **Semantic Scholar integration added**: Full `SemanticScholarClient` implementation (was previously reserved as an enum value only). `Work.semantic_scholar_id` column (VARCHAR(128), nullable). On-demand enrichment endpoint. WorkDetailPanel shows editable S2 ID field and "Fetch from Semantic Scholar" button.
-- **Search-by-title import added**: "Search by Title" tab in ImportDialog. Backend searches Crossref first, falls back to S2 if Crossref returns nothing. `SearchImportCandidateDialog` shows radio-pick candidates with source badges (Crossref = green, Semantic Scholar = purple).
-- **S2 direction param**: `POST /api/enrich/works/{id}/semantic-scholar` accepts `?direction=backward|forward|both` (default `both`). WorkDetailPanel has separate "Fetch references (S2)" and "Fetch citing papers (S2)" buttons.
-- **Topic list visibility toggle added**: Clicking a topic list entry in the citation timeline legend toggles it inactive (40% opacity, pointer cursor). `inactiveTopicListIds: Set<number>` state in `ProjectDetailPage`, serialized as `number[]` in localStorage. Derived memos: `activeTopicListIds`, `activeSeedIds`, `filteredSeeds`, `filteredSeedCitations`. `filteredNeighbors` excludes neighbors whose connections are all to inactive seeds. `CitationTimeline` receives `activeTopicListIds` + `onToggleTopicList` props; legend items carry optional `topicListId`. Storing **inactive** IDs (not active) is intentional: empty set = all active, so new topic lists are automatically visible.
-- **Multi-DOI support added**: A work can have multiple valid DOIs. Primary DOI stays on `Work.doi`; secondary DOIs use the new `WorkDOI` table. `doi_aliases` included in `WorkOut`. WorkDetailPanel allows editing the primary DOI and managing secondary DOIs, with a Jaccard title-similarity check against the DOI's resolved title to warn about mismatches.
-- **Structured extraction added**: `ExtractionSchema` + `ExtractionColumn` models, full CRUD API at `/api/extraction`, and `litexplorer/services/extraction.py`. Results stored as `WorkNote` rows (provenance tracking built-in). Frontend `ExtractionSchemasPage` provides schema management and an Extract & Review tab for running extraction against project seed papers and reviewing/accepting/editing results. CSV and LaTeX export implemented via `GET /api/extraction/schemas/{id}/export?format=csv|latex`; 28 tests in `tests/test_extraction_export.py`.
-- **Robust extraction parsing + prompt preview added**: Multi-strategy LLM response parser (JSON → JSON-in-prose → markdown table → key-value → failed) makes extraction work reliably with local/weaker LLMs. Thinking-model tags stripped pre-parse. Failed parse creates a single `_parse_error` WorkNote instead of polluting every column with raw output. `ExtractionWorkResult.parsing_method` records which strategy succeeded. Prompt preview: `GET /api/extraction/schemas/{id}/preview-prompt?work_id=` returns the full system + user message with paper text replaced by `[Text of "title"]`; "Show prompt" button in ExtractionRunView action bar shows this in a modal. DiscussionPage has a matching client-side "Show prompt" button (replaces PDF/text with `[Text of "title"]` / `[PDF of "title"]` placeholders).
-- **Open-access PDF fetch added**: Not in original spec. One-click fetch of PDFs from arXiv (by `arxiv_id`) and Unpaywall (by DOI). Integrated into WorkDetailPanel alongside manual upload. arXiv fetch requires no auth; Unpaywall fetch requires `api_contact_email` to be configured (the same setting used for OpenAlex/Crossref polite pool). `_register_and_extract_pdf()` helper extracted from upload flow so both paths share the save-to-disk + WorkPDF creation + text extraction logic.
-- **Per-paper chat added with session persistence**: Not in original spec. `DiscussionPage` replaces the "stateless chat" Phase 2 stub with full session persistence. `ChatSession` + `ChatMessage` tables store conversations scoped by `(work_id, project_id)`; `work_id` is nullable so project-only sessions (no single paper) are supported. The auto-session is automatically restored on mount; a toolbar provides Save (named snapshot), Load (modal), and New Chat (clears auto-session). The LLM backend remains stateless (full history sent per request), but the session layer persists all turns to SQLite. A context annotation bar above the chat shows which papers are included in the current discussion.
-- **Discussion page paper selector UX improvements**: `PaperContextSelector` in `DiscussionPage` has: (1) selected papers sort to the top (unselected below), via `useMemo`; (2) thin vertical color bars (3 px each) on each paper row's left edge show topic list membership; (3) bulk-select checkboxes per topic list with native `indeterminate` state via refs; (4) **selection lock** — once the first message is sent `discussionActive=true` and all checkboxes are disabled (`locked` prop), with an amber "Locked · start a new chat to change" indicator; (5) **localStorage persistence** — on first send, selected work IDs saved under `litexplorer:discuss:project:{projectId}:sel`; restored on remount via `restoredSelectionRef` to bridge the async race between PDF loading and session restore; cleared on New Chat. `PaperEntry` carries `topic_list_ids: number[]`; `topicListColorMap: Map<number, string>` from `timeline.topic_lists`.
-- **Extraction paper selector UX parity**: `ExtractionRunView` paper list now matches the DiscussionPage pattern: (1) topic-list color bars (3 px, `alignSelf: stretch`) inside the sticky title `<td>` (padding moved to inner div, outer td uses `p-0`); (2) per-topic-list bulk-select checkboxes with indeterminate state via `tlCheckboxRefs` rendered in a strip between the action bar and the results table, showing `(N/M)` counts; (3) `sortedFilteredSeeds` useMemo floats selected papers to the top within each search filter result. `topicLists` and `topicListColorMap` derived from `timeline.topic_lists` via useMemo inside `ExtractionRunView`.
-- **Schema discussion mode added (Mar 2026)**: `ChatSession` gains two new columns: `context_type VARCHAR(32) DEFAULT 'papers'` and `context_id INTEGER` (nullable). `context_type="extraction_schema"` routes `POST /api/llm/chat` to a schema-design system prompt; paper documents are **also** included when papers are provided (both modes share the same paper-loading logic). The auto-session scope is now `(work_id, project_id, context_type, context_id)`. `litexplorer/services/schema_discussion.py` provides `build_schema_discussion_prompt()` (system prompt with `column-proposal` fenced-block spec) and `parse_column_proposals()` (regex extractor, lenient, skips invalid blocks). `LLMClient.chat()` gains `system_prompt: str | None = None` override parameter (both providers updated). New endpoints: `GET /api/extraction/schemas/{id}/summary`, `POST /api/extraction/schemas/from-discussion`, `POST /api/extraction/schemas/{id}/columns/from-proposal` (auto sort_order = max+1).
-- **Schema discussion prompt hardened for open-weight models (Mar 2026)**: `build_schema_discussion_prompt()` now includes two concrete few-shot examples of correctly formatted `column-proposal` fenced blocks immediately after the format specification — one constrained column (`"Model family"` with `allowed_values` array) and one free-form column (`"Key contribution"` with `allowed_values: null`) — so less-capable models see both variants before generating output. The trailing bookend reminder was also strengthened to explicitly name the forbidden formats (markdown tables, numbered lists, bullet points, plain prose) and explains that these cannot be automatically parsed, improving compliance on open-weight / OpenAI-compatible models that understand the task but ignore format instructions.
-- **Column proposal cards in chat (Mar 2026)**: When the schema dropdown is set to an extraction schema (existing or "New schema"), assistant messages are parsed client-side via `parseProposals()` (`frontend/src/utils/proposalParser.ts`), which tries five progressive strategies (fenced `column-proposal` blocks → fenced JSON → bare JSON → markdown table → numbered/bulleted bold list) so that less-capable or open-weight models that emit tables or lists instead of fenced blocks still yield interactive cards. `parse_column_proposals()` in `services/schema_discussion.py` mirrors the same strategy set (both parsers are kept in sync). Each successfully parsed proposal is rendered as an interactive `ColumnProposalCard` inline in the chat thread. Cards have four states: `pending` (read-only with Edit/Accept/Reject), `editing` (fields editable), `accepted` (green check, non-editable), `rejected` (dimmed). Accept is async: for an existing schema it calls `POST /api/extraction/schemas/{id}/columns/from-proposal` directly; for "New schema" (`contextId=null`) it opens a `NewSchemaDialog` (promise-based — the card awaits the dialog's resolve/reject). On first accept with "New schema", a `NewSchemaDialog` collects title + description, creates the schema via `POST /api/extraction/schemas/from-discussion`, creates the column, promotes `contextId` in state + localStorage, patches the auto-session via `PATCH /api/chat/sessions/{id}` (so session restore lands on the correct schema scope next time), and invalidates query caches. Subsequent accepts in the same chat reuse the now-known `contextId` directly. General discussion mode (dropdown = "General discussion") skips proposal parsing entirely even if the message contains JSON blocks. `UserCancelledError` (exported from `ColumnProposalCard.tsx`) is thrown on dialog cancel and suppresses the error display on the card.
-- **`PATCH /api/chat/sessions/{id}` added**: `PatchSessionRequest(context_id: Optional[int])` — always sets `context_id` on the session and updates `updated_at`. Needed to re-scope an auto-session after a "New schema" discussion promotes to a real schema ID.
-- **Unified discussion panel (Mar 2026)**: The old Papers / Schema segmented mode toggle and separate `SchemaContextSelector` component were replaced with a single unified left panel. A compact "Discussion focus" dropdown (label: "Discussion focus") sits above the always-visible `PaperContextSelector`. Dropdown options: "General discussion" (`context_type="papers"`, `context_id=null`), one entry per extraction schema (`context_type="extraction_schema"`, `context_id=schema.id`), and "New schema" (`context_type="extraction_schema"`, `context_id=null`). When an existing schema is selected, a compact indigo summary card (title, description, column list) appears between the dropdown and the paper selector. When "New schema" is selected, an amber note is shown instead. Zero papers selected is always valid (no longer blocks sending). `handleSchemaDropdownChange(value)` is the single unified handler replacing the old `handleModeChange` / `handleSchemaChange`. `schemaDropdownValue` is a derived string (`""` / `"new"` / `"{id}"`) computed from `discussionMode` + `contextId`. Extraction schema queries (`getExtractionSchemas`, `getExtractionSchema`) moved to the main component level. `DiscussionMode = 'papers' | 'extraction_schema'` type and three localStorage keys (`:sel`, `:mode`, `:context_id`) are unchanged.
-- **Unified discussion panel — design notes (Mar 2026)**:
-  - **`ChatSession.context_type` / `context_id`**: `context_type VARCHAR(32) DEFAULT 'papers'` scopes the discussion mode; `"extraction_schema"` routes the LLM call to the schema-design system prompt. `context_id INTEGER` (nullable, no DB FK) stores the associated `ExtractionSchema.id` or `null` for a new unsaved schema. The auto-session scope is the 4-tuple `(work_id, project_id, context_type, context_id)`.
-  - **Paper context always included**: selected paper text/PDFs are **always** assembled and sent to the LLM regardless of whether a schema is selected. Both `"papers"` and `"extraction_schema"` mode share the same paper-loading code path; `context_type` only determines which system prompt to prepend.
-  - **Column proposals**: the schema-design system prompt instructs the LLM to emit ` ```column-proposal ``` ` fenced JSON blocks. The frontend parses these client-side via `parseProposals()` and renders each as an interactive `ColumnProposalCard` (states: `pending → editing → accepted/rejected`). Accept POSTs the column to the backend; Reject is purely visual. `UserCancelledError` silences cancel-on-dialog.
-  - **Lazy schema creation**: selecting "New schema" from the dropdown creates nothing immediately. The `ExtractionSchema` row is created only when the user accepts the first column proposal — a `NewSchemaDialog` collects title + description at that moment, creates the schema, then creates the column and promotes `contextId` in state + localStorage + patches the auto-session via `PATCH /api/chat/sessions/{id}`.
-  - **Session restore with proposals**: on session restore, `selectedSchemaDetail.columns` names are loaded and passed as `acceptedColumnNames: Set<string>` to each `AssistantMessage`. `ColumnProposalCard` accepts `initialState?: 'pending' | 'accepted'`; proposals whose name matches an existing column start pre-marked as accepted.
-  - **New Chat reset**: `handleNewChat` resets `discussionMode` → `'papers'`, clears `contextId`, clears localStorage mode/context_id keys, re-enables all `canInclude` paper entries, then calls `getOrCreateAuto` for the papers-mode session and clears its prior messages. The schema dropdown unlocks.
-  - **Prompt preview**: `buildChatPromptPreview()` (client-side) shows the schema title, description, and column list when a schema is selected, followed by paper `[Text of "..."]` / `[PDF of "..."]` placeholders for each included paper.
-  - **Edge case — schema deleted**: if the schema detail query errors (e.g. schema deleted externally), a `useEffect` falls back to `"papers"` mode, clears localStorage, and injects an error message into the chat: _"The extraction schema this conversation referenced has been deleted."_
-  - **No-LLM tooltip**: the Send button carries `title="Configure an LLM provider in Settings to enable chat"` when `llmNotConfigured`, so the disabled state is discoverable.
+- **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
+- **PDF vision is Anthropic-only**: sending the PDF binary directly to the model is only supported when `llm_provider = "anthropic"`. All other providers (including local OpenAI-compatible servers) must use extracted `.txt` text.
+- **Table isolation in tests**: `Base.metadata.create_all()` in `conftest.py` runs before `from litexplorer.app import app`. A test file that uses a model via the API but does NOT import that model at the top of the file will get "no such table" when run in isolation. Fix: add a bare import at the top (e.g. `from litexplorer.models.chat import ChatSession`) so it registers in `Base.metadata` before `create_all()`.
 
 ---
 
@@ -488,17 +391,17 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 - **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
-- **Phase 2 complete**: all planned Phase 2 features (LLM configuration, structured extraction, per-paper chat with session persistence) are implemented. No remaining Phase 2 items.
 - **Unpaywall requires contact email**: OA PDF fetch via Unpaywall is only attempted when `api_contact_email` is configured in Settings. Without it, only arXiv is tried (works that have `arxiv_id`). Works that have only a DOI but no `arxiv_id` and no configured email will return 404 from the fetch endpoint.
 - **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 - **Column-proposal re-prompting (not implemented)**: when all five `parseProposals()` strategies fail and the LLM response contains no parseable proposal, the UI silently shows the message as plain text. A possible future enhancement is to detect this case client-side and automatically re-prompt the LLM asking it to reformat its answer as a fenced `column-proposal` block.
+- **GROBID reference extraction**: Requires Docker (`docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf`). Title-only resolution relies on first-author + year matching (no venue); some references will fail to resolve. CRF-only image is lightweight and fast; for better accuracy use the `-full` image (needs GPU).
 
 ---
 
 ## Running tests
 
 ```bash
-python -m pytest tests/ -v          # all tests (379 tests)
+python -m pytest tests/ -v          # all tests
 cd frontend && npm run build        # TypeScript type check + production build (requires Node.js)
 ```
 

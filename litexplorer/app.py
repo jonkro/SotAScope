@@ -313,6 +313,13 @@ def _seed_default_settings() -> None:
             "Optional text prepended to the system prompt for all LLM extraction requests. "
             "Use this to add domain-specific instructions or context for every extraction.",
         ),
+        (
+            "grobid_url",
+            "",
+            "Base URL of a locally-running GROBID instance for PDF reference extraction "
+            "(e.g. http://localhost:8070). Leave empty to disable GROBID integration. "
+            "Run GROBID via Docker: docker run --rm -p 8070:8070 lfoppiano/grobid:0.8.1",
+        ),
     ]
 
     db = SessionLocal()
@@ -574,6 +581,7 @@ from litexplorer.api.notes import project_notes_router  # noqa: E402
 from litexplorer.api.llm import router as llm_router  # noqa: E402
 from litexplorer.api.extraction import router as extraction_router  # noqa: E402
 from litexplorer.api.chat import router as chat_router  # noqa: E402
+from litexplorer.api.grobid import router as grobid_router  # noqa: E402
 
 app.include_router(works_router)
 app.include_router(authors_router)
@@ -588,6 +596,7 @@ app.include_router(project_notes_router)
 app.include_router(llm_router)
 app.include_router(extraction_router)
 app.include_router(chat_router)
+app.include_router(grobid_router)
 
 # Serve built frontend (only when frontend/dist exists)
 if _frontend_dist.is_dir():

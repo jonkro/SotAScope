@@ -34,6 +34,13 @@ export interface SemanticScholarEnrichResult {
   raw_citing: number;
 }
 
+export interface GrobidEnrichResult {
+  new_count: number;
+  existing_count: number;
+  failed_count: number;
+  total_extracted: number;
+}
+
 export interface WorkLocationOut {
   id: number;
   location_type: string;
