@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { TimelineSeedWork } from '../types';
-import { fetchBackwardCitationsEnrich, fetchForwardCitationsEnrich } from '../api';
+import { fetchBackwardCitationsEnrich, fetchForwardCitationsEnrich, fetchGrobidStatus } from '../api';
 import { useQueryClient } from '@tanstack/react-query';
 
 interface FetchError {
@@ -25,19 +25,31 @@ function parseErrorReason(e: unknown): string {
 interface TimelineEnrichBarProps {
   seeds: TimelineSeedWork[];
   projectId: number;
+  onSelectWork?: (workId: number) => void;
 }
 
-export default function TimelineEnrichBar({ seeds, projectId }: TimelineEnrichBarProps) {
+export default function TimelineEnrichBar({ seeds, projectId, onSelectWork }: TimelineEnrichBarProps) {
   const qc = useQueryClient();
   const [fetching, setFetching] = useState(false);
+
+  // Read GROBID status from cache — populated by WorkDetailPanel or SettingsPage.
+  // Never triggers a new fetch; just reads whatever is already cached.
+  const grobidStatus = qc.getQueryData<Awaited<ReturnType<typeof fetchGrobidStatus>>>(['grobid', 'status']);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [errors, setErrors] = useState<FetchError[]>([]);
 
   const seedsWithBwd = seeds.filter((s) => s.has_backward_citations).length;
   const seedsWithFwd = seeds.filter((s) => s.has_forward_citations).length;
-  const bwdNoOaData = seeds.filter((s) => s.backward_citations_no_oa_data).length;
+  const noOaSeeds = seeds.filter((s) => s.backward_citations_no_oa_data);
+  const bwdNoOaData = noOaSeeds.length;
   // Seeds with actual OA reference data (fetched and non-empty)
   const bwdFetched = seedsWithBwd - bwdNoOaData;
+
+  // Seeds eligible for a GROBID hint: no OA data + has a PDF + GROBID is available
+  const grobidHintSeeds =
+    grobidStatus?.available && onSelectWork
+      ? noOaSeeds.filter((s) => s.has_pdfs)
+      : [];
   const total = seeds.length;
 
   const handleFetchAll = async () => {
@@ -95,7 +107,26 @@ export default function TimelineEnrichBar({ seeds, projectId }: TimelineEnrichBa
           References: {bwdFetched}/{total} works fetched
           {bwdNoOaData > 0 && (
             <span className="text-amber-600 ml-1">
-              ({bwdNoOaData} {bwdNoOaData === 1 ? 'has' : 'have'} no OA data)
+              ({bwdNoOaData} {bwdNoOaData === 1 ? 'has' : 'have'} no OA data
+              {grobidHintSeeds.length > 0 && (
+                <>
+                  {' — '}
+                  {grobidHintSeeds.map((s, i) => (
+                    <span key={s.id}>
+                      {i > 0 && ', '}
+                      <button
+                        onClick={() => onSelectWork!(s.id)}
+                        className="underline hover:text-amber-800 focus:outline-none"
+                        title={`Open "${s.title}" to run GROBID reference extraction`}
+                      >
+                        {s.title.length > 40 ? s.title.slice(0, 40) + '…' : s.title}
+                      </button>
+                    </span>
+                  ))}
+                  {': try GROBID'}
+                </>
+              )}
+              )
             </span>
           )}
           {' | '}

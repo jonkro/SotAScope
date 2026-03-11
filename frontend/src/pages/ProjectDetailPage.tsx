@@ -409,7 +409,7 @@ export default function ProjectDetailPage() {
         {activeTab === 'timeline' && (
           <div className="flex-1 flex flex-col min-h-0">
             {timeline && (
-              <TimelineEnrichBar seeds={timeline.seeds} projectId={projectId} />
+              <TimelineEnrichBar seeds={timeline.seeds} projectId={projectId} onSelectWork={setSelectedWorkId} />
             )}
             <TimelineControls
               citationsSinceYears={citationsSinceYears}

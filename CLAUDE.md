@@ -164,7 +164,7 @@ litexplorer/
 │   │                     #   SemanticScholarEnrichResult, SearchImportRequest,
 │   │                     #   SearchImportCandidate, SearchImportCandidatesResult,
 │   │                     #   SearchImportConfirmRequest, DOIInfoResult
-│   ├── timeline.py       # TimelineResponse, TimelineSeedWork (+ backward_citations_no_oa_data),
+│   ├── timeline.py       # TimelineResponse, TimelineSeedWork (+ backward_citations_no_oa_data, has_pdfs),
 │   │                     #   TimelineNeighborWork (seeds/neighbors include citations_by_year: list[dict] | None)
 │   ├── fields.py         # FieldOut (includes venue_count: int)
 │   ├── notes.py          # WorkNoteCreate, WorkNoteUpdate (+ provenance field), WorkNoteOut, ProjectNoteOut
@@ -198,7 +198,8 @@ litexplorer/
 │   │                     #   GET /schemas/{id}/preview-prompt?work_id=... → {system_text, user_message}
 │   │                     #   GET /schemas/{id}/summary, POST /schemas/from-discussion,
 │   │                     #   POST /schemas/{id}/columns/from-proposal
-│   └── grobid.py         # /api/enrich/works/{id}/grobid, GET /api/grobid/status
+│   └── grobid.py         # /api/enrich/works/{id}/grobid, GET /api/grobid/status,
+│                         #   POST /api/grobid/start (docker start grobid, subprocess)
 ├── services/
 │   ├── enrichment.py     # EnrichmentService — import, citation fetching, venue normalization,
 │   │                     #   DOI resolution, cache management, deduplication,
@@ -292,7 +293,9 @@ frontend/src/
     ├── CitationTimeline.tsx    # D3 scatter plot with log1p citation count y-axis
     ├── WorkDetailPanel.tsx     # Side panel with collapsible sections, markers, actions, notes
     ├── TimelineControls.tsx    # Filter bar: citation window, direction, candidates, hops, year range
-    ├── TimelineEnrichBar.tsx   # Enrichment progress for seed papers
+    ├── TimelineEnrichBar.tsx   # Enrichment progress for seed papers; onSelectWork prop;
+    │                           #   shows "Try GROBID" hints for seeds with no OA data + PDF + GROBID available
+    │                           #   (reads ['grobid','status'] from query cache, no new fetch)
     ├── ImportDialog.tsx        # 3-tab import: DOI list, BibTeX, Search by title;
     │                           #   optional post-import topic list assignment (projectTopicLists prop)
     ├── SearchImportCandidateDialog.tsx # Radio-picker for search-by-title candidates (source badge)
@@ -394,7 +397,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Unpaywall requires contact email**: OA PDF fetch via Unpaywall is only attempted when `api_contact_email` is configured in Settings. Without it, only arXiv is tried (works that have `arxiv_id`). Works that have only a DOI but no `arxiv_id` and no configured email will return 404 from the fetch endpoint.
 - **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 - **Column-proposal re-prompting (not implemented)**: when all five `parseProposals()` strategies fail and the LLM response contains no parseable proposal, the UI silently shows the message as plain text. A possible future enhancement is to detect this case client-side and automatically re-prompt the LLM asking it to reformat its answer as a fenced `column-proposal` block.
-- **GROBID reference extraction**: Requires Docker (`docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf`). Title-only resolution relies on first-author + year matching (no venue); some references will fail to resolve. CRF-only image is lightweight and fast; for better accuracy use the `-full` image (needs GPU).
+- **GROBID reference extraction**: Requires Docker (`docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf`). Title-only resolution relies on first-author + year matching (no venue); some references will fail to resolve. CRF-only image is lightweight and fast; for better accuracy use the `-full` image (needs GPU). Settings page has a "Start" button (calls `POST /api/grobid/start`) that appears after a failed "Test connection" check; on success waits 5 s and auto-re-tests.
 
 ---
 

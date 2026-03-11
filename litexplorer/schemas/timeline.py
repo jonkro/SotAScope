@@ -23,6 +23,7 @@ class TimelineSeedWork(BaseModel):
     has_forward_citations: bool
     forward_citations_fetched_at: datetime | None
     backward_citations_no_oa_data: bool = False  # True when OA returned empty reference list
+    has_pdfs: bool = False
 
 
 class TimelineNeighborWork(BaseModel):

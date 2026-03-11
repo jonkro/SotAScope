@@ -737,6 +737,10 @@ export function fetchGrobidStatus(): Promise<{ available: boolean; url: string }
   return apiFetch<{ available: boolean; url: string }>('/api/grobid/status');
 }
 
+export function startGrobid(): Promise<{ success: boolean; message: string }> {
+  return apiFetch<{ success: boolean; message: string }>('/api/grobid/start', { method: 'POST' });
+}
+
 export function enrichFromGrobid(workId: number): Promise<GrobidEnrichResult> {
   return apiFetch<GrobidEnrichResult>(`/api/enrich/works/${workId}/grobid`, { method: 'POST' });
 }

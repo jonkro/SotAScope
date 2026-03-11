@@ -3,7 +3,7 @@ import { useQueryClient, useQuery } from '@tanstack/react-query';
 import PageHeader from '../components/PageHeader';
 import FolderBrowserDialog from '../components/FolderBrowserDialog';
 import { useSettings, useUpdateSetting, useLLMModels } from '../hooks/useSettings';
-import { migratePDFStorage, fetchGrobidStatus } from '../api';
+import { migratePDFStorage, fetchGrobidStatus, startGrobid } from '../api';
 import type { PDFMigrationResult } from '../types';
 
 // Keys managed by dedicated sub-sections — excluded from the generic loop.
@@ -306,6 +306,10 @@ function GrobidConfigSection({ saveSetting }: { saveSetting: (key: string, value
   }, [settings]);
 
   const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  // Track last known availability to decide whether to show the Start button.
+  const [lastAvailable, setLastAvailable] = useState<boolean | null>(null);
+  const [starting, setStarting] = useState(false);
+
   useEffect(() => {
     if (testStatus?.ok) {
       const t = setTimeout(() => setTestStatus(null), 3000);
@@ -323,19 +327,43 @@ function GrobidConfigSection({ saveSetting }: { saveSetting: (key: string, value
     await saveSetting('grobid_url', urlDraft);
   };
 
-  const handleTestConnection = async () => {
+  const runTestConnection = async () => {
     setTestStatus(null);
     const result = await refetchStatus();
-    if (result.data) {
-      if (result.data.available) {
-        setTestStatus({ ok: true, message: 'Connected' });
-      } else {
-        setTestStatus({ ok: false, message: 'Not available' });
-      }
+    const available = result.data?.available ?? false;
+    setLastAvailable(available);
+    if (available) {
+      setTestStatus({ ok: true, message: 'Connected' });
     } else {
       setTestStatus({ ok: false, message: 'Not available' });
     }
   };
+
+  const handleTestConnection = async () => {
+    await runTestConnection();
+  };
+
+  const handleStart = async () => {
+    setStarting(true);
+    setTestStatus(null);
+    try {
+      const result = await startGrobid();
+      if (!result.success) {
+        setTestStatus({ ok: false, message: result.message });
+        setStarting(false);
+        return;
+      }
+      // Wait 5 s for GROBID to initialise, then auto-test.
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      await runTestConnection();
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const grobidUrlSaved = sm['grobid_url'] ?? '';
+  // Show Start button only when a URL is configured and the last test showed unavailable.
+  const showStartButton = !!grobidUrlSaved && lastAvailable === false;
 
   const inputCls =
     'w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
@@ -365,14 +393,24 @@ function GrobidConfigSection({ saveSetting }: { saveSetting: (key: string, value
         </p>
       </div>
 
-      {/* Test connection */}
+      {/* Test connection + Start */}
       <div className="flex items-center gap-3">
         <button
           onClick={handleTestConnection}
-          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+          disabled={starting}
+          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Test connection
         </button>
+        {showStartButton && (
+          <button
+            onClick={handleStart}
+            disabled={starting}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {starting ? 'Starting…' : 'Start'}
+          </button>
+        )}
         {testStatus && (
           <span className={`text-sm ${testStatus.ok ? 'text-green-600' : 'text-red-600'}`}>
             {testStatus.message}

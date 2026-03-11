@@ -202,6 +202,7 @@ export interface TimelineSeedWork {
   has_forward_citations: boolean;
   forward_citations_fetched_at: string | null;
   backward_citations_no_oa_data: boolean;
+  has_pdfs: boolean;
 }
 
 export interface TimelineNeighborWork {

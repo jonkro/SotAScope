@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from litexplorer.api.deps import get_db
 from litexplorer.models.cache import ApiCache
-from litexplorer.models.library import Citation, Venue, Work
+from litexplorer.models.library import Citation, Venue, Work, WorkPDF
 from litexplorer.models.project import Project, ProjectIgnoredWork, TopicList, TopicListWork
 from litexplorer.schemas.timeline import (
     SeedCitation,
@@ -163,6 +163,14 @@ def get_project_timeline(
         else:
             fwd_cache_timestamps[sid] = None
 
+    # 6a. Seeds with at least one PDF
+    seeds_with_pdfs: set[int] = set()
+    if seed_ids:
+        pdf_rows = db.execute(
+            select(WorkPDF.work_id).where(WorkPDF.work_id.in_(seed_ids)).distinct()
+        ).scalars().all()
+        seeds_with_pdfs = set(pdf_rows)
+
     # 6. Tier-based venue ids — read directly from Venue.tier
     tier1_venue_ids: list[int] = []
     ignored_venue_ids: list[int] = []
@@ -201,6 +209,7 @@ def get_project_timeline(
             has_forward_citations=wid in seeds_with_fwd,
             forward_citations_fetched_at=fwd_cache_timestamps.get(wid),
             backward_citations_no_oa_data=wid in seeds_bwd_no_oa_data,
+            has_pdfs=wid in seeds_with_pdfs,
         ))
 
     neighbors_out: list[TimelineNeighborWork] = []
