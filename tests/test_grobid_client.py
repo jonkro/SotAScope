@@ -158,7 +158,7 @@ def _mock_grobid_tei_xml(doc):
     so the lazy import resolves to our mock immediately.
     """
     fake_module = MagicMock()
-    fake_module.parse_document_xml.return_value = doc
+    fake_module.parse_citations_xml.return_value = doc.citations
     with patch.dict(sys.modules, {"grobid_tei_xml": fake_module}):
         yield fake_module
 
@@ -389,7 +389,7 @@ class TestExtractReferences:
             client.extract_references(b"PDF")
             client.close()
 
-        fake_module.parse_document_xml.assert_called_once_with(TEI_XML)
+        fake_module.parse_citations_xml.assert_called_once_with(TEI_XML)
 
 
 # ---------------------------------------------------------------------------

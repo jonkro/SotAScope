@@ -140,12 +140,12 @@ def _parse_tei_xml(xml_text: str) -> list[GrobidReference]:
         ) from exc
 
     try:
-        doc = grobid_tei_xml.parse_document_xml(xml_text)
+        citations = grobid_tei_xml.parse_citations_xml(xml_text)
     except Exception as exc:
         raise GrobidError(f"Failed to parse GROBID TEI XML: {exc}") from exc
 
     results: list[GrobidReference] = []
-    for bib in (doc.citations or []):
+    for bib in (citations or []):
         results.append(_biblio_to_reference(bib))
     return results
 

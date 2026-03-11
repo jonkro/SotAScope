@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
 import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCrossref, useEnrichFromSemanticScholar, useResolveDOI } from '../hooks/useEnrichment';
 import { useUpdateWork, useAddWorkDOIAlias, useRemoveWorkDOIAlias } from '../hooks/useWorks';
@@ -308,6 +308,7 @@ export default function WorkDetailPanel({
   foldState?: PanelFoldState;
   onFoldChange?: (s: PanelFoldState) => void;
 }) {
+  const qc = useQueryClient();
   const { data: work, isLoading } = useWork(workId);
   const fwd = useForwardCitations(workId);
   const bwd = useBackwardCitations(workId);
@@ -1256,6 +1257,7 @@ export default function WorkDetailPanel({
                         setGrobidEnrichMsg(
                           `GROBID: ${result.new_count} new, ${result.existing_count} existing, ${result.failed_count} unresolved (of ${result.total_extracted} extracted)`
                         );
+                        qc.invalidateQueries({ queryKey: ['works', workId, 'citations', 'backward'] });
                         onEnrichComplete?.();
                       },
                       onError: (err) => {
