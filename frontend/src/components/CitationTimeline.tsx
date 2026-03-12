@@ -34,7 +34,7 @@ interface DotDatum {
   connectivity: number; // inter-seed citation connectivity (1 = base)
 }
 
-const MARGIN = { top: 20, right: 30, bottom: 56, left: 50 };
+const MARGIN = { top: 20, right: 30, bottom: 36, left: 50 };
 const BASE_RADIUS = 3;
 const NEIGHBOR_OPACITY = 0.45;
 const TIER1_STROKE = '#1f2937';
@@ -57,6 +57,7 @@ export default function CitationTimeline({
   onToggleTopicList,
 }: CitationTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const svgWrapperRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 400 });
@@ -191,9 +192,9 @@ export default function CitationTimeline({
   // Track previous selectedWorkId to fire ripple only when selection changes
   const prevSelectedWorkIdRef = useRef<number | null>(null);
 
-  // Observe container size
+  // Observe svg wrapper size (excludes the legend div above it)
   useEffect(() => {
-    const el = containerRef.current;
+    const el = svgWrapperRef.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
       const { width, height } = entries[0].contentRect;
@@ -228,9 +229,9 @@ export default function CitationTimeline({
     const minScore = d3.min(scores) ?? 0;
     let maxScore = d3.max(scores) ?? 1;
     if (maxScore <= minScore) maxScore = minScore + 1;
-    const yPadding = (maxScore - minScore) * 0.08;
+    const yPadding = maxScore * 0.08;
     const yScale = d3.scaleLinear()
-      .domain([Math.max(0, minScore - yPadding), maxScore + yPadding])
+      .domain([0, maxScore + yPadding])
       .range([innerH, 0]);
 
     const g = svg.append('g').attr('transform', `translate(${MARGIN.left},${MARGIN.top})`);
@@ -535,85 +536,62 @@ export default function CitationTimeline({
       }
     }
 
-    // --- Legend (below x-axis, never overlaps data) ---
-    const legendItems: { shape: 'square' | 'circle' | 'diamond' | 'top-venue'; color: string; label: string; topicListId?: number }[] = [];
-    for (const tl of topicLists) {
-      legendItems.push({ shape: 'square', color: tl.color, label: tl.name, topicListId: tl.id });
-    }
-    legendItems.push({ shape: 'circle', color: '#9ca3af', label: 'Candidate' });
-    legendItems.push({ shape: 'top-venue', color: 'none', label: 'Top venue' });
-
-    const legendG = g.append('g')
-      .attr('transform', `translate(0,${innerH + 38})`);
-
-    const lr = BASE_RADIUS;
-    let lx = 0;
-    for (const item of legendItems) {
-      const isActive = item.topicListId == null || activeTopicListIds.has(item.topicListId);
-      const itemG = legendG.append('g')
-        .attr('transform', `translate(${lx},0)`)
-        .attr('opacity', isActive ? 1 : 0.4);
-
-      if (item.topicListId != null) {
-        itemG.style('cursor', 'pointer')
-          .on('click', () => onToggleTopicList(item.topicListId!));
-      }
-
-      if (item.shape === 'square') {
-        itemG.append('rect')
-          .attr('x', -lr).attr('y', -lr)
-          .attr('width', lr * 2).attr('height', lr * 2)
-          .attr('fill', item.color);
-      } else if (item.shape === 'circle') {
-        itemG.append('circle')
-          .attr('r', lr)
-          .attr('fill', item.color)
-          .attr('opacity', NEIGHBOR_OPACITY);
-      } else if (item.shape === 'diamond') {
-        itemG.append('rect')
-          .attr('x', -lr).attr('y', -lr)
-          .attr('width', lr * 2).attr('height', lr * 2)
-          .attr('transform', 'rotate(45)')
-          .attr('fill', item.color)
-          .attr('opacity', NEIGHBOR_OPACITY);
-      } else {
-        // top-venue: hollow circle with tier-1 stroke
-        itemG.append('circle')
-          .attr('r', lr)
-          .attr('fill', 'none')
-          .attr('stroke', TIER1_STROKE)
-          .attr('stroke-width', TIER1_STROKE_WIDTH);
-      }
-
-      const textEl = itemG.append('text')
-        .attr('x', lr + 5).attr('y', 0)
-        .attr('dominant-baseline', 'central')
-        .attr('class', 'fill-gray-500 text-xs')
-        .text(item.label);
-
-      const textWidth = (textEl.node() as SVGTextElement).getComputedTextLength?.() ?? item.label.length * 6;
-      lx += lr + 5 + textWidth + 16;
-    }
-
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimensions, dots, selectedWorkId, seedCitations, topicLists, tier1VenueIds, kHopResult, activeTopicListIds, onToggleTopicList]);
+  }, [dimensions, dots, selectedWorkId, seedCitations, tier1VenueIds, kHopResult]);
 
   useEffect(() => {
     render();
   }, [render]);
 
   return (
-    <div ref={containerRef} className="relative w-full h-full min-h-[300px]">
-      <svg ref={svgRef} width={dimensions.width} height={dimensions.height} />
+    <div ref={containerRef} className="w-full h-full min-h-[300px] flex flex-col">
+      {/* HTML legend — always rendered from the full topic list array, never filtered */}
       <div
-        ref={tooltipRef}
-        className="absolute pointer-events-none bg-gray-900 text-white text-xs rounded px-2 py-1 max-w-[280px] hidden z-50"
-      />
-      {dots.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-400">
-          No papers to display. Add works to topic lists and fetch their citations.
-        </div>
-      )}
+        className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 pb-1"
+        style={{ paddingLeft: MARGIN.left }}
+      >
+        {topicLists.map((tl) => (
+          <button
+            key={tl.id}
+            onClick={() => onToggleTopicList(tl.id)}
+            className="flex items-center gap-1.5 cursor-pointer hover:text-gray-700 transition-opacity"
+            style={{ opacity: activeTopicListIds.has(tl.id) ? 1 : 0.4 }}
+          >
+            <span
+              className="inline-block shrink-0"
+              style={{ width: 8, height: 8, background: tl.color }}
+            />
+            {tl.name}
+          </button>
+        ))}
+        {/* Static (non-togglable) legend items */}
+        <span className="flex items-center gap-1.5">
+          <svg width="10" height="10" style={{ flexShrink: 0 }}>
+            <circle cx="5" cy="5" r="4" fill="#9ca3af" opacity={NEIGHBOR_OPACITY} />
+          </svg>
+          Candidate
+        </span>
+        <span className="flex items-center gap-1.5">
+          <svg width="10" height="10" style={{ flexShrink: 0 }}>
+            <circle cx="5" cy="5" r="4" fill="none" stroke={TIER1_STROKE} strokeWidth={TIER1_STROKE_WIDTH} />
+          </svg>
+          Top venue
+        </span>
+      </div>
+
+      {/* SVG wrapper — ResizeObserver targets this so the legend height is excluded */}
+      <div ref={svgWrapperRef} className="relative flex-1">
+        <svg ref={svgRef} width={dimensions.width} height={dimensions.height} />
+        <div
+          ref={tooltipRef}
+          className="absolute pointer-events-none bg-gray-900 text-white text-xs rounded px-2 py-1 max-w-[280px] hidden z-50"
+        />
+        {dots.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-400">
+            No papers to display. Add works to topic lists and fetch their citations.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
