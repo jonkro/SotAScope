@@ -11,6 +11,7 @@ import ImportDialog from '../components/ImportDialog';
 import CitationTimeline from '../components/CitationTimeline';
 import TimelineControls, { type CandidateFilter } from '../components/TimelineControls';
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
+import ExtractionRunView from '../components/ExtractionRunView';
 import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
   useAddIgnoredWork, useRemoveIgnoredWork, useRemoveWorkFromTopicList, useTopicList,
@@ -23,11 +24,13 @@ import { filterNeighbors } from '../lib/timelineFilter';
 import { useProjectNotes } from '../hooks/useWorkNotes';
 import { updateWorkNote, deleteWorkNote } from '../api';
 import type { TimelineNeighborWork, ProjectNote } from '../types';
+import { useExtractionSchemas, useExtractionSchema } from '../hooks/useExtraction';
 
-type ActiveTab = 'timeline' | 'lists' | 'notes';
+// `schema:{id}` tabs are promoted extraction schema tabs
+type ActiveTab = 'timeline' | 'lists' | 'notes' | 'tables' | string;
 
 interface ProjectViewSettings {
-  activeTab?: ActiveTab;
+  activeTab?: string;
   citationsSinceYears?: number | null;
   showBackward?: boolean;
   showForward?: boolean;
@@ -46,6 +49,44 @@ function loadProjectSettings(projectId: number): ProjectViewSettings {
   }
 }
 
+function loadPromotedSchemaIds(projectId: number): number[] {
+  try {
+    const raw = localStorage.getItem(`litexplorer:project:${projectId}:promotedSchemas`);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Promoted schema tab content
+// ---------------------------------------------------------------------------
+
+function PromotedSchemaTabContent({
+  schemaId,
+}: {
+  schemaId: number;
+}) {
+  const { data: schema, isLoading } = useExtractionSchema(schemaId);
+
+  if (isLoading) {
+    return <div className="p-6 text-sm text-gray-400">Loading schema…</div>;
+  }
+  if (!schema) {
+    return <div className="p-6 text-sm text-gray-500">Schema not found.</div>;
+  }
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <ExtractionRunView schema={schema} readOnlyPaperSelection />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
 export default function ProjectDetailPage() {
   const { projectId: pid } = useParams<{ projectId: string }>();
   const projectId = Number(pid);
@@ -56,8 +97,21 @@ export default function ProjectDetailPage() {
   // Load persisted settings for this project
   const saved = useMemo(() => loadProjectSettings(projectId), [projectId]);
 
-  // Tab state
-  const [activeTab, setActiveTab] = useState<ActiveTab>(saved.activeTab ?? 'timeline');
+  // Promoted schema IDs (localStorage)
+  const [promotedSchemaIds, setPromotedSchemaIds] = useState<number[]>(
+    () => loadPromotedSchemaIds(projectId),
+  );
+
+  // Tab state — initialized with fallback for stale promoted schema tabs
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+    const savedTab = saved.activeTab ?? 'timeline';
+    if (savedTab.startsWith('schema:')) {
+      const schemaId = parseInt(savedTab.split(':')[1], 10);
+      const promoted = loadPromotedSchemaIds(projectId);
+      if (!promoted.includes(schemaId)) return 'tables';
+    }
+    return savedTab;
+  });
 
   // Timeline filter state
   const [citationsSinceYears, setCitationsSinceYears] = useState<number | null>(
@@ -81,6 +135,29 @@ export default function ProjectDetailPage() {
     };
     localStorage.setItem(`litexplorer:project:${projectId}:view`, JSON.stringify(settings));
   }, [projectId, activeTab, citationsSinceYears, showBackward, showForward, startYear, candidateFilter, hops, inactiveTopicListIds]);
+
+  // Persist promoted schema IDs to localStorage
+  useEffect(() => {
+    localStorage.setItem(
+      `litexplorer:project:${projectId}:promotedSchemas`,
+      JSON.stringify(promotedSchemaIds),
+    );
+  }, [projectId, promotedSchemaIds]);
+
+  const togglePromoted = useCallback((schemaId: number) => {
+    setPromotedSchemaIds((prev) => {
+      const isPromoted = prev.includes(schemaId);
+      if (isPromoted) {
+        // If currently on this promoted tab, fall back to Tables
+        setActiveTab((current) => (current === `schema:${schemaId}` ? 'tables' : current));
+        return prev.filter((id) => id !== schemaId);
+      }
+      return [...prev, schemaId];
+    });
+  }, []);
+
+  // Schemas for this project (Tables tab)
+  const { data: schemas } = useExtractionSchemas(projectId);
 
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
@@ -325,9 +402,24 @@ export default function ProjectDetailPage() {
     return undefined;
   }, [timeline, selectedWorkId]);
 
+  // Schemas that are promoted (preserve insertion order)
+  const promotedSchemas = useMemo(
+    () =>
+      promotedSchemaIds
+        .map((id) => schemas?.find((s) => s.id === id))
+        .filter((s): s is NonNullable<typeof s> => s != null),
+    [promotedSchemaIds, schemas],
+  );
+
   if (isLoading || !project) {
     return <p className="p-6 text-sm text-gray-400">Loading...</p>;
   }
+
+  // Determine the active promoted schema (if a schema:N tab is active)
+  const activeSchemaId =
+    activeTab.startsWith('schema:')
+      ? parseInt(activeTab.split(':')[1], 10)
+      : null;
 
   return (
     <div className="flex h-screen">
@@ -370,10 +462,10 @@ export default function ProjectDetailPage() {
         )}
 
         {/* Tab switcher */}
-        <div className="flex border-b border-gray-200 px-6">
+        <div className="flex border-b border-gray-200 px-6 overflow-x-auto">
           <button
             onClick={() => setActiveTab('timeline')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'timeline'
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -383,7 +475,7 @@ export default function ProjectDetailPage() {
           </button>
           <button
             onClick={() => setActiveTab('lists')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'lists'
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -393,7 +485,7 @@ export default function ProjectDetailPage() {
           </button>
           <button
             onClick={() => setActiveTab('notes')}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'notes'
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -404,6 +496,39 @@ export default function ProjectDetailPage() {
               <span className="ml-1 text-xs text-gray-400">({projectNotes.data.length})</span>
             )}
           </button>
+          <button
+            onClick={() => setActiveTab('tables')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
+              activeTab === 'tables'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Tables
+            {schemas && schemas.length > 0 && (
+              <span className="ml-1 text-xs text-gray-400">({schemas.length})</span>
+            )}
+          </button>
+          {/* Promoted schema tabs */}
+          {promotedSchemas.map((schema) => {
+            const tabId = `schema:${schema.id}`;
+            const label =
+              schema.title.length > 20 ? schema.title.slice(0, 20) + '…' : schema.title;
+            return (
+              <button
+                key={tabId}
+                onClick={() => setActiveTab(tabId)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
+                  activeTab === tabId
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+                title={schema.title}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
 
         {activeTab === 'timeline' && (
@@ -698,6 +823,79 @@ export default function ProjectDetailPage() {
                 </div>
               );
             })()}
+          </div>
+        )}
+
+        {activeTab === 'tables' && (
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="max-w-2xl space-y-3">
+              {!schemas && (
+                <p className="text-sm text-gray-400">Loading schemas…</p>
+              )}
+
+              {schemas && schemas.length === 0 && (
+                <div className="border border-dashed border-gray-300 rounded-lg p-12 text-center">
+                  <p className="text-sm text-gray-500 mb-3">No extraction tables yet.</p>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Create a schema to define what structured information the LLM should extract from papers.
+                  </p>
+                  <button
+                    onClick={() => navigate(`/projects/${projectId}/extraction`)}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
+                  >
+                    Create a schema
+                  </button>
+                </div>
+              )}
+
+              {schemas?.map((schema) => {
+                const isPromoted = promotedSchemaIds.includes(schema.id);
+                return (
+                  <div
+                    key={schema.id}
+                    className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-sm font-semibold text-gray-900">{schema.title}</h3>
+                        {schema.description && (
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{schema.description}</p>
+                        )}
+                        <p className="text-xs text-gray-400 mt-1">
+                          {schema.columns.length} column{schema.columns.length !== 1 ? 's' : ''}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={isPromoted}
+                            onChange={() => togglePromoted(schema.id)}
+                            className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
+                          />
+                          <span className="text-xs text-gray-600">Pin to tabs</span>
+                        </label>
+                        <button
+                          onClick={() =>
+                            navigate(`/projects/${projectId}/extraction?schema=${schema.id}`)
+                          }
+                          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Promoted schema tabs content */}
+        {activeSchemaId !== null && (
+          <div className="flex-1 flex flex-col min-h-0">
+            <PromotedSchemaTabContent schemaId={activeSchemaId} />
           </div>
         )}
       </div>
