@@ -353,11 +353,11 @@ tests/
 ├── test_semantic_scholar_enrichment.py  # S2 enrichment endpoint (refs/citations, dedup, error cases)
 ├── test_search_import.py      # Search-by-title candidates + confirm endpoints (12 tests)
 ├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints,
-│                              #   ai_proposal provenance (re_evaluate_edited flag), manual cell fill (34+ tests)
+│                              #   ai_proposal provenance (re_evaluate_edited flag), manual cell fill (60 tests)
 ├── test_extraction_export.py  # CSV/LaTeX export service unit tests + API endpoint tests (28 tests)
 ├── test_pdf_fetch.py          # OA PDF fetch: arXiv, Unpaywall, fetch_pdf_for_work, API endpoint (23 tests)
 ├── test_chat_sessions.py      # Chat session CRUD, auto-session uniqueness, save/load/clear, chat auto-persist (18 tests)
-├── test_schema_discussion.py  # Schema discussion prompt, parse_column_proposals, endpoints (22 tests)
+├── test_schema_discussion.py  # Schema discussion prompt, parse_column_proposals, endpoints (43 tests)
 ├── test_grobid_client.py      # GrobidClient unit tests: parse TEI XML, health check, error handling (23 tests)
 ├── test_grobid_enrichment.py  # GROBID enrichment endpoint + status endpoint (10 tests)
 └── fixtures/
