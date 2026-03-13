@@ -62,6 +62,10 @@ export default function CitationTimeline({
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 400 });
 
+  // Keep onSelectWork in a ref to avoid stale closures in D3 event handlers
+  const onSelectWorkRef = useRef(onSelectWork);
+  useEffect(() => { onSelectWorkRef.current = onSelectWork; });
+
   // For click-to-cycle through overlapping dots
   const cycleStateRef = useRef<{ ids: number[]; index: number }>({ ids: [], index: -1 });
 
@@ -215,6 +219,10 @@ export default function CitationTimeline({
     const innerH = height - MARGIN.top - MARGIN.bottom;
 
     svg.selectAll('*').remove();
+    // SVG root handles deselection for clicks anywhere in the chart (incl. axis margins)
+    svg.on('click', () => onSelectWorkRef.current(null));
+    // Always hide tooltip on re-render to prevent lingering after element is destroyed
+    tooltip.classed('hidden', true);
 
     if (dots.length === 0 || innerW <= 0 || innerH <= 0) return;
 
@@ -236,12 +244,11 @@ export default function CitationTimeline({
 
     const g = svg.append('g').attr('transform', `translate(${MARGIN.left},${MARGIN.top})`);
 
-    // Background rect for click-to-deselect
+    // Background rect — sets cursor and provides a hit target; deselection handled by SVG root
     g.append('rect')
       .attr('width', innerW).attr('height', innerH)
       .attr('fill', 'transparent')
-      .attr('cursor', 'default')
-      .on('click', () => onSelectWork(null));
+      .attr('cursor', 'default');
 
     // X axis — integer year ticks only, thinned when zoomed out
     const visibleMinYear = Math.ceil(xScale.domain()[0]);
@@ -316,9 +323,12 @@ export default function CitationTimeline({
 
     // --- Click-to-cycle handler for overlapping dots ---
     const HIT_RADIUS = 8; // px radius to find overlapping dots
-    const handleDotClick = (clickedId: number) => {
+    const handleDotClick = (event: MouseEvent, clickedId: number) => {
+      // Stop propagation so the SVG root's deselect handler doesn't fire
+      event.stopPropagation();
+
       const clickedPos = dotPositions.get(clickedId);
-      if (!clickedPos) { onSelectWork(clickedId); return; }
+      if (!clickedPos) { onSelectWorkRef.current(clickedId); return; }
 
       // Find all dots within HIT_RADIUS of the clicked dot's position
       const nearby: number[] = [];
@@ -334,7 +344,7 @@ export default function CitationTimeline({
 
       if (nearby.length <= 1) {
         cycleStateRef.current = { ids: [], index: -1 };
-        onSelectWork(clickedId);
+        onSelectWorkRef.current(clickedId);
         return;
       }
 
@@ -346,10 +356,10 @@ export default function CitationTimeline({
       if (sameCluster) {
         const nextIndex = (prev.index + 1) % nearby.length;
         cycleStateRef.current = { ids: nearby, index: nextIndex };
-        onSelectWork(nearby[nextIndex]);
+        onSelectWorkRef.current(nearby[nextIndex]);
       } else {
         cycleStateRef.current = { ids: nearby, index: 0 };
-        onSelectWork(nearby[0]);
+        onSelectWorkRef.current(nearby[0]);
       }
     };
 
@@ -418,7 +428,7 @@ export default function CitationTimeline({
               .attr('fill', d.colors[i])
               .attr('opacity', dimmed ? 0.2 : 1)
               .attr('cursor', 'pointer')
-              .on('click', () => handleDotClick(d.id))
+              .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
               .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
               .on('mouseleave', () => hideTooltip(tooltip));
           }
@@ -450,7 +460,7 @@ export default function CitationTimeline({
             .attr('stroke', markerStroke)
             .attr('stroke-width', markerStrokeW)
             .attr('cursor', 'pointer')
-            .on('click', () => handleDotClick(d.id))
+            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         }
@@ -480,7 +490,7 @@ export default function CitationTimeline({
             .attr('stroke', markerStroke)
             .attr('stroke-width', markerStrokeW)
             .attr('cursor', 'pointer')
-            .on('click', () => handleDotClick(d.id))
+            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         } else {
@@ -492,7 +502,7 @@ export default function CitationTimeline({
             .attr('stroke', markerStroke)
             .attr('stroke-width', markerStrokeW)
             .attr('cursor', 'pointer')
-            .on('click', () => handleDotClick(d.id))
+            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         }
@@ -581,7 +591,7 @@ export default function CitationTimeline({
 
       {/* SVG wrapper — ResizeObserver targets this so the legend height is excluded */}
       <div ref={svgWrapperRef} className="relative flex-1">
-        <svg ref={svgRef} width={dimensions.width} height={dimensions.height} />
+        <svg ref={svgRef} width={dimensions.width} height={dimensions.height} style={{ display: 'block' }} />
         <div
           ref={tooltipRef}
           className="absolute pointer-events-none bg-gray-900 text-white text-xs rounded px-2 py-1 max-w-[280px] hidden z-50"
