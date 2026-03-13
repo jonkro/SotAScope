@@ -13,6 +13,8 @@ import {
   runBatchExtraction,
   getExtractionResults,
   updateWorkNote,
+  manualFillExtractionCell,
+  dismissExtractionProposal,
 } from '../api';
 
 export function useExtractionSchemas(projectId?: number) {
@@ -141,7 +143,13 @@ export function useExtractionResults(schemaId: number | undefined, workIds: numb
 export function useRunBatchExtraction(schemaId: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (workIds: number[]) => runBatchExtraction(schemaId, workIds),
+    mutationFn: ({
+      workIds,
+      reEvaluateEdited = false,
+    }: {
+      workIds: number[];
+      reEvaluateEdited?: boolean;
+    }) => runBatchExtraction(schemaId, workIds, reEvaluateEdited),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
     },
@@ -170,6 +178,40 @@ export function useAcceptExtractionNote() {
   });
 }
 
+/**
+ * Accept an ai_proposal by:
+ * 1. Overwriting the existing answer note with the proposal content + ai_reviewed provenance
+ * 2. Deleting the proposal note
+ *
+ * This avoids the bug where accepting the proposal note's provenance leaves two
+ * non-proposal notes for the same cell, causing non-deterministic results.
+ */
+export function useAcceptExtractionProposal(schemaId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      workId,
+      answerNoteId,
+      columnId,
+      proposalContent,
+    }: {
+      workId: number;
+      answerNoteId: number;
+      columnId: number;
+      proposalContent: string;
+    }) => {
+      await updateWorkNote(workId, answerNoteId, {
+        content: proposalContent,
+        provenance: 'ai_reviewed',
+      });
+      await dismissExtractionProposal(schemaId, columnId, workId);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
+    },
+  });
+}
+
 export function useEditExtractionNote() {
   const qc = useQueryClient();
   return useMutation({
@@ -178,6 +220,35 @@ export function useEditExtractionNote() {
     onSuccess: (_data, { workId }) => {
       qc.invalidateQueries({ queryKey: ['extraction', 'results'] });
       qc.invalidateQueries({ queryKey: ['workNotes', workId] });
+    },
+  });
+}
+
+export function useManualFillExtractionCell(schemaId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      columnId,
+      workId,
+      content,
+    }: {
+      columnId: number;
+      workId: number;
+      content: string;
+    }) => manualFillExtractionCell(schemaId, columnId, workId, content),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
+    },
+  });
+}
+
+export function useDismissExtractionProposal(schemaId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ columnId, workId }: { columnId: number; workId: number }) =>
+      dismissExtractionProposal(schemaId, columnId, workId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
     },
   });
 }

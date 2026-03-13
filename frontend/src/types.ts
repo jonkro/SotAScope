@@ -418,6 +418,11 @@ export interface ExtractionWorkResult {
   parsing_method: string;
 }
 
+export interface ExtractionBatchRequest {
+  work_ids: number[];
+  re_evaluate_edited?: boolean;
+}
+
 export interface ExtractionBatchResult {
   results: ExtractionWorkResult[];
   errors: { work_id: number; error: string }[];
@@ -428,6 +433,7 @@ export interface ExtractionCellResult {
   column_id: number;
   answer_note: WorkNote;
   reasoning_note: WorkNote | null;
+  proposal?: { content: string; note_id: number; model_id: string | null } | null;
 }
 
 export interface ExtractionResultsResponse {

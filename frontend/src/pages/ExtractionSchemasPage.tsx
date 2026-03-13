@@ -14,9 +14,13 @@ import {
   useDeleteExtractionColumn,
   useReorderExtractionColumns,
   useExtractionResults,
+  useRunBatchExtraction,
   useRunSingleExtraction,
   useAcceptExtractionNote,
+  useAcceptExtractionProposal,
   useEditExtractionNote,
+  useManualFillExtractionCell,
+  useDismissExtractionProposal,
 } from '../hooks/useExtraction';
 import { useTimeline } from '../hooks/useTimeline';
 import { getExtractionPromptPreview } from '../api';
@@ -32,9 +36,17 @@ function ProvenanceBadge({ provenance }: { provenance: string }) {
       ? 'bg-purple-100 text-purple-700'
       : provenance === 'user'
         ? 'bg-green-100 text-green-700'
-        : 'bg-blue-100 text-blue-700';
+        : provenance === 'ai_proposal'
+          ? 'bg-amber-100 text-amber-700'
+          : 'bg-blue-100 text-blue-700';
   const label =
-    provenance === 'ai_reviewed' ? 'reviewed' : provenance === 'user' ? 'user' : 'ai';
+    provenance === 'ai_reviewed'
+      ? 'reviewed'
+      : provenance === 'user'
+        ? 'user'
+        : provenance === 'ai_proposal'
+          ? 'proposal'
+          : 'ai';
   return (
     <span className={`inline-block px-1.5 py-0.5 text-[10px] rounded font-medium leading-none ${cls}`}>
       {label}
@@ -59,7 +71,7 @@ interface ExtractionCellProps {
 function ExtractionCell({
   cell,
   workId,
-  schemaId: _schemaId,
+  schemaId,
   column,
   isRunningGlobal,
   noText = false,
@@ -68,36 +80,33 @@ function ExtractionCell({
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const [showReasoning, setShowReasoning] = useState(false);
+  const [showProposal, setShowProposal] = useState(false);
 
   const accept = useAcceptExtractionNote();
+  const acceptProposal = useAcceptExtractionProposal(schemaId);
   const editNote = useEditExtractionNote();
+  const manualFill = useManualFillExtractionCell(schemaId);
+  const dismissProposal = useDismissExtractionProposal(schemaId);
 
-  if (!cell) {
-    return (
-      <td className="px-3 py-2 text-center align-top border-r border-gray-100 last:border-r-0">
-        {!noText && (
-          <button
-            onClick={() => onExtractSingle(workId)}
-            disabled={isRunningGlobal}
-            title="Extract this cell"
-            className="text-xs text-gray-400 hover:text-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            ⚡
-          </button>
-        )}
-      </td>
-    );
-  }
+  const hasAllowedValues = column.allowed_values && column.allowed_values.length > 0;
 
-  const { answer_note, reasoning_note } = cell;
-
+  // Shared inline editor (used for both "pencil on empty" and "Edit proposal")
   if (editing) {
-    const hasAllowedValues = column.allowed_values && column.allowed_values.length > 0;
+    const isManual = !cell; // if cell is null, this is a manual fill on empty cell
 
     const handleSave = () => {
-      editNote.mutate({ workId, noteId: answer_note.id, content: editValue });
-      setEditing(false);
+      if (isManual) {
+        manualFill.mutate(
+          { columnId: column.id, workId, content: editValue },
+          { onSuccess: () => setEditing(false) },
+        );
+      } else {
+        editNote.mutate({ workId, noteId: cell!.answer_note.id, content: editValue });
+        setEditing(false);
+      }
     };
+
+    const isSaving = manualFill.isPending || editNote.isPending;
 
     return (
       <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 min-w-[180px]">
@@ -105,6 +114,7 @@ function ExtractionCell({
           <select
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
+            autoFocus
             className="w-full text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
             {column.allowed_values!.map((v) => (
@@ -117,17 +127,21 @@ function ExtractionCell({
           <textarea
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setEditing(false);
+            }}
             rows={3}
+            autoFocus
             className="w-full text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
           />
         )}
         <div className="flex gap-1.5 mt-1.5">
           <button
             onClick={handleSave}
-            disabled={editNote.isPending}
+            disabled={isSaving}
             className="px-2 py-0.5 text-xs text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
           >
-            {editNote.isPending ? '…' : 'Save'}
+            {isSaving ? '…' : 'Save'}
           </button>
           <button
             onClick={() => setEditing(false)}
@@ -139,6 +153,39 @@ function ExtractionCell({
       </td>
     );
   }
+
+  // Empty cell: show sparkle + pencil icons
+  if (!cell) {
+    return (
+      <td className="px-3 py-2 text-center align-top border-r border-gray-100 last:border-r-0">
+        {!noText && (
+          <div className="flex items-center justify-center gap-2">
+            <button
+              onClick={() => onExtractSingle(workId)}
+              disabled={isRunningGlobal}
+              title="Extract with LLM"
+              className="text-xs text-gray-400 hover:text-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              ✦
+            </button>
+            <button
+              onClick={() => {
+                setEditValue(hasAllowedValues ? column.allowed_values![0] : '');
+                setEditing(true);
+              }}
+              disabled={isRunningGlobal}
+              title="Fill manually"
+              className="text-xs text-gray-400 hover:text-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              ✎
+            </button>
+          </div>
+        )}
+      </td>
+    );
+  }
+
+  const { answer_note, reasoning_note, proposal } = cell;
 
   const truncated =
     answer_note.content.length > 80
@@ -181,10 +228,66 @@ function ExtractionCell({
         >
           ✎
         </button>
+        {proposal && (
+          <button
+            onClick={() => setShowProposal((v) => !v)}
+            title="AI suggestion pending review"
+            className="text-[10px] text-amber-600 hover:text-amber-800 leading-none font-medium"
+          >
+            💡
+          </button>
+        )}
       </div>
       {showReasoning && reasoning_note && (
         <div className="mt-1.5 p-2 bg-gray-50 rounded text-[11px] text-gray-600 leading-snug border border-gray-200">
           {reasoning_note.content}
+        </div>
+      )}
+      {showProposal && proposal && (
+        <div className="mt-1.5 p-2 bg-amber-50 rounded border border-amber-200 text-[11px] text-gray-700 leading-snug space-y-2">
+          <p className="font-medium text-amber-700 text-[10px] uppercase tracking-wide">AI suggestion</p>
+          <p className="text-xs">{proposal.content}</p>
+          <div className="flex gap-1.5 flex-wrap">
+            <button
+              onClick={() => {
+                acceptProposal.mutate(
+                  {
+                    workId,
+                    answerNoteId: answer_note.id,
+                    columnId: column.id,
+                    proposalContent: proposal.content,
+                  },
+                  { onSuccess: () => setShowProposal(false) },
+                );
+              }}
+              disabled={acceptProposal.isPending}
+              className="px-2 py-0.5 text-[11px] text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
+            >
+              {acceptProposal.isPending ? '…' : 'Accept'}
+            </button>
+            <button
+              onClick={() => {
+                setEditValue(proposal.content);
+                setShowProposal(false);
+                setEditing(true);
+              }}
+              className="px-2 py-0.5 text-[11px] border border-gray-300 rounded hover:bg-gray-50"
+            >
+              Edit
+            </button>
+            <button
+              onClick={() => {
+                dismissProposal.mutate(
+                  { columnId: column.id, workId },
+                  { onSuccess: () => setShowProposal(false) },
+                );
+              }}
+              disabled={dismissProposal.isPending}
+              className="px-2 py-0.5 text-[11px] text-red-600 border border-red-200 rounded hover:bg-red-50 disabled:opacity-50"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
     </td>
@@ -302,29 +405,32 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
   } | null>(null);
   const [extractErrors, setExtractErrors] = useState<{ workId: number; msg: string }[]>([]);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [reEvaluateEdited, setReEvaluateEdited] = useState(false);
 
   // Prompt preview state
   const [showPromptPreview, setShowPromptPreview] = useState(false);
   const [promptPreview, setPromptPreview] = useState<{ system_text: string; user_message: string } | null>(null);
   const [promptPreviewLoading, setPromptPreviewLoading] = useState(false);
 
+  const runBatch = useRunBatchExtraction(schema.id);
   const runSingle = useRunSingleExtraction(schema.id);
 
-  const doExtract = async (ids: number[]) => {
+  const doExtract = async (ids: number[], reEval = false) => {
     setIsExtracting(true);
     setExtractProgress({ done: 0, total: ids.length });
     const errs: { workId: number; msg: string }[] = [];
 
-    for (let i = 0; i < ids.length; i++) {
-      try {
-        await runSingle.mutateAsync(ids[i]);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errs.push({ workId: ids[i], msg });
+    try {
+      const result = await runBatch.mutateAsync({ workIds: ids, reEvaluateEdited: reEval });
+      for (const e of result.errors) {
+        errs.push({ workId: e.work_id, msg: e.error });
       }
-      setExtractProgress({ done: i + 1, total: ids.length });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      for (const id of ids) errs.push({ workId: id, msg });
     }
 
+    setExtractProgress({ done: ids.length, total: ids.length });
     setExtractErrors(errs);
     setIsExtracting(false);
     refetchResults();
@@ -334,7 +440,7 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
     if (hasExistingNotes) {
       setShowConfirm(true);
     } else {
-      doExtract(Array.from(selectedIds));
+      doExtract(Array.from(selectedIds), reEvaluateEdited);
     }
   };
 
@@ -531,6 +637,24 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
             Done with {extractErrors.length} error{extractErrors.length !== 1 ? 's' : ''}
           </span>
         )}
+        <label
+          className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none"
+          title="When checked, the LLM will also process cells you've manually edited. Results appear as proposals you can accept or dismiss."
+        >
+          <input
+            type="checkbox"
+            checked={reEvaluateEdited}
+            onChange={(e) => setReEvaluateEdited(e.target.checked)}
+            className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
+          />
+          Re-evaluate edited cells
+          <span
+            className="text-gray-400 cursor-help"
+            title="When checked, the LLM will also process cells you've manually edited. Results appear as proposals you can accept or dismiss."
+          >
+            ⓘ
+          </span>
+        </label>
         <button
           onClick={handleShowPrompt}
           disabled={seeds.length === 0 || isExtracting}
@@ -767,7 +891,7 @@ function ExtractionRunView({ schema }: ExtractionRunViewProps) {
           confirmLabel="Extract"
           onConfirm={() => {
             setShowConfirm(false);
-            doExtract(Array.from(selectedIds));
+            doExtract(Array.from(selectedIds), reEvaluateEdited);
           }}
           onCancel={() => setShowConfirm(false)}
         />

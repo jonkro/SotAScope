@@ -691,11 +691,30 @@ export function runExtraction(schemaId: number, workId: number) {
   );
 }
 
-export function runBatchExtraction(schemaId: number, workIds: number[]) {
+export function runBatchExtraction(schemaId: number, workIds: number[], reEvaluateEdited = false) {
   return apiFetch<ExtractionBatchResult>(`/api/extraction/schemas/${schemaId}/extract`, {
     method: 'POST',
-    body: JSON.stringify({ work_ids: workIds }),
+    body: JSON.stringify({ work_ids: workIds, re_evaluate_edited: reEvaluateEdited }),
   });
+}
+
+export function manualFillExtractionCell(
+  schemaId: number,
+  columnId: number,
+  workId: number,
+  content: string,
+) {
+  return apiFetch<{ ok: boolean }>(
+    `/api/extraction/schemas/${schemaId}/columns/${columnId}/works/${workId}/manual-fill`,
+    { method: 'POST', body: JSON.stringify({ content }) },
+  );
+}
+
+export function dismissExtractionProposal(schemaId: number, columnId: number, workId: number) {
+  return apiFetch<{ ok: boolean }>(
+    `/api/extraction/schemas/${schemaId}/columns/${columnId}/works/${workId}/proposal`,
+    { method: 'DELETE' },
+  );
 }
 
 export function getExtractionResults(schemaId: number, workIds: number[]) {
