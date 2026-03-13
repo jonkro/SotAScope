@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useWork } from '../hooks/useWorks';
 import { useTimeline } from '../hooks/useTimeline';
@@ -668,6 +668,12 @@ export default function DiscussionPage() {
   const workId = workIdParam != null ? Number(workIdParam) : null;
   const projectId = projectIdParam != null ? Number(projectIdParam) : null;
 
+  // Query params for pre-selecting discussion focus (?focus=new-schema or ?focus=schema&schemaId=X)
+  const [searchParams] = useSearchParams();
+  const focusParam = searchParams.get('focus');
+  const schemaIdParam = searchParams.get('schemaId');
+  const hasQueryFocus = focusParam != null && !isLibraryMode;
+
   // Settings
   const { data: settings = [] } = useSettings();
   const sm = useMemo(
@@ -849,8 +855,21 @@ export default function DiscussionPage() {
       ? (() => { const v = localStorage.getItem(contextIdKey); return v != null ? Number(v) : null; })()
       : null;
 
+    // Query params override localStorage when present (project mode only).
+    let effectiveMode: DiscussionMode = storedMode;
+    let effectiveContextId: number | null = storedContextId;
+    if (hasQueryFocus) {
+      if (focusParam === 'new-schema') {
+        effectiveMode = 'extraction_schema';
+        effectiveContextId = null;
+      } else if (focusParam === 'schema' && schemaIdParam) {
+        effectiveMode = 'extraction_schema';
+        effectiveContextId = Number(schemaIdParam);
+      }
+    }
+
     getOrCreateAuto.mutate(
-      { work_id: workId, project_id: projectId, context_type: storedMode, context_id: storedContextId },
+      { work_id: workId, project_id: projectId, context_type: effectiveMode, context_id: effectiveContextId },
       {
         onSuccess: (session) => {
           // Restore mode and context_id from the session
@@ -870,6 +889,14 @@ export default function DiscussionPage() {
             setMessages(
               session.messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
             );
+            // If the user arrived via query params but this session already has messages,
+            // show a note so they know the existing discussion takes precedence.
+            if (hasQueryFocus) {
+              setMessages((prev) => [
+                ...prev,
+                { role: 'error' as const, content: 'An active discussion session exists. Use New Chat to start a fresh discussion.' },
+              ]);
+            }
             // Restore paper selection if we have a stored one for this scope.
             // The ref ensures the PDF-loading effect (which may run later) also
             // sees the stored selection instead of auto-selecting everything.
@@ -1484,6 +1511,17 @@ export default function DiscussionPage() {
                 ))}
                 <option value="new">New schema</option>
               </select>
+              {/* View schema link — visible when an existing schema is selected */}
+              {discussionMode === 'extraction_schema' && contextId != null && projectId != null && (
+                <div className="mt-1.5">
+                  <button
+                    onClick={() => navigate(`/projects/${projectId}/extraction?schema=${contextId}`)}
+                    className="text-[10px] text-indigo-600 hover:underline"
+                  >
+                    View schema →
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Schema summary (only when an existing schema is selected) */}

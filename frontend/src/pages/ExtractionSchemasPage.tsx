@@ -203,12 +203,14 @@ function ColumnFormModal({ schemaId, initial, nextSortOrder, onClose }: ColumnFo
 
 interface SchemaEditorProps {
   schemaId: number;
+  projectId: number;
   onBack: () => void;
 }
 
 type EditorTab = 'schema' | 'review';
 
-function SchemaEditor({ schemaId, onBack }: SchemaEditorProps) {
+function SchemaEditor({ schemaId, projectId, onBack }: SchemaEditorProps) {
+  const navigate = useNavigate();
   const { data: schema, isLoading } = useExtractionSchema(schemaId);
 
   const [activeTab, setActiveTab] = useState<EditorTab>('schema');
@@ -276,6 +278,12 @@ function SchemaEditor({ schemaId, onBack }: SchemaEditorProps) {
           className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
         >
           ← Back to schemas
+        </button>
+        <button
+          onClick={() => navigate(`/projects/${projectId}/discuss?focus=schema&schemaId=${schemaId}`)}
+          className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50"
+        >
+          Refine with AI
         </button>
       </PageHeader>
 
@@ -470,6 +478,7 @@ interface NewSchemaFormProps {
 }
 
 function NewSchemaForm({ projectId, onCreated, onCancel }: NewSchemaFormProps) {
+  const navigate = useNavigate();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const createSchema = useCreateExtractionSchema();
@@ -525,13 +534,19 @@ function NewSchemaForm({ projectId, onCreated, onCancel }: NewSchemaFormProps) {
             This description is included in the LLM prompt as additional context.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={handleCreate}
             disabled={!title.trim() || createSchema.isPending}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {createSchema.isPending ? 'Creating…' : 'Create Schema'}
+          </button>
+          <button
+            onClick={() => navigate(`/projects/${projectId}/discuss?focus=new-schema`)}
+            className="px-3 py-2 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50"
+          >
+            Design with AI
           </button>
           <button
             onClick={onCancel}
@@ -659,6 +674,7 @@ export default function ExtractionSchemasPage() {
     return (
       <SchemaEditor
         schemaId={view.schemaId}
+        projectId={projectId}
         onBack={() => setView({ kind: 'list' })}
       />
     );
