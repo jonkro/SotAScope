@@ -895,7 +895,7 @@ export default function ProjectDetailPage() {
         {/* Promoted schema tabs content */}
         {activeSchemaId !== null && (
           <div className="flex-1 flex flex-col min-h-0">
-            <PromotedSchemaTabContent schemaId={activeSchemaId} />
+            <PromotedSchemaTabContent key={activeSchemaId} schemaId={activeSchemaId} />
           </div>
         )}
       </div>

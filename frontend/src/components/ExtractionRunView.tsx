@@ -300,6 +300,7 @@ export interface ExtractionRunViewProps {
 
 export default function ExtractionRunView({ schema, readOnlyPaperSelection = false }: ExtractionRunViewProps) {
   const projectId = schema.project_id;
+  const lsKey = `litexplorer:project:${projectId}:schema:${schema.id}:selection`;
 
   const { data: timeline, isLoading: timelineLoading } = useTimeline(projectId ?? 0);
   const seeds = useMemo(
@@ -347,13 +348,30 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const initializedRef = useRef(false);
 
-  // Default: select only seeds that have extracted text
+  // Restore selection from localStorage, or default to seeds-with-text on first visit
   useEffect(() => {
     if (!initializedRef.current && seedPdfsLoaded && seeds.length > 0) {
-      setSelectedIds(new Set(seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
+      const allSeedIdSet = new Set(seeds.map((s) => s.id));
+      const stored = localStorage.getItem(lsKey);
+      if (stored) {
+        try {
+          const storedIds = JSON.parse(stored) as number[];
+          setSelectedIds(new Set(storedIds.filter((id) => allSeedIdSet.has(id))));
+        } catch {
+          setSelectedIds(new Set(seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
+        }
+      } else {
+        setSelectedIds(new Set(seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
+      }
       initializedRef.current = true;
     }
-  }, [seedPdfsLoaded, seeds, seedsWithText]);
+  }, [seedPdfsLoaded, seeds, seedsWithText, lsKey]);
+
+  // Persist selection to localStorage after initialization
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    localStorage.setItem(lsKey, JSON.stringify(Array.from(selectedIds)));
+  }, [selectedIds, lsKey]);
 
   const filteredSeeds = useMemo(() => {
     if (!searchQ.trim()) return seeds;
@@ -364,8 +382,8 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
   // Sort: selected float to top, then unselected-with-text, then no-text
   const sortedFilteredSeeds = useMemo(() => {
     if (readOnlyPaperSelection) {
-      // In read-only mode, only show papers that have extracted text (no greyed-out rows)
-      return filteredSeeds.filter((s) => seedsWithText.has(s.id));
+      // In read-only mode, show only the papers the user selected (persisted in localStorage)
+      return filteredSeeds.filter((s) => selectedIds.has(s.id));
     }
     const selected = filteredSeeds.filter((s) => selectedIds.has(s.id));
     const unselectedWithText = filteredSeeds.filter(
@@ -577,12 +595,12 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
       {/* Read-only mode: show export bar with edit link */}
       {readOnlyPaperSelection ? (
         <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-2 flex items-center gap-3">
-          {selectableIds.length > 0 && (
+          {selectedIds.size > 0 && (
             <>
               <button
                 onClick={() => {
                   window.open(
-                    `/api/extraction/schemas/${schema.id}/export?format=csv&work_ids=${selectableIds.join(',')}`,
+                    `/api/extraction/schemas/${schema.id}/export?format=csv&work_ids=${Array.from(selectedIds).join(',')}`,
                   );
                 }}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
@@ -593,7 +611,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
               <button
                 onClick={() => {
                   window.open(
-                    `/api/extraction/schemas/${schema.id}/export?format=latex&work_ids=${selectableIds.join(',')}`,
+                    `/api/extraction/schemas/${schema.id}/export?format=latex&work_ids=${Array.from(selectedIds).join(',')}`,
                   );
                 }}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"

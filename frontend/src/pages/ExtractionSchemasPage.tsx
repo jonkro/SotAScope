@@ -434,7 +434,7 @@ function SchemaEditor({ schemaId, projectId, onBack }: SchemaEditorProps) {
           </div>
         </div>
       ) : (
-        <ExtractionRunView schema={schema} />
+        <ExtractionRunView key={schema.id} schema={schema} />
       )}
 
       {/* Column form modal */}
