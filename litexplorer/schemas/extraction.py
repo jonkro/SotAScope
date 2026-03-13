@@ -109,6 +109,7 @@ class ExtractionWorkResult(BaseModel):
 
 class ExtractionBatchRequest(BaseModel):
     work_ids: list[int]
+    re_evaluate_edited: bool = False
 
 
 class ExtractionBatchResult(BaseModel):
@@ -130,9 +131,14 @@ class ExtractionCellResult(BaseModel):
     column_id: int
     answer_note: WorkNoteOut
     reasoning_note: Optional[WorkNoteOut] = None
+    proposal: Optional[WorkNoteOut] = None
 
 
 class ExtractionResultsResponse(BaseModel):
     """All extraction note cells for a set of works against a schema."""
 
     cells: list[ExtractionCellResult]
+
+
+class ExtractionManualFillRequest(BaseModel):
+    content: str

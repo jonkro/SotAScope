@@ -15,7 +15,7 @@ Two distinct layers:
 - Each work is uniquely identified by its **DOI** where available, with **arXiv ID** as fallback key. Works may also carry an **OpenAlex ID** for citation graph integration.
 - A work may have multiple "locations" (typed as `venue` or `preprint`). The venue version is treated as primary. arXiv links are stored as preprint locations.
 - **PDF management**: PDFs are stored in a configurable local folder (`pdf_storage_path` setting, default `{data_dir}/pdfs/`). Each work can have multiple PDFs via the `WorkPDF` table; the first uploaded is auto-set as primary. Files are organized as `{pdf_root}/{work_id}/{filename}`. Deleted PDFs are moved to `{pdf_root}/_orphaned/` rather than permanently removed. PDFs are served inline (not as downloads) via `FileResponse` with `Content-Disposition: inline`.
-- **Work notes**: Per-work notes stored in the `WorkNote` table. Notes can be scoped to a project (`project_id` set) or general (`project_id` null). Each note has `content`, `note_type` (optional label), `provenance` ("user", "ai", or "ai_reviewed"), `model_id`, and `is_outdated` flag. Editing an AI-generated note changes provenance to "ai_reviewed".
+- **Work notes**: Per-work notes stored in the `WorkNote` table. Notes can be scoped to a project (`project_id` set) or general (`project_id` null). Each note has `content`, `note_type` (optional label), `provenance` ("user", "ai", "ai_reviewed", or "ai_proposal"), `model_id`, and `is_outdated` flag. Editing an AI-generated note changes provenance to "ai_reviewed". The `"ai_proposal"` provenance is used for LLM suggestions on cells that already have user/ai_reviewed values — these are shown as pending proposals the user can accept, edit, or dismiss.
 - **Secondary DOIs (WorkDOI)**: A work may have multiple valid DOIs. The primary DOI lives on `Work.doi`; additional DOIs are stored in the `WorkDOI` table (`work_dois`, CASCADE delete). `doi_aliases: list[str]` is included in `WorkOut` via a Pydantic `field_validator(mode='before')`.
 - The library stores a **venue tier list**: a user-maintained mapping of venues to tiers (1 = top venue, 2 = regular, 3 = ignore). Tiers are global per venue (not per-field). Venues can be associated with one or more research fields (e.g., "AI/ML", "Computer Networks") via a many-to-many relationship, but the tier is a single global value.
 - **Venue aliases** handle year-to-year name variation (e.g., the same conference has different OpenAlex names across years). Aliases are manually reorderable; the first alias (by sort_order) is the **preferred alias** used for display throughout the UI.
@@ -23,12 +23,15 @@ Two distinct layers:
 - The library is the single source of truth for all paper metadata.
 - **Library sanitization** tools: duplicate detection (by DOI, bibtex_key, or title+year), work merge (repoints citations, topic list memberships, authors, locations), and bulk deletion.
 - **Extraction schemas**: User-defined structured extraction tables for LLM-assisted literature review. Each `ExtractionSchema` (title, optional description, optional `project_id`) contains ordered `ExtractionColumn` records (name, LLM prompt, optional description, optional `allowed_values` list, `sort_order`). Results are stored as `WorkNote` rows (two per column: answer + reasoning, both `provenance="ai"`). A `null project_id` means the schema is global (not project-specific). Defined in `models/extraction.py`, migrated in `_migrate_schema()`.
+  - **`ai_proposal` provenance (opt-in)**: When "Re-evaluate edited cells" is checked in the Extract & Review action bar, re-running extraction also processes cells whose provenance is `"user"` or `"ai_reviewed"`. Instead of overwriting those cells, the LLM result is stored as a parallel `WorkNote` with `provenance="ai_proposal"`. The UI shows a proposal badge on affected cells; the user can Accept (overwrites the existing note, sets provenance to `"ai_reviewed"`), Edit (opens editor pre-filled with proposal), or Dismiss (deletes the proposal note). Stale `"ai_proposal"` notes are deleted before re-creating on each extraction run, just like `"ai"` notes.
+  - **Manual cell fill**: Each unfilled cell shows two icons — a sparkle/wand icon (triggers LLM extraction for the entire row, existing behavior) and a pencil icon (opens an inline editor for that single cell: dropdown for constrained columns, text input for free-form). Manual fills set `provenance="user"`.
 
 ### 2. Project layer (per project)
 - A project contains one or more **topic lists**. Each topic list is a named, color-coded set of "selected" papers (seeds). These represent sub-fields or themes the researcher is investigating.
 - The project stores which papers from the library belong to which topic list.
 - The project stores **ignored works**: papers explicitly marked as uninteresting, excluded from the timeline.
 - Multiple projects can coexist and share the same library.
+- **Extraction table tabs**: Extraction schemas associated with a project can be surfaced as tabs on the project detail page. A permanent "Tables" tab (next to Timeline, Topic Lists, Notes) lists all schemas for the project and allows opening any table. Additionally, individual schemas can be "promoted" to their own top-level tab (toggle in the Tables tab, off by default) — promoted tabs show the table name and render the Extract & Review view directly. Promotion state is stored in `localStorage` per project (`litexplorer:project:{id}:promotedSchemas`), not in the database — it is a per-browser preference. Promoted tabs are read-only with respect to paper selection; changing which papers are included in the extraction requires navigating to the full schema editor (a link is provided).
 
 ---
 
@@ -105,6 +108,9 @@ Citation count on a `log(1+x)` scale. A "Count citations" slider controls the ti
 - **Citation list markers**: SVG markers match timeline shapes (colored squares for seeds, grey circles for backward refs, grey diamonds for forward cites). Visible-in-timeline entries are clickable; clicking navigates to that paper. Selection change fires an indigo ripple (D3, 650 ms, via `prevSelectedWorkIdRef`).
 - **Collapsible sections**: Abstract, Locations, Actions, References, Cited-by. Fold state persists across paper selections within the page.
 
+### Legend
+The legend is rendered as an **HTML `div` with `flex-wrap`** positioned above the D3 SVG chart (not inside the SVG). It always renders from the full list of project topic lists, regardless of which are currently active. This means the legend remains visible even when all topic lists are toggled off, allowing the user to reactivate them. Inactive items are dimmed to 40% opacity. The flex-wrap layout ensures legend items flow onto multiple lines when the available width (chart container width, respecting the side panel) is insufficient for a single row.
+
 ### Timeline controls
 Citation window slider · References/Cited-by checkboxes · Candidates dropdown · Hops (1–3) · Year range slider · "Showing N of M candidates" stat
 
@@ -168,10 +174,11 @@ litexplorer/
 │   │                     #   TimelineNeighborWork (seeds/neighbors include citations_by_year: list[dict] | None)
 │   ├── fields.py         # FieldOut (includes venue_count: int)
 │   ├── notes.py          # WorkNoteCreate, WorkNoteUpdate (+ provenance field), WorkNoteOut, ProjectNoteOut
+│   │                     #   provenance values: "user", "ai", "ai_reviewed", "ai_proposal"
 │   ├── extraction.py     # ExtractionSchemaCreate/Update/Out, ExtractionColumnCreate/Update/Out,
 │   │                     #   ColumnReorderRequest, ExtractionColumnResult, ExtractionWorkResult (+ parsing_method: str),
-│   │                     #   ExtractionBatchRequest, ExtractionBatchResult,
-│   │                     #   ExtractionCellResult, ExtractionResultsResponse
+│   │                     #   ExtractionBatchRequest (+ re_evaluate_edited: bool = False), ExtractionBatchResult,
+│   │                     #   ExtractionCellResult (+ proposal: optional ai_proposal note), ExtractionResultsResponse
 │   └── settings.py       # SettingOut, SettingUpdate
 ├── api/
 │   ├── deps.py           # get_db dependency
@@ -214,7 +221,9 @@ litexplorer/
 │   │                     #   run_extraction_for_work() → tuple[list[dict], str] — builds LLM prompt (with JSON example,
 │   │                     #   negative instructions, FORMAT CRITICAL for local models), parses response via 5 strategies,
 │   │                     #   creates WorkNote rows; on failed parse creates single _parse_error note instead;
-│   │                     #   skips ai_reviewed/user notes; deletes stale ai notes before re-creating
+│   │                     #   skips ai_reviewed/user notes by default; when re_evaluate_edited=True, still runs LLM
+│   │                     #   for those cells but writes results as provenance="ai_proposal" instead of overwriting;
+│   │                     #   deletes stale ai AND ai_proposal notes before re-creating
 │   ├── extraction_export.py  # export_as_csv(), export_as_latex() — booktabs LaTeX with rotatebox
 │   │                         #   headers for constrained columns; single-pass regex LaTeX escaping
 │   └── schema_discussion.py  # build_schema_discussion_prompt() — schema-design system prompt with
@@ -270,12 +279,22 @@ frontend/src/
 │                         #   useAcceptExtractionNote(), useEditExtractionNote()
 ├── pages/
 │   ├── ProjectsPage.tsx         # Project listing with create/delete
-│   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes tabs, localStorage persistence
-│   │                            #   "Extraction Tables" button → /projects/:id/extraction
+│   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes + Tables tabs, localStorage persistence
+│   │                            #   Tables tab: lists project schemas, open any table, promote/demote toggle
+│   │                            #   Promoted schemas get own top-level tabs (localStorage: promotedSchemas)
+│   │                            #   Promoted tabs show ExtractionRunView read-only (no paper selection changes)
 │   │                            #   "Import Paper" button → ImportDialog with post-import topic list assignment
 │   ├── ExtractionSchemasPage.tsx # Schema list / new-schema form / schema editor (Schema + Extract & Review tabs)
+│   │                            #   New-schema form: "Design with AI" button → navigates to project discussion
+│   │                            #     with "New schema" mode pre-selected
+│   │                            #   Edit-schema view: "Refine with AI" button → navigates to project discussion
+│   │                            #     with this schema pre-selected in the dropdown
 │   │                            #   ExtractionRunView (paper selector: TL color bars, bulk-select checkboxes,
 │   │                            #   sort-selected-to-top), ExtractionCell, ProvenanceBadge, ColumnFormModal
+│   │                            #   ExtractionCell: unfilled cells show two icons — sparkle (LLM extract row)
+│   │                            #     and pencil (manual fill for this cell). Cells with ai_proposal show
+│   │                            #     proposal badge; click opens Accept/Edit/Dismiss UI.
+│   │                            #   Action bar: "Re-evaluate edited cells" checkbox (opt-in for ai_proposal);
 │   │                            #   "Show prompt" button → modal with paper text replaced by placeholders
 │   ├── DiscussionPage.tsx       # Per-paper + per-project LLM chat; session restore on mount;
 │   │                            #   Save/Load/New Chat toolbar; unified left panel with "Discussion focus"
@@ -283,7 +302,10 @@ frontend/src/
 │   │                            #   AssistantMessage: parses LLM replies via proposalParser in schema mode;
 │   │                            #   NewSchemaDialog: promise-based flow for "New schema" accepts;
 │   │                            #   "Show prompt" button → client-side preview with text/PDF placeholders;
-│   │                            #   selection lock after first send; localStorage persistence for selection+mode
+│   │                            #   selection lock after first send; localStorage persistence for selection+mode;
+│   │                            #   "View schema" button (visible when schema exists in DB, i.e., at least one
+│   │                            #     column accepted for new schemas, always for existing) → navigates to
+│   │                            #     ExtractionSchemasPage with that schema selected
 │   ├── LibraryPage.tsx          # Work listing with search, pagination, venue filter
 │   ├── VenuesPage.tsx           # Venues tab (sortable table) + Fields tab (CRUD with delete)
 │   └── SettingsPage.tsx         # Database-stored settings editor + PDF folder browser
@@ -330,7 +352,8 @@ tests/
 ├── test_settings_api.py       # ssl_verify setting: read, update, _get_ssl_verify() helper
 ├── test_semantic_scholar_enrichment.py  # S2 enrichment endpoint (refs/citations, dedup, error cases)
 ├── test_search_import.py      # Search-by-title candidates + confirm endpoints (12 tests)
-├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints (34 tests)
+├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints,
+│                              #   ai_proposal provenance (re_evaluate_edited flag), manual cell fill (34+ tests)
 ├── test_extraction_export.py  # CSV/LaTeX export service unit tests + API endpoint tests (28 tests)
 ├── test_pdf_fetch.py          # OA PDF fetch: arXiv, Unpaywall, fetch_pdf_for_work, API endpoint (23 tests)
 ├── test_chat_sessions.py      # Chat session CRUD, auto-session uniqueness, save/load/clear, chat auto-persist (18 tests)
@@ -393,7 +416,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Semantic Scholar rate limits**: S2 enforces 1 req/s regardless of whether an API key is used. Without a key the quota is shared globally across all users from the same IP, so on shared/university networks 429 errors are common. An API key (`s2_api_key` setting) authenticates requests (your own dedicated quota at 1 req/s) — apply at https://www.semanticscholar.org/product/api. The client throttles to 1 req/s in both cases (`_MIN_INTERVAL = 1.0`). The search-by-title endpoint returns HTTP 429 with a user-readable message when S2 rate-limits us.
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button now shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
-- **Topic list toggle: no explicit "off" badge**: inactive legend items dim to 40% opacity but there is no explicit strikethrough or badge. If a clearer visual indicator is desired, the legend rendering in `CitationTimeline.tsx` (the legend loop, currently around lines 510–580) is the right place to add it.
+- **Topic list legend**: The legend is rendered as an HTML flex-wrap div above the SVG, sourced from the full topic list array (not from visible data). It remains visible when all lists are toggled off. Inactive items dim to 40% opacity. This replaced an earlier D3-rendered legend that disappeared when all traces were deactivated.
 - **Unpaywall requires contact email**: OA PDF fetch via Unpaywall is only attempted when `api_contact_email` is configured in Settings. Without it, only arXiv is tried (works that have `arxiv_id`). Works that have only a DOI but no `arxiv_id` and no configured email will return 404 from the fetch endpoint.
 - **LLM local server auth**: `list_models()` now correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 - **Column-proposal re-prompting (not implemented)**: when all five `parseProposals()` strategies fail and the LLM response contains no parseable proposal, the UI silently shows the message as plain text. A possible future enhancement is to detect this case client-side and automatically re-prompt the LLM asking it to reformat its answer as a fenced `column-proposal` block.

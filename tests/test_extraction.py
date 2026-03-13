@@ -775,3 +775,492 @@ def test_run_extraction_non_json_response_uses_parsing_method(db_session, schema
     assert len(items) == 2
     paradigm = next(i for i in items if i["column_name"] == "Learning paradigm")
     assert paradigm["answer"] == "supervised"
+
+
+# ---------------------------------------------------------------------------
+# ai_proposal provenance / re_evaluate_edited tests
+# ---------------------------------------------------------------------------
+
+
+def _setup_llm_settings(db_session):
+    """Helper: seed the LLM settings needed by _build_llm_client."""
+    from litexplorer.models.settings import Setting
+    db_session.merge(Setting(key="llm_provider", value="openai"))
+    db_session.merge(Setting(key="llm_model_id", value="gpt-4o"))
+    db_session.merge(Setting(key="llm_api_key", value="sk-test"))
+    db_session.merge(Setting(key="llm_base_url", value=""))
+    db_session.merge(Setting(key="llm_system_prompt_prefix", value=""))
+    db_session.commit()
+
+
+def test_re_evaluate_edited_false_skips_user_notes(db_session, schema, columns, work):
+    """Default (re_evaluate_edited=False) skips user-provenance cells; no proposal created."""
+    col1 = columns[0]
+    # Pre-create a user note for col1.
+    user_note = WorkNote(
+        work_id=work.id,
+        project_id=schema.project_id,
+        content="my manual answer",
+        note_type=f"{schema.title} / {col1.name}",
+        provenance="user",
+        model_id=None,
+    )
+    db_session.add(user_note)
+    db_session.commit()
+
+    llm_reply = _llm_response_for("supervised", "AI says supervised.", "ImageNet", "AI says ImageNet.")
+    mock_client = _mock_llm_client(llm_reply)
+
+    items, _ = run_extraction_for_work(
+        db=db_session,
+        work_id=work.id,
+        schema_id=schema.id,
+        llm_client=mock_client,
+        model_id="test-model",
+        pdf_root=Path("/tmp/fake"),
+        re_evaluate_edited=False,
+    )
+
+    # col1 (user note) is skipped; only col2 is extracted.
+    assert len(items) == 1
+    assert items[0]["column_name"] == "Dataset"
+
+    # No ai_proposal created.
+    all_notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
+    proposal_notes = [n for n in all_notes if n.provenance == "ai_proposal"]
+    assert proposal_notes == []
+
+    # User note is still intact.
+    db_session.refresh(user_note)
+    assert user_note.content == "my manual answer"
+    assert user_note.provenance == "user"
+
+
+def test_re_evaluate_edited_true_creates_proposal_for_user_notes(db_session, schema, columns, work):
+    """re_evaluate_edited=True creates ai_proposal notes alongside user-provenance notes."""
+    col1 = columns[0]
+    user_note = WorkNote(
+        work_id=work.id,
+        project_id=schema.project_id,
+        content="my manual answer",
+        note_type=f"{schema.title} / {col1.name}",
+        provenance="user",
+        model_id=None,
+    )
+    db_session.add(user_note)
+    db_session.commit()
+
+    llm_reply = _llm_response_for("supervised", "AI says supervised.", "ImageNet", "AI says ImageNet.")
+    mock_client = _mock_llm_client(llm_reply)
+
+    items, _ = run_extraction_for_work(
+        db=db_session,
+        work_id=work.id,
+        schema_id=schema.id,
+        llm_client=mock_client,
+        model_id="test-model",
+        pdf_root=Path("/tmp/fake"),
+        re_evaluate_edited=True,
+    )
+
+    # Items only includes the "ai" note (col2); col1 goes to proposal.
+    assert len(items) == 1
+    assert items[0]["column_name"] == "Dataset"
+
+    all_notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
+
+    # User note for col1 is preserved.
+    user_notes = [n for n in all_notes if n.provenance == "user"]
+    assert len(user_notes) == 1
+    assert user_notes[0].content == "my manual answer"
+
+    # ai_proposal answer note created for col1.
+    proposal_notes = [n for n in all_notes if n.provenance == "ai_proposal"]
+    proposal_answer_types = [n.note_type for n in proposal_notes]
+    assert any(col1.name in nt for nt in proposal_answer_types)
+
+    # ai note for col2.
+    ai_notes = [n for n in all_notes if n.provenance == "ai"]
+    ai_answer_notes = [n for n in ai_notes if "reasoning" not in (n.note_type or "")]
+    assert any("Dataset" in n.note_type for n in ai_answer_notes)
+
+
+def test_re_evaluate_edited_true_replaces_stale_proposal(db_session, schema, columns, work):
+    """Re-running with re_evaluate_edited=True deletes the stale ai_proposal and creates a fresh one."""
+    col1 = columns[0]
+    answer_note_type = f"{schema.title} / {col1.name}"
+
+    # Pre-existing user note.
+    user_note = WorkNote(
+        work_id=work.id,
+        project_id=schema.project_id,
+        content="user answer",
+        note_type=answer_note_type,
+        provenance="user",
+        model_id=None,
+    )
+    # Stale ai_proposal from a previous run.
+    stale_proposal = WorkNote(
+        work_id=work.id,
+        project_id=schema.project_id,
+        content="old proposal",
+        note_type=answer_note_type,
+        provenance="ai_proposal",
+        model_id="old-model",
+    )
+    db_session.add_all([user_note, stale_proposal])
+    db_session.commit()
+
+    llm_reply = _llm_response_for("unsupervised", "AI now says unsupervised.", "MNIST", "MNIST used.")
+    mock_client = _mock_llm_client(llm_reply)
+
+    run_extraction_for_work(
+        db=db_session,
+        work_id=work.id,
+        schema_id=schema.id,
+        llm_client=mock_client,
+        model_id="new-model",
+        pdf_root=Path("/tmp/fake"),
+        re_evaluate_edited=True,
+    )
+
+    # Stale proposal (old content, old model) is gone; verified by content+model, not id
+    # (SQLite may recycle the same row id for new notes after deletion).
+    stale_still_exists = db_session.query(WorkNote).filter_by(
+        work_id=work.id,
+        note_type=answer_note_type,
+        provenance="ai_proposal",
+        model_id="old-model",
+    ).first()
+    assert stale_still_exists is None
+
+    # Fresh proposal created with new content and new model.
+    all_notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
+    new_proposals = [n for n in all_notes if n.provenance == "ai_proposal"
+                     and n.note_type == answer_note_type]
+    assert len(new_proposals) == 1
+    assert new_proposals[0].content == "unsupervised"
+    assert new_proposals[0].model_id == "new-model"
+
+
+def test_re_evaluate_edited_false_cleans_stale_proposal_for_ai_column(db_session, schema, columns, work):
+    """re_evaluate_edited=False cleans stale ai_proposal notes for columns it re-extracts (ai provenance)."""
+    col2 = columns[1]
+    answer_note_type = f"{schema.title} / {col2.name}"
+
+    # A stale ai_proposal from a previous re_evaluate_edited=True run (col2 had no user note then).
+    stale_proposal = WorkNote(
+        work_id=work.id,
+        project_id=schema.project_id,
+        content="stale proposal",
+        note_type=answer_note_type,
+        provenance="ai_proposal",
+        model_id="old-model",
+    )
+    db_session.add(stale_proposal)
+    db_session.commit()
+
+    llm_reply = _llm_response_for("supervised", "r1", "ImageNet", "r2")
+    mock_client = _mock_llm_client(llm_reply)
+
+    run_extraction_for_work(
+        db=db_session,
+        work_id=work.id,
+        schema_id=schema.id,
+        llm_client=mock_client,
+        model_id="test-model",
+        pdf_root=Path("/tmp/fake"),
+        re_evaluate_edited=False,
+    )
+
+    # Stale ai_proposal for col2 was cleaned up; no ai_proposal notes should remain.
+    # Note: we verify by content+model_id (not row id) because SQLite may recycle the same
+    # auto-increment id for newly created notes after a deletion.
+    stale_still_exists = db_session.query(WorkNote).filter_by(
+        work_id=work.id,
+        note_type=answer_note_type,
+        provenance="ai_proposal",
+        model_id="old-model",
+    ).first()
+    assert stale_still_exists is None
+
+    # The column should now have a fresh "ai" note (not a proposal).
+    ai_note = db_session.query(WorkNote).filter_by(
+        work_id=work.id,
+        note_type=answer_note_type,
+        provenance="ai",
+    ).first()
+    assert ai_note is not None
+    assert ai_note.content == "ImageNet"
+
+
+# ---------------------------------------------------------------------------
+# Manual fill endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_manual_fill_creates_user_note(client, db_session, schema, columns, work):
+    """Manual fill creates a user-provenance note when none exists."""
+    col = columns[0]
+    resp = client.post(
+        f"/api/extraction/schemas/{schema.id}/columns/{col.id}/works/{work.id}/manual-fill",
+        json={"content": "manually entered answer"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["work_id"] == work.id
+    assert data["column_id"] == col.id
+    assert data["answer_note"]["content"] == "manually entered answer"
+    assert data["answer_note"]["provenance"] == "user"
+    assert data["proposal"] is None
+
+    # Verify in DB.
+    notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
+    user_notes = [n for n in notes if n.provenance == "user"]
+    assert len(user_notes) == 1
+    assert user_notes[0].content == "manually entered answer"
+
+
+def test_manual_fill_updates_existing_ai_note(client, db_session, schema, columns, work):
+    """Manual fill updates an existing ai-provenance note to user provenance."""
+    col = columns[1]
+    answer_note_type = f"{schema.title} / {col.name}"
+    existing = WorkNote(
+        work_id=work.id,
+        project_id=schema.project_id,
+        content="ai answer",
+        note_type=answer_note_type,
+        provenance="ai",
+        model_id="gpt-4o",
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/extraction/schemas/{schema.id}/columns/{col.id}/works/{work.id}/manual-fill",
+        json={"content": "corrected answer"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["answer_note"]["content"] == "corrected answer"
+    assert data["answer_note"]["provenance"] == "user"
+
+
+def test_manual_fill_deletes_proposal(client, db_session, schema, columns, work):
+    """Manual fill removes the ai_proposal note if one exists."""
+    col = columns[0]
+    answer_note_type = f"{schema.title} / {col.name}"
+    reasoning_note_type = f"{schema.title} / {col.name} / reasoning"
+
+    # Existing user note + ai_proposal.
+    user_note = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="user answer", note_type=answer_note_type, provenance="user",
+    )
+    proposal = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="ai proposal", note_type=answer_note_type, provenance="ai_proposal",
+    )
+    proposal_reasoning = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="ai proposal reasoning", note_type=reasoning_note_type, provenance="ai_proposal",
+    )
+    db_session.add_all([user_note, proposal, proposal_reasoning])
+    db_session.commit()
+    proposal_id = proposal.id
+    proposal_reasoning_id = proposal_reasoning.id
+
+    resp = client.post(
+        f"/api/extraction/schemas/{schema.id}/columns/{col.id}/works/{work.id}/manual-fill",
+        json={"content": "updated user answer"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["proposal"] is None
+
+    # Both proposal notes are deleted.
+    assert db_session.get(WorkNote, proposal_id) is None
+    assert db_session.get(WorkNote, proposal_reasoning_id) is None
+
+
+def test_manual_fill_schema_not_found(client, work, columns):
+    col = columns[0]
+    resp = client.post(
+        f"/api/extraction/schemas/99999/columns/{col.id}/works/{work.id}/manual-fill",
+        json={"content": "x"},
+    )
+    assert resp.status_code == 404
+
+
+def test_manual_fill_column_not_found(client, schema, work):
+    resp = client.post(
+        f"/api/extraction/schemas/{schema.id}/columns/99999/works/{work.id}/manual-fill",
+        json={"content": "x"},
+    )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Dismiss proposal endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_dismiss_proposal_deletes_notes(client, db_session, schema, columns, work):
+    """Dismiss proposal endpoint deletes ai_proposal answer + reasoning notes."""
+    col = columns[0]
+    answer_note_type = f"{schema.title} / {col.name}"
+    reasoning_note_type = f"{schema.title} / {col.name} / reasoning"
+
+    user_note = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="user answer", note_type=answer_note_type, provenance="user",
+    )
+    proposal = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="ai proposal", note_type=answer_note_type, provenance="ai_proposal",
+    )
+    proposal_reasoning = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="ai proposal reasoning", note_type=reasoning_note_type, provenance="ai_proposal",
+    )
+    db_session.add_all([user_note, proposal, proposal_reasoning])
+    db_session.commit()
+    proposal_id = proposal.id
+    proposal_reasoning_id = proposal_reasoning.id
+
+    resp = client.delete(
+        f"/api/extraction/schemas/{schema.id}/columns/{col.id}/works/{work.id}/proposal"
+    )
+    assert resp.status_code == 204
+
+    # Proposal notes are deleted.
+    assert db_session.get(WorkNote, proposal_id) is None
+    assert db_session.get(WorkNote, proposal_reasoning_id) is None
+
+    # User note is untouched.
+    db_session.refresh(user_note)
+    assert user_note.content == "user answer"
+
+
+def test_dismiss_proposal_no_op_when_no_proposal(client, db_session, schema, columns, work):
+    """Dismiss proposal returns 204 even if no ai_proposal exists."""
+    resp = client.delete(
+        f"/api/extraction/schemas/{schema.id}/columns/{columns[0].id}/works/{work.id}/proposal"
+    )
+    assert resp.status_code == 204
+
+
+def test_dismiss_proposal_schema_not_found(client, work, columns):
+    col = columns[0]
+    resp = client.delete(
+        f"/api/extraction/schemas/99999/columns/{col.id}/works/{work.id}/proposal"
+    )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Results endpoint returns proposal field
+# ---------------------------------------------------------------------------
+
+
+def test_results_endpoint_includes_proposal(client, db_session, schema, columns, work):
+    """GET /schemas/{id}/results populates the proposal field when an ai_proposal note exists."""
+    col = columns[0]
+    answer_note_type = f"{schema.title} / {col.name}"
+
+    # Primary user note.
+    user_note = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="user answer", note_type=answer_note_type, provenance="user",
+    )
+    # Parallel ai_proposal.
+    proposal = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="ai proposal content", note_type=answer_note_type, provenance="ai_proposal",
+        model_id="gpt-4o",
+    )
+    db_session.add_all([user_note, proposal])
+    db_session.commit()
+
+    resp = client.get(
+        f"/api/extraction/schemas/{schema.id}/results",
+        params={"work_ids": str(work.id)},
+    )
+    assert resp.status_code == 200
+    cells = resp.json()["cells"]
+    assert len(cells) == 1
+
+    cell = cells[0]
+    assert cell["answer_note"]["provenance"] == "user"
+    assert cell["answer_note"]["content"] == "user answer"
+    assert cell["proposal"] is not None
+    assert cell["proposal"]["provenance"] == "ai_proposal"
+    assert cell["proposal"]["content"] == "ai proposal content"
+
+
+def test_results_endpoint_no_proposal_when_absent(client, db_session, schema, columns, work):
+    """GET /schemas/{id}/results returns proposal=null when no ai_proposal note exists."""
+    col = columns[0]
+    answer_note_type = f"{schema.title} / {col.name}"
+
+    ai_note = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="ai answer", note_type=answer_note_type, provenance="ai",
+    )
+    db_session.add(ai_note)
+    db_session.commit()
+
+    resp = client.get(
+        f"/api/extraction/schemas/{schema.id}/results",
+        params={"work_ids": str(work.id)},
+    )
+    assert resp.status_code == 200
+    cell = resp.json()["cells"][0]
+    assert cell["proposal"] is None
+
+
+def test_batch_extraction_with_re_evaluate_edited_via_api(
+    client, db_session, schema, columns, work
+):
+    """Batch endpoint with re_evaluate_edited=True creates ai_proposal notes for user cells."""
+    col1 = columns[0]
+    answer_note_type = f"{schema.title} / {col1.name}"
+
+    # Pre-existing user note for col1.
+    user_note = WorkNote(
+        work_id=work.id, project_id=schema.project_id,
+        content="user answer", note_type=answer_note_type, provenance="user",
+    )
+    db_session.add(user_note)
+    db_session.commit()
+
+    llm_reply = _llm_response_for("supervised", "AI reasoning.", "MNIST", "Dataset reasoning.")
+    mock_client = _mock_llm_client(llm_reply)
+
+    _setup_llm_settings(db_session)
+
+    with patch("litexplorer.api.extraction.make_llm_client", return_value=mock_client), \
+         patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+        resp = client.post(
+            f"/api/extraction/schemas/{schema.id}/extract",
+            json={"work_ids": [work.id], "re_evaluate_edited": True},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Only col2 (Dataset) is returned in items (col1 became a proposal).
+    results = data["results"]
+    assert len(results) == 1
+    col_names = [c["column_name"] for c in results[0]["columns"]]
+    assert "Dataset" in col_names
+    assert "Learning paradigm" not in col_names
+
+    # ai_proposal note was created for col1.
+    all_notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
+    proposals = [n for n in all_notes if n.provenance == "ai_proposal"
+                 and n.note_type == answer_note_type]
+    assert len(proposals) == 1
+    assert proposals[0].content == "supervised"
+
+    # User note is still intact.
+    db_session.refresh(user_note)
+    assert user_note.content == "user answer"

@@ -21,6 +21,7 @@ from litexplorer.schemas.extraction import (
     ExtractionColumnOut,
     ExtractionColumnResult,
     ExtractionColumnUpdate,
+    ExtractionManualFillRequest,
     ExtractionResultsResponse,
     ExtractionSchemaCreate,
     ExtractionSchemaOut,
@@ -353,17 +354,23 @@ def get_extraction_results(
 
     notes = db.scalars(stmt).all()
 
-    # Group by (work_id, column_id)
+    # Group by (work_id, column_id), separating primary notes from ai_proposal notes.
     cells_map: dict[tuple[int, int], dict] = {}
     for note in notes:
         if note.note_type in answer_type_map:
             col = answer_type_map[note.note_type]
             key = (note.work_id, col.id)
-            cells_map.setdefault(key, {})["answer"] = note
+            cells_map.setdefault(key, {})
+            if note.provenance == "ai_proposal":
+                cells_map[key]["proposal"] = note
+            else:
+                cells_map[key]["answer"] = note
         elif note.note_type in reasoning_type_map:
             col = reasoning_type_map[note.note_type]
             key = (note.work_id, col.id)
-            cells_map.setdefault(key, {})["reasoning"] = note
+            cells_map.setdefault(key, {})
+            if note.provenance != "ai_proposal":
+                cells_map[key]["reasoning"] = note
 
     cells = [
         ExtractionCellResult(
@@ -371,6 +378,7 @@ def get_extraction_results(
             column_id=col_id,
             answer_note=WorkNoteOut.model_validate(data["answer"]),
             reasoning_note=WorkNoteOut.model_validate(data["reasoning"]) if "reasoning" in data else None,
+            proposal=WorkNoteOut.model_validate(data["proposal"]) if "proposal" in data else None,
         )
         for (work_id, col_id), data in cells_map.items()
         if "answer" in data
@@ -393,6 +401,7 @@ def _run_and_format(
     pdf_root: Path,
     system_prefix: str,
     provider: str = "",
+    re_evaluate_edited: bool = False,
 ) -> ExtractionWorkResult:
     from litexplorer.services.extraction import run_extraction_for_work
 
@@ -405,6 +414,7 @@ def _run_and_format(
         pdf_root=pdf_root,
         system_prefix=system_prefix,
         provider=provider,
+        re_evaluate_edited=re_evaluate_edited,
     )
     column_results = [
         ExtractionColumnResult(
@@ -473,7 +483,8 @@ def extract_batch(
     for work_id in body.work_ids:
         try:
             result = _run_and_format(
-                db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix, provider
+                db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix, provider,
+                re_evaluate_edited=body.re_evaluate_edited,
             )
             results.append(result)
         except ValueError as exc:
@@ -600,6 +611,160 @@ def export_schema(
             media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{safe_title}.tex"'},
         )
+
+
+# ---------------------------------------------------------------------------
+# Manual cell fill
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/schemas/{schema_id}/columns/{column_id}/works/{work_id}/manual-fill",
+    response_model=ExtractionCellResult,
+)
+def manual_fill_cell(
+    schema_id: int,
+    column_id: int,
+    work_id: int,
+    body: ExtractionManualFillRequest,
+    db: Session = Depends(get_db),
+):
+    """Manually fill a single extraction cell with user-provided content.
+
+    Creates or updates the WorkNote for this (work, column) pair with
+    ``provenance="user"``.  Any existing ``ai_proposal`` note for the same cell
+    is deleted so the proposal is no longer surfaced to the user.
+
+    Returns the updated :class:`ExtractionCellResult` (proposal field will be None).
+    """
+    from litexplorer.models.library import Work, WorkNote
+    from litexplorer.services.extraction import _truncate_note_type
+
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+
+    col = db.get(ExtractionColumn, column_id)
+    if col is None or col.schema_id != schema_id:
+        raise HTTPException(status_code=404, detail="Extraction column not found")
+
+    work = db.get(Work, work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="Work not found")
+
+    answer_note_type = _truncate_note_type(f"{schema.title} / {col.name}")
+    reasoning_note_type = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+
+    # Find or create the primary (non-proposal) answer note.
+    existing = db.scalars(
+        select(WorkNote)
+        .where(
+            WorkNote.work_id == work_id,
+            WorkNote.note_type == answer_note_type,
+            WorkNote.project_id == schema.project_id,
+            WorkNote.provenance != "ai_proposal",
+        )
+        .limit(1)
+    ).one_or_none()
+
+    if existing:
+        existing.content = body.content
+        existing.provenance = "user"
+        answer_note = existing
+    else:
+        answer_note = WorkNote(
+            work_id=work_id,
+            project_id=schema.project_id,
+            content=body.content,
+            note_type=answer_note_type,
+            provenance="user",
+            model_id=None,
+        )
+        db.add(answer_note)
+
+    # Delete any ai_proposal note (answer + reasoning) for this cell.
+    for nt in (answer_note_type, reasoning_note_type):
+        stale = db.scalars(
+            select(WorkNote)
+            .where(
+                WorkNote.work_id == work_id,
+                WorkNote.note_type == nt,
+                WorkNote.project_id == schema.project_id,
+                WorkNote.provenance == "ai_proposal",
+            )
+            .limit(1)
+        ).one_or_none()
+        if stale:
+            db.delete(stale)
+
+    db.commit()
+    db.refresh(answer_note)
+
+    # Fetch the primary reasoning note (if any).
+    reasoning_note = db.scalars(
+        select(WorkNote)
+        .where(
+            WorkNote.work_id == work_id,
+            WorkNote.note_type == reasoning_note_type,
+            WorkNote.project_id == schema.project_id,
+            WorkNote.provenance != "ai_proposal",
+        )
+        .limit(1)
+    ).one_or_none()
+
+    return ExtractionCellResult(
+        work_id=work_id,
+        column_id=column_id,
+        answer_note=WorkNoteOut.model_validate(answer_note),
+        reasoning_note=WorkNoteOut.model_validate(reasoning_note) if reasoning_note else None,
+        proposal=None,
+    )
+
+
+@router.delete(
+    "/schemas/{schema_id}/columns/{column_id}/works/{work_id}/proposal",
+    status_code=204,
+)
+def dismiss_proposal(
+    schema_id: int,
+    column_id: int,
+    work_id: int,
+    db: Session = Depends(get_db),
+):
+    """Delete the ai_proposal note for a single extraction cell.
+
+    Both the proposal answer note and the proposal reasoning note are removed.
+    Returns 204 regardless of whether a proposal existed.
+    """
+    from litexplorer.models.library import WorkNote
+    from litexplorer.services.extraction import _truncate_note_type
+
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+
+    col = db.get(ExtractionColumn, column_id)
+    if col is None or col.schema_id != schema_id:
+        raise HTTPException(status_code=404, detail="Extraction column not found")
+
+    answer_note_type = _truncate_note_type(f"{schema.title} / {col.name}")
+    reasoning_note_type = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+
+    for nt in (answer_note_type, reasoning_note_type):
+        stale = db.scalars(
+            select(WorkNote)
+            .where(
+                WorkNote.work_id == work_id,
+                WorkNote.note_type == nt,
+                WorkNote.project_id == schema.project_id,
+                WorkNote.provenance == "ai_proposal",
+            )
+            .limit(1)
+        ).one_or_none()
+        if stale:
+            db.delete(stale)
+
+    db.commit()
 
 
 # ---------------------------------------------------------------------------

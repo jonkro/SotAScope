@@ -550,6 +550,30 @@ def _get_primary_text(db: Session, work_id: int, pdf_root: Path) -> str | None:
     return None
 
 
+def _delete_stale_proposals_for_col(
+    db: Session,
+    work_id: int,
+    schema: ExtractionSchema,
+    col: ExtractionColumn,
+) -> None:
+    """Delete any ai_proposal WorkNote pair (answer + reasoning) for a single column."""
+    answer_note_type = _truncate_note_type(f"{schema.title} / {col.name}")
+    reasoning_note_type = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+    for note_type in (answer_note_type, reasoning_note_type):
+        stale = db.scalars(
+            select(WorkNote)
+            .where(
+                WorkNote.work_id == work_id,
+                WorkNote.note_type == note_type,
+                WorkNote.project_id == schema.project_id,
+                WorkNote.provenance == "ai_proposal",
+            )
+            .limit(1)
+        ).one_or_none()
+        if stale:
+            db.delete(stale)
+
+
 def run_extraction_for_work(
     db: Session,
     work_id: int,
@@ -559,13 +583,24 @@ def run_extraction_for_work(
     pdf_root: Path,
     system_prefix: str = "",
     provider: str = "",
+    re_evaluate_edited: bool = False,
 ) -> tuple[list[dict], str]:
     """Run structured extraction for one work against a schema.
 
     Creates or replaces ``WorkNote`` records for each column (answer + reasoning).
     Columns that already have an ``ai_reviewed`` or ``user`` note are **skipped**
-    to preserve human edits.  Existing ``ai`` notes are deleted before new ones
-    are created so that re-running extraction doesn't accumulate duplicates.
+    to preserve human edits, unless *re_evaluate_edited* is ``True``.
+
+    When *re_evaluate_edited* is ``True``, columns with ``user`` or ``ai_reviewed``
+    notes are also sent to the LLM.  The result is stored as a parallel
+    ``WorkNote`` with ``provenance="ai_proposal"`` — the original note is not
+    overwritten.  Any stale ``ai_proposal`` notes are deleted before creating
+    new ones.
+
+    When *re_evaluate_edited* is ``False`` (default), stale ``ai_proposal`` notes
+    are cleaned up for columns that are being re-extracted (i.e. those that
+    previously had ``provenance="ai"``), but columns with user/ai_reviewed notes
+    are left untouched.
 
     When the LLM response cannot be parsed by any strategy, a single
     ``WorkNote`` with ``note_type="{schema.title} / _parse_error"`` is created
@@ -581,10 +616,12 @@ def run_extraction_for_work(
         system_prefix: Optional user-supplied prefix for the system prompt.
         provider: LLM provider string (``"openai"`` or ``"anthropic"``), used
             to add extra format reinforcement for local/non-GPT models.
+        re_evaluate_edited: When ``True``, also runs the LLM for user/ai_reviewed
+            columns and stores results as ``ai_proposal`` notes.
 
     Returns:
         A 2-tuple ``(items, parsing_method)`` where *items* is a list of dicts
-        (one per extracted column, skipped columns omitted):
+        (one per column extracted as ``"ai"``; proposal-only columns are omitted):
         ``{"column_id": int, "column_name": str, "answer": str, "reasoning": str, "note": WorkNote}``
         and *parsing_method* is one of ``"json"``, ``"json_extracted"``,
         ``"markdown_table"``, ``"key_value"``, or ``"failed"``.
@@ -604,46 +641,65 @@ def run_extraction_for_work(
     if not all_columns:
         return [], "json"
 
-    # Determine which columns to extract vs. skip (preserve reviewed/user notes).
+    # cols_to_extract: will receive provenance="ai" (normal extraction)
+    # cols_for_proposal: will receive provenance="ai_proposal" (re_evaluate_edited mode)
     cols_to_extract: list[ExtractionColumn] = []
+    cols_for_proposal: list[ExtractionColumn] = []
+
     for col in all_columns:
         answer_note_type = _truncate_note_type(f"{schema.title} / {col.name}")
+        reasoning_note_type = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+
+        # Query for the primary (non-proposal) existing answer note.
         existing = db.scalars(
             select(WorkNote)
             .where(
                 WorkNote.work_id == work_id,
                 WorkNote.note_type == answer_note_type,
                 WorkNote.project_id == schema.project_id,
+                WorkNote.provenance != "ai_proposal",
             )
             .limit(1)
         ).one_or_none()
 
         if existing and existing.provenance in ("ai_reviewed", "user"):
-            logger.debug(
-                "Skipping column %r for work %d — note has provenance=%r",
-                col.name, work_id, existing.provenance,
-            )
+            if re_evaluate_edited:
+                logger.debug(
+                    "Column %r for work %d has provenance=%r — will create ai_proposal",
+                    col.name, work_id, existing.provenance,
+                )
+                # Delete stale ai_proposal before creating a fresh one.
+                _delete_stale_proposals_for_col(db, work_id, schema, col)
+                cols_for_proposal.append(col)
+            else:
+                logger.debug(
+                    "Skipping column %r for work %d — note has provenance=%r",
+                    col.name, work_id, existing.provenance,
+                )
             continue
 
-        # Delete any stale "ai" answer + reasoning notes before re-creating.
-        if existing:
+        # Column has an "ai" note or no note — extract normally.
+        if existing:  # provenance == "ai"
             db.delete(existing)
-            reasoning_type = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
             old_reasoning = db.scalars(
                 select(WorkNote)
                 .where(
                     WorkNote.work_id == work_id,
-                    WorkNote.note_type == reasoning_type,
+                    WorkNote.note_type == reasoning_note_type,
                     WorkNote.project_id == schema.project_id,
+                    WorkNote.provenance != "ai_proposal",
                 )
                 .limit(1)
             ).one_or_none()
             if old_reasoning:
                 db.delete(old_reasoning)
 
+        # Clean up stale ai_proposal for this column too (regardless of re_evaluate_edited).
+        _delete_stale_proposals_for_col(db, work_id, schema, col)
+
         cols_to_extract.append(col)
 
-    if not cols_to_extract:
+    if not cols_to_extract and not cols_for_proposal:
         return [], "json"
 
     # Flush deletes before inserts so UNIQUE constraints aren't violated.
@@ -651,9 +707,12 @@ def run_extraction_for_work(
 
     paper_text = _get_primary_text(db, work_id, pdf_root)
 
+    all_cols_for_llm = cols_to_extract + cols_for_proposal
+    cols_to_extract_ids = {col.id for col in cols_to_extract}
+
     system_text, user_message = assemble_extraction_prompt(
         schema=schema,
-        columns=cols_to_extract,
+        columns=all_cols_for_llm,
         paper_text=paper_text,
         paper_title=work.title,
         paper_year=work.publication_year,
@@ -672,7 +731,7 @@ def run_extraction_for_work(
         context_documents=[],
     )
 
-    parsed, parsing_method = parse_extraction_response(reply, cols_to_extract)
+    parsed, parsing_method = parse_extraction_response(reply, all_cols_for_llm)
 
     # Handle complete parse failure: store raw response in a single error note
     if parsing_method == "failed":
@@ -690,10 +749,12 @@ def run_extraction_for_work(
         return [], "failed"
 
     results: list[dict] = []
-    for col in cols_to_extract:
+    for col in all_cols_for_llm:
         cell = parsed.get(col.id, {"answer": "", "reasoning": ""})
         answer = cell["answer"]
         reasoning = cell["reasoning"]
+
+        target_provenance = "ai" if col.id in cols_to_extract_ids else "ai_proposal"
 
         # Create the answer note (empty content is valid — user sees it as "needs review")
         answer_note_type = _truncate_note_type(f"{schema.title} / {col.name}")
@@ -702,7 +763,7 @@ def run_extraction_for_work(
             project_id=schema.project_id,
             content=answer,
             note_type=answer_note_type,
-            provenance="ai",
+            provenance=target_provenance,
             model_id=model_id,
         )
         db.add(answer_note)
@@ -714,18 +775,20 @@ def run_extraction_for_work(
             project_id=schema.project_id,
             content=reasoning if reasoning else "(no reasoning provided)",
             note_type=reasoning_note_type,
-            provenance="ai",
+            provenance=target_provenance,
             model_id=model_id,
         )
         db.add(reasoning_note)
 
-        results.append({
-            "column_id": col.id,
-            "column_name": col.name,
-            "answer": answer,
-            "reasoning": reasoning,
-            "note": answer_note,
-        })
+        # Only include "ai" notes in the returned items list.
+        if target_provenance == "ai":
+            results.append({
+                "column_id": col.id,
+                "column_name": col.name,
+                "answer": answer,
+                "reasoning": reasoning,
+                "note": answer_note,
+            })
 
     db.commit()
 
