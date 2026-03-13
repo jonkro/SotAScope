@@ -364,10 +364,8 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
   // Sort: selected float to top, then unselected-with-text, then no-text
   const sortedFilteredSeeds = useMemo(() => {
     if (readOnlyPaperSelection) {
-      // In read-only mode, sort by: has text first, then by year desc, then title
-      const withText = filteredSeeds.filter((s) => seedsWithText.has(s.id));
-      const noText = filteredSeeds.filter((s) => !seedsWithText.has(s.id));
-      return [...withText, ...noText];
+      // In read-only mode, only show papers that have extracted text (no greyed-out rows)
+      return filteredSeeds.filter((s) => seedsWithText.has(s.id));
     }
     const selected = filteredSeeds.filter((s) => selectedIds.has(s.id));
     const unselectedWithText = filteredSeeds.filter(
@@ -376,6 +374,12 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
     const noText = filteredSeeds.filter((s) => !seedsWithText.has(s.id));
     return [...selected, ...unselectedWithText, ...noText];
   }, [filteredSeeds, selectedIds, seedsWithText, readOnlyPaperSelection]);
+
+  // Seeds that have (or will have) extracted text — the "selectable" set
+  const selectableIds = useMemo(
+    () => seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id),
+    [seeds, seedsWithText],
+  );
 
   // Existing results
   const allSeedIds = useMemo(() => seeds.map((s) => s.id), [seeds]);
@@ -573,12 +577,12 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
       {/* Read-only mode: show export bar with edit link */}
       {readOnlyPaperSelection ? (
         <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-2 flex items-center gap-3">
-          {allSeedIds.length > 0 && (
+          {selectableIds.length > 0 && (
             <>
               <button
                 onClick={() => {
                   window.open(
-                    `/api/extraction/schemas/${schema.id}/export?format=csv&work_ids=${allSeedIds.join(',')}`,
+                    `/api/extraction/schemas/${schema.id}/export?format=csv&work_ids=${selectableIds.join(',')}`,
                   );
                 }}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
@@ -589,7 +593,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
               <button
                 onClick={() => {
                   window.open(
-                    `/api/extraction/schemas/${schema.id}/export?format=latex&work_ids=${allSeedIds.join(',')}`,
+                    `/api/extraction/schemas/${schema.id}/export?format=latex&work_ids=${selectableIds.join(',')}`,
                   );
                 }}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
@@ -642,7 +646,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
             <>
               <button
                 onClick={() => {
-                  const ids = selectedIds.size > 0 ? Array.from(selectedIds) : allSeedIds;
+                  const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selectableIds;
                   window.open(
                     `/api/extraction/schemas/${schema.id}/export?format=csv&work_ids=${ids.join(',')}`,
                   );
@@ -654,7 +658,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
               </button>
               <button
                 onClick={() => {
-                  const ids = selectedIds.size > 0 ? Array.from(selectedIds) : allSeedIds;
+                  const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selectableIds;
                   window.open(
                     `/api/extraction/schemas/${schema.id}/export?format=latex&work_ids=${ids.join(',')}`,
                   );
