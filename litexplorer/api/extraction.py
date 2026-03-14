@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,7 +15,6 @@ from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
 from litexplorer.schemas.extraction import (
     ColumnReorderRequest,
     ExtractionBatchRequest,
-    ExtractionBatchResult,
     ExtractionCellResult,
     ExtractionColumnCreate,
     ExtractionColumnOut,
@@ -29,6 +28,8 @@ from litexplorer.schemas.extraction import (
     ExtractionWorkResult,
 )
 from litexplorer.schemas.notes import WorkNoteOut
+from litexplorer.services.extraction_jobs import extraction_jobs
+from litexplorer.services.work_lock import work_lock
 
 router = APIRouter(prefix="/api/extraction", tags=["extraction"])
 
@@ -433,13 +434,66 @@ def _run_and_format(
     )
 
 
-@router.post("/schemas/{schema_id}/extract/{work_id}", response_model=ExtractionWorkResult)
+def _extraction_bg(
+    job_id: str,
+    schema_id: int,
+    work_ids: list[int],
+    llm_client,
+    model_id: str,
+    provider: str,
+    pdf_root: Path,
+    system_prefix: str,
+    re_evaluate_edited: bool,
+) -> None:
+    """Background task: run LLM extraction for all work_ids, updating the job tracker.
+
+    Each work's lock is released as soon as that work finishes (success or failure).
+    The job is marked completed after all works are processed.
+
+    Must NOT use the request-scoped ``db`` session — creates its own via
+    :func:`litexplorer.database.SessionLocal` and closes it in a ``finally`` block.
+    """
+    from litexplorer.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        for work_id in work_ids:
+            extraction_jobs.update_work_status(job_id, work_id, "running")
+            try:
+                _run_and_format(
+                    db,
+                    schema_id,
+                    work_id,
+                    llm_client,
+                    model_id,
+                    pdf_root,
+                    system_prefix,
+                    provider,
+                    re_evaluate_edited,
+                )
+                extraction_jobs.update_work_status(job_id, work_id, "done")
+            except Exception as exc:
+                extraction_jobs.update_work_status(job_id, work_id, "failed", str(exc))
+            finally:
+                work_lock.release(work_id)
+        extraction_jobs.mark_completed(job_id)
+    finally:
+        db.close()
+
+
+@router.post("/schemas/{schema_id}/extract/{work_id}", status_code=202)
 def extract_for_work(
     schema_id: int,
     work_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Run extraction for a single work. Returns proposed WorkNotes."""
+    """Start LLM extraction for a single work in a background task.
+
+    Returns **202 Accepted** immediately with a ``job_id`` that can be polled
+    via ``GET /api/extraction/jobs/{job_id}``.  Returns 409 if the work is
+    already being processed.
+    """
     from litexplorer.api.settings import get_setting_value
 
     schema = db.get(ExtractionSchema, schema_id)
@@ -450,23 +504,39 @@ def extract_for_work(
     pdf_root = _get_pdf_root(db)
     system_prefix = get_setting_value(db, "llm_system_prompt_prefix") or ""
 
-    try:
-        return _run_and_format(
-            db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix, provider
+    if not work_lock.acquire(work_id, "Running LLM extraction"):
+        raise HTTPException(
+            status_code=409, detail=f"Work {work_id} is already being processed"
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    job_id = extraction_jobs.create_job(schema_id, [work_id])
+    background_tasks.add_task(
+        _extraction_bg,
+        job_id=job_id,
+        schema_id=schema_id,
+        work_ids=[work_id],
+        llm_client=llm_client,
+        model_id=model_id,
+        provider=provider,
+        pdf_root=pdf_root,
+        system_prefix=system_prefix,
+        re_evaluate_edited=False,
+    )
+    return {"job_id": job_id, "message": "Extraction started for 1 work"}
 
 
-@router.post("/schemas/{schema_id}/extract", response_model=ExtractionBatchResult)
+@router.post("/schemas/{schema_id}/extract", status_code=202)
 def extract_batch(
     schema_id: int,
     body: ExtractionBatchRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Run extraction for multiple works sequentially. Returns all proposed WorkNotes."""
+    """Start batch LLM extraction for multiple works in a background task.
+
+    Returns **202 Accepted** immediately with a ``job_id``.  Returns 409 if
+    any requested work is already locked; no locks are acquired in that case.
+    """
     from litexplorer.api.settings import get_setting_value
 
     schema = db.get(ExtractionSchema, schema_id)
@@ -477,22 +547,89 @@ def extract_batch(
     pdf_root = _get_pdf_root(db)
     system_prefix = get_setting_value(db, "llm_system_prompt_prefix") or ""
 
-    results: list[ExtractionWorkResult] = []
-    errors: list[dict] = []
+    # Check all locks before acquiring any (avoids partial acquisition).
+    already_locked = [wid for wid in body.work_ids if work_lock.is_locked(wid)]
+    if already_locked:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Works already locked: {already_locked}",
+        )
 
-    for work_id in body.work_ids:
-        try:
-            result = _run_and_format(
-                db, schema_id, work_id, llm_client, model_id, pdf_root, system_prefix, provider,
-                re_evaluate_edited=body.re_evaluate_edited,
+    # Acquire locks one by one; handle rare race condition.
+    acquired: list[int] = []
+    for wid in body.work_ids:
+        if not work_lock.acquire(wid, "Running LLM extraction"):
+            for a in acquired:
+                work_lock.release(a)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Work {wid} became locked during batch acquisition",
             )
-            results.append(result)
-        except ValueError as exc:
-            errors.append({"work_id": work_id, "error": str(exc)})
-        except Exception as exc:
-            errors.append({"work_id": work_id, "error": str(exc)})
+        acquired.append(wid)
 
-    return ExtractionBatchResult(results=results, errors=errors)
+    n = len(body.work_ids)
+    job_id = extraction_jobs.create_job(schema_id, body.work_ids)
+    background_tasks.add_task(
+        _extraction_bg,
+        job_id=job_id,
+        schema_id=schema_id,
+        work_ids=body.work_ids,
+        llm_client=llm_client,
+        model_id=model_id,
+        provider=provider,
+        pdf_root=pdf_root,
+        system_prefix=system_prefix,
+        re_evaluate_edited=body.re_evaluate_edited,
+    )
+    return {
+        "job_id": job_id,
+        "message": f"Extraction started for {n} work{'s' if n != 1 else ''}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Job status
+# ---------------------------------------------------------------------------
+
+
+@router.get("/jobs/{job_id}")
+def get_extraction_job(job_id: str):
+    """Return the current status of an extraction job.
+
+    Response shape::
+
+        {
+            "job_id": "...",
+            "schema_id": 1,
+            "status": "running" | "completed",
+            "progress": {"total": 10, "completed": 3, "failed": 1},
+            "works": {
+                "42": {"status": "done"},
+                "43": {"status": "failed", "error": "..."},
+                "44": {"status": "running"},
+                "45": {"status": "pending"}
+            }
+        }
+
+    Returns 404 if no job with the given ``job_id`` is found (jobs are kept
+    for one hour after creation).
+    """
+    job = extraction_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Extraction job not found")
+
+    works = job["works"]
+    total = len(works)
+    completed = sum(1 for w in works.values() if w["status"] == "done")
+    failed = sum(1 for w in works.values() if w["status"] == "failed")
+
+    return {
+        "job_id": job["job_id"],
+        "schema_id": job["schema_id"],
+        "status": job["status"],
+        "progress": {"total": total, "completed": completed, "failed": failed},
+        "works": works,
+    }
 
 
 # ---------------------------------------------------------------------------

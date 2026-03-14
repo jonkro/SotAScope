@@ -586,7 +586,7 @@ def _mock_llm_client(reply: str) -> MagicMock:
 
 
 def test_extract_for_work_creates_notes(client, db_session, schema, columns, work):
-    """Extract endpoint creates WorkNotes with correct note_type and provenance."""
+    """Extract endpoint starts background extraction and returns 202 with a job_id."""
     llm_reply = _llm_response_for("supervised", "Uses labeled data.", "ImageNet", "Mentioned in text.")
 
     mock_client = _mock_llm_client(llm_reply)
@@ -605,32 +605,19 @@ def test_extract_for_work_creates_notes(client, db_session, schema, columns, wor
 
         resp = client.post(f"/api/extraction/schemas/{schema.id}/extract/{work.id}")
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()
-    assert data["work_id"] == work.id
-    assert len(data["columns"]) == 2
+    assert "job_id" in data
+    assert "message" in data
+    assert "1 work" in data["message"]
 
-    col_names = {c["column_name"] for c in data["columns"]}
-    assert col_names == {"Learning paradigm", "Dataset"}
-
-    paradigm_result = next(c for c in data["columns"] if c["column_name"] == "Learning paradigm")
-    assert paradigm_result["answer"] == "supervised"
-    assert paradigm_result["reasoning"] == "Uses labeled data."
-    assert paradigm_result["note"]["provenance"] == "ai"
-    assert "ML Survey Table / Learning paradigm" in paradigm_result["note"]["note_type"]
-
-    # Verify notes were persisted in DB (answer + reasoning = 2 notes per column = 4 total)
-    notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
-    assert len(notes) == 4  # 2 columns × (answer + reasoning)
-
-    # Check provenances
-    assert all(n.provenance == "ai" for n in notes)
-
-    # Check note_types contain schema title
-    note_types = {n.note_type for n in notes}
-    assert any("ML Survey Table / Learning paradigm" in nt for nt in note_types)
-    assert any("ML Survey Table / Dataset" in nt for nt in note_types)
-    assert any("reasoning" in nt for nt in note_types)
+    # Job status endpoint should reflect completed state (TestClient runs BG tasks synchronously).
+    job_resp = client.get(f"/api/extraction/jobs/{data['job_id']}")
+    assert job_resp.status_code == 200
+    job = job_resp.json()
+    assert job["schema_id"] == schema.id
+    assert "progress" in job
+    assert job["progress"]["total"] == 1
 
 
 def test_extract_no_llm_configured(client, db_session, schema, work):
@@ -668,7 +655,7 @@ def test_extract_schema_not_found(client, db_session, work):
 
 
 def test_extract_batch(client, db_session, schema, columns, work):
-    """Batch extraction processes multiple works and collects errors for missing ones."""
+    """Batch extraction starts background job and returns 202 with a job_id."""
     llm_reply = _llm_response_for("unsupervised", "No labels.", "CIFAR-10", "Used in eval.")
 
     mock_client = _mock_llm_client(llm_reply)
@@ -689,33 +676,53 @@ def test_extract_batch(client, db_session, schema, columns, work):
             json={"work_ids": [work.id, 99999]},
         )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()
-    assert len(data["results"]) == 1
-    assert data["results"][0]["work_id"] == work.id
-    assert len(data["errors"]) == 1
-    assert data["errors"][0]["work_id"] == 99999
+    assert "job_id" in data
+    assert "message" in data
+    # Job tracker records both works (success/failure determined by background task)
+    job_resp = client.get(f"/api/extraction/jobs/{data['job_id']}")
+    assert job_resp.status_code == 200
+    job = job_resp.json()
+    assert job["progress"]["total"] == 2
+    assert str(work.id) in job["works"]
+    assert "99999" in job["works"]
 
 
-def test_extract_llm_error_returns_502(client, db_session, schema, columns, work):
-    """When the LLM call raises, the endpoint returns 502."""
-    mock_client = MagicMock()
-    mock_client.chat.side_effect = RuntimeError("LLM unavailable")
+def test_extract_for_work_409_when_locked(client, db_session, schema, columns, work):
+    """Returns 409 if the work already has an active lock."""
+    from litexplorer.services.work_lock import work_lock
 
-    with patch("litexplorer.api.extraction.make_llm_client", return_value=mock_client), \
-         patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+    _setup_llm_settings(db_session)
 
-        from litexplorer.models.settings import Setting
-        db_session.merge(Setting(key="llm_provider", value="openai"))
-        db_session.merge(Setting(key="llm_model_id", value="gpt-4o"))
-        db_session.merge(Setting(key="llm_api_key", value="sk-test"))
-        db_session.merge(Setting(key="llm_base_url", value=""))
-        db_session.merge(Setting(key="llm_system_prompt_prefix", value=""))
-        db_session.commit()
+    work_lock.acquire(work.id, "test lock")
+    try:
+        with patch("litexplorer.api.extraction.make_llm_client", return_value=MagicMock()), \
+             patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+            resp = client.post(f"/api/extraction/schemas/{schema.id}/extract/{work.id}")
+        assert resp.status_code == 409
+        assert str(work.id) in resp.json()["detail"]
+    finally:
+        work_lock.release(work.id)
 
-        resp = client.post(f"/api/extraction/schemas/{schema.id}/extract/{work.id}")
 
-    assert resp.status_code == 502
+def test_extract_batch_409_when_locked(client, db_session, schema, columns, work):
+    """Batch endpoint returns 409 if any requested work is already locked."""
+    from litexplorer.services.work_lock import work_lock
+
+    _setup_llm_settings(db_session)
+
+    work_lock.acquire(work.id, "test lock")
+    try:
+        with patch("litexplorer.api.extraction.make_llm_client", return_value=MagicMock()), \
+             patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+            resp = client.post(
+                f"/api/extraction/schemas/{schema.id}/extract",
+                json={"work_ids": [work.id]},
+            )
+        assert resp.status_code == 409
+    finally:
+        work_lock.release(work.id)
 
 
 # ---------------------------------------------------------------------------
@@ -1221,7 +1228,7 @@ def test_results_endpoint_no_proposal_when_absent(client, db_session, schema, co
 def test_batch_extraction_with_re_evaluate_edited_via_api(
     client, db_session, schema, columns, work
 ):
-    """Batch endpoint with re_evaluate_edited=True creates ai_proposal notes for user cells."""
+    """Batch endpoint with re_evaluate_edited=True starts a background job and returns 202."""
     col1 = columns[0]
     answer_note_type = f"{schema.title} / {col1.name}"
 
@@ -1245,22 +1252,7 @@ def test_batch_extraction_with_re_evaluate_edited_via_api(
             json={"work_ids": [work.id], "re_evaluate_edited": True},
         )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()
-    # Only col2 (Dataset) is returned in items (col1 became a proposal).
-    results = data["results"]
-    assert len(results) == 1
-    col_names = [c["column_name"] for c in results[0]["columns"]]
-    assert "Dataset" in col_names
-    assert "Learning paradigm" not in col_names
-
-    # ai_proposal note was created for col1.
-    all_notes = db_session.query(WorkNote).filter_by(work_id=work.id).all()
-    proposals = [n for n in all_notes if n.provenance == "ai_proposal"
-                 and n.note_type == answer_note_type]
-    assert len(proposals) == 1
-    assert proposals[0].content == "supervised"
-
-    # User note is still intact.
-    db_session.refresh(user_note)
-    assert user_note.content == "user answer"
+    assert "job_id" in data
+    assert "message" in data

@@ -177,8 +177,9 @@ litexplorer/
 │   │                     #   provenance values: "user", "ai", "ai_reviewed", "ai_proposal"
 │   ├── extraction.py     # ExtractionSchemaCreate/Update/Out, ExtractionColumnCreate/Update/Out,
 │   │                     #   ColumnReorderRequest, ExtractionColumnResult, ExtractionWorkResult (+ parsing_method: str),
-│   │                     #   ExtractionBatchRequest (+ re_evaluate_edited: bool = False), ExtractionBatchResult,
+│   │                     #   ExtractionBatchRequest (+ re_evaluate_edited: bool = False),
 │   │                     #   ExtractionCellResult (+ proposal: optional ai_proposal note), ExtractionResultsResponse
+│   │                     #   Note: extract endpoints now return 202 {job_id, message} (not ExtractionBatchResult)
 │   └── settings.py       # SettingOut, SettingUpdate
 ├── api/
 │   ├── deps.py           # get_db dependency
@@ -200,6 +201,9 @@ litexplorer/
 │   │                     #   POST /sessions/{id}/save, DELETE /sessions/{id}/messages, GET /sessions,
 │   │                     #   PATCH /sessions/{id} (update context_id)
 │   ├── extraction.py     # /api/extraction — schema/column CRUD, extraction execution,
+│   │                     #   POST /schemas/{id}/extract/{work_id} → 202 {job_id} (BackgroundTask, work_lock)
+│   │                     #   POST /schemas/{id}/extract → 202 {job_id} (BackgroundTask, all work_locks)
+│   │                     #   GET /jobs/{job_id} → per-work status + progress counts (reads extraction_jobs registry)
 │   │                     #   GET /schemas/{id}/results?work_ids=... (ExtractionResultsResponse)
 │   │                     #   GET /schemas/{id}/export?format=csv|latex (CSV/LaTeX download)
 │   │                     #   GET /schemas/{id}/preview-prompt?work_id=... → {system_text, user_message}
@@ -224,6 +228,10 @@ litexplorer/
 │   │                     #   skips ai_reviewed/user notes by default; when re_evaluate_edited=True, still runs LLM
 │   │                     #   for those cells but writes results as provenance="ai_proposal" instead of overwriting;
 │   │                     #   deletes stale ai AND ai_proposal notes before re-creating
+│   ├── extraction_jobs.py # In-memory extraction job tracker: _ExtractionJobRegistry singleton `extraction_jobs`;
+│   │                     #   create_job(schema_id, work_ids) → job_id (uuid4); update_work_status(job_id, work_id,
+│   │                     #   status, error); get_job(job_id) → dict copy; mark_completed(job_id);
+│   │                     #   auto-prunes jobs older than 1 hour on each create_job call; thread-safe (threading.Lock)
 │   ├── extraction_export.py  # export_as_csv(), export_as_latex() — booktabs LaTeX with rotatebox
 │   │                         #   headers for constrained columns; single-pass regex LaTeX escaping
 │   └── schema_discussion.py  # build_schema_discussion_prompt() — schema-design system prompt with
@@ -353,8 +361,10 @@ tests/
 ├── test_semantic_scholar_enrichment.py  # S2 enrichment endpoint (refs/citations, dedup, error cases)
 ├── test_search_import.py      # Search-by-title candidates + confirm endpoints (12 tests)
 ├── test_extraction.py         # Schema/column CRUD, prompt assembly, response parsing, extract endpoints,
-│                              #   ai_proposal provenance (re_evaluate_edited flag), manual cell fill (60 tests)
+│                              #   ai_proposal provenance (re_evaluate_edited flag), manual cell fill,
+│                              #   409 when work locked (62 tests)
 ├── test_extraction_export.py  # CSV/LaTeX export service unit tests + API endpoint tests (28 tests)
+├── test_extraction_jobs.py    # _ExtractionJobRegistry unit tests + GET /jobs/{id} endpoint (23 tests)
 ├── test_pdf_fetch.py          # OA PDF fetch: arXiv, Unpaywall, fetch_pdf_for_work, API endpoint (23 tests)
 ├── test_chat_sessions.py      # Chat session CRUD, auto-session uniqueness, save/load/clear, chat auto-persist (18 tests)
 ├── test_schema_discussion.py  # Schema discussion prompt, parse_column_proposals, endpoints (43 tests)
@@ -405,7 +415,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - `Field.venues` relationship uses `passive_deletes=True` because the DB has `ON DELETE CASCADE` on `VenueField.field_id`. Without this, SQLAlchemy tries to set `field_id = NULL` on eagerly-loaded relationships before delete, which fails because `field_id` is NOT NULL.
 - The `citations_by_year` sliding window only works for works that have the data populated from OpenAlex. Works without it (e.g., imported from Crossref or BibTeX only) fall back to the all-time `citation_count` regardless of slider position. The startup backfill populates from cached responses; re-enriching a work will also populate it.
 - `_update_work()` always overwrites `citation_count` and `citations_by_year` (they change over time), unlike other fields which use update-without-overwrite.
-- **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler.
+- **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler. The two extraction execution endpoints (`POST /schemas/{id}/extract/{work_id}` and `POST /schemas/{id}/extract`) now follow this pattern — they return 202 immediately and run `_extraction_bg` as a BackgroundTask. Progress is tracked in `extraction_jobs` (see `litexplorer/services/extraction_jobs.py`) and polled via `GET /api/extraction/jobs/{job_id}`. Each work is locked via `work_lock` before the task starts and released per-work as it completes.
 - **PDF vision is Anthropic-only**: sending the PDF binary directly to the model is only supported when `llm_provider = "anthropic"`. All other providers (including local OpenAI-compatible servers) must use extracted `.txt` text.
 - **Table isolation in tests**: `Base.metadata.create_all()` in `conftest.py` runs before `from litexplorer.app import app`. A test file that uses a model via the API but does NOT import that model at the top of the file will get "no such table" when run in isolation. Fix: add a bare import at the top (e.g. `from litexplorer.models.chat import ChatSession`) so it registers in `Base.metadata` before `create_all()`.
 - **Work lock registry** (`litexplorer/services/work_lock.py`): module-level singleton `work_lock` tracks in-flight background operations per work ID. `acquire(work_id, task)` returns `False` if already locked; `release(work_id)` is always called in a `finally` block. Locks older than 10 minutes are treated as stale and auto-released on any access (guards against background task crashes). Uses `threading.Lock` — safe for single-worker uvicorn deployments.
