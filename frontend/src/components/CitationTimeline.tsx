@@ -595,7 +595,7 @@ export default function CitationTimeline({
       </div>
 
       {/* SVG wrapper — ResizeObserver targets this so the legend height is excluded */}
-      <div ref={svgWrapperRef} className="relative flex-1">
+      <div ref={svgWrapperRef} className="relative flex-1 min-h-0 overflow-hidden">
         <svg ref={svgRef} width={dimensions.width} height={dimensions.height} style={{ display: 'block' }} />
         <div
           ref={tooltipRef}

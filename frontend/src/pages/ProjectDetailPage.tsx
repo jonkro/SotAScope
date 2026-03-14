@@ -651,7 +651,7 @@ export default function ProjectDetailPage() {
               hops={hops}
               onHopsChange={setHops}
             />
-            <div className="flex-1 min-h-[400px]">
+            <div className="flex-1 min-h-[320px]">
               <CitationTimeline
                 seeds={filteredSeeds}
                 neighbors={filteredNeighbors}
