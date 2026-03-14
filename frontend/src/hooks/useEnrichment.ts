@@ -23,9 +23,9 @@ export function useFetchBackwardCitations() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: fetchBackwardCitationsEnrich,
-    onSuccess: (_data, workId) => {
-      qc.invalidateQueries({ queryKey: ['works', workId, 'citations'] });
-      qc.invalidateQueries({ queryKey: ['projects'] });
+    onSuccess: () => {
+      // Kick the lock-status poller into fast mode — data will refresh when lock clears
+      qc.invalidateQueries({ queryKey: ['works', 'lock-status'] });
     },
   });
 }
@@ -35,9 +35,8 @@ export function useFetchForwardCitations() {
   return useMutation({
     mutationFn: ({ workId, forceRefresh }: { workId: number; forceRefresh?: boolean }) =>
       fetchForwardCitationsEnrich(workId, forceRefresh),
-    onSuccess: (_data, { workId }) => {
-      qc.invalidateQueries({ queryKey: ['works', workId, 'citations'] });
-      qc.invalidateQueries({ queryKey: ['projects'] });
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['works', 'lock-status'] });
     },
   });
 }
@@ -46,9 +45,8 @@ export function useEnrichFromCrossref() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: enrichFromCrossref,
-    onSuccess: (_data, workId) => {
-      qc.invalidateQueries({ queryKey: ['works', workId] });
-      qc.invalidateQueries({ queryKey: ['projects'] });
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['works', 'lock-status'] });
     },
   });
 }
@@ -58,10 +56,8 @@ export function useEnrichFromSemanticScholar() {
   return useMutation({
     mutationFn: ({ workId, direction }: { workId: number; direction?: 'both' | 'backward' | 'forward' }) =>
       enrichFromSemanticScholar(workId, direction ?? 'both'),
-    onSuccess: (_data, { workId }) => {
-      qc.invalidateQueries({ queryKey: ['works', workId, 'citations'] });
-      qc.invalidateQueries({ queryKey: ['works', workId] });
-      qc.invalidateQueries({ queryKey: ['projects'] });
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['works', 'lock-status'] });
     },
   });
 }

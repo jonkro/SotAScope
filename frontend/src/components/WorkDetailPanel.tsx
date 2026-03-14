@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useWork, useForwardCitations, useBackwardCitations, useDeleteWork } from '../hooks/useWorks';
@@ -6,6 +6,7 @@ import { useFetchBackwardCitations, useFetchForwardCitations, useEnrichFromCross
 import { useUpdateWork, useAddWorkDOIAlias, useRemoveWorkDOIAlias } from '../hooks/useWorks';
 import { useWorkPDFs, useUploadWorkPDF, useSetWorkPDFPrimary, useDeleteWorkPDF, useExtractWorkPDFText, useFetchWorkPDF } from '../hooks/useWorkPDFs';
 import { useWorkNotes, useCreateWorkNote, useUpdateWorkNote, useDeleteWorkNote } from '../hooks/useWorkNotes';
+import { useLockStatus } from '../hooks/useLockStatus';
 import { serveWorkPDFUrl, workPDFTextUrl, getDOIInfo, fetchGrobidStatus, enrichFromGrobid } from '../api';
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
@@ -313,6 +314,50 @@ export default function WorkDetailPanel({
   const fwd = useForwardCitations(workId);
   const bwd = useBackwardCitations(workId);
 
+  const { isLocked, lockReason } = useLockStatus();
+  const workLocked = isLocked(workId);
+  const workLockReason = lockReason(workId);
+
+  // Tracks what kind of enrichment was last triggered (to show a completion summary).
+  // 'backward' covers OA refs, S2 refs, GROBID; 'forward' covers OA citing, S2 citing.
+  const lastEnrichTypeRef = useRef<'backward' | 'forward' | 'crossref' | null>(null);
+  // Set when a lock just cleared; consumed by the data-watching effects below.
+  const pendingCompletionRef = useRef<'backward' | 'forward' | 'crossref' | null>(null);
+
+  // When the lock on this work clears, refresh its data
+  const wasLockedRef = useRef(false);
+  useEffect(() => {
+    if (wasLockedRef.current && !workLocked) {
+      pendingCompletionRef.current = lastEnrichTypeRef.current;
+      lastEnrichTypeRef.current = null;
+      qc.invalidateQueries({ queryKey: ['works', workId] });
+      qc.invalidateQueries({ queryKey: ['works', workId, 'citations'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
+      qc.invalidateQueries({ queryKey: ['timeline'] });
+      setEnrichMsg(null);
+      onEnrichComplete?.();
+    }
+    wasLockedRef.current = workLocked;
+  }, [workLocked, workId, qc, onEnrichComplete]);
+
+  // Show completion summary once backward citations data arrives after enrichment
+  useEffect(() => {
+    if (pendingCompletionRef.current === 'backward' && bwd.data && !bwd.isLoading) {
+      const n = bwd.data.length;
+      setEnrichMsg({ kind: 'ok', text: `${n} reference${n !== 1 ? 's' : ''} now in library` });
+      pendingCompletionRef.current = null;
+    }
+  }, [bwd.data, bwd.isLoading]);
+
+  // Show completion summary once forward citations data arrives after enrichment
+  useEffect(() => {
+    if (pendingCompletionRef.current === 'forward' && fwd.data && !fwd.isLoading) {
+      const n = fwd.data.length;
+      setEnrichMsg({ kind: 'ok', text: `${n} citing paper${n !== 1 ? 's' : ''} now in library` });
+      pendingCompletionRef.current = null;
+    }
+  }, [fwd.data, fwd.isLoading]);
+
   const fetchBwd = useFetchBackwardCitations();
   const fetchFwd = useFetchForwardCitations();
   const crossref = useEnrichFromCrossref();
@@ -345,8 +390,7 @@ export default function WorkDetailPanel({
 
   const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
-  const [ssEnrichMsg, setSsEnrichMsg] = useState<string | null>(null);
-  const [grobidEnrichMsg, setGrobidEnrichMsg] = useState<string | null>(null);
+  const [enrichMsg, setEnrichMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const { data: grobidStatus } = useQuery({
     queryKey: ['grobid', 'status'],
@@ -355,6 +399,9 @@ export default function WorkDetailPanel({
   });
   const grobidEnrich = useMutation({
     mutationFn: (wId: number) => enrichFromGrobid(wId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['works', 'lock-status'] });
+    },
   });
   const [editSsId, setEditSsId] = useState(false);
   const [ssIdDraft, setSsIdDraft] = useState('');
@@ -1187,6 +1234,13 @@ export default function WorkDetailPanel({
           foldState={foldState}
           onFoldChange={onFoldChange}
         >
+          {/* Lock indicator: shown when a background task is running for this work */}
+          {workLocked && (
+            <div className="flex items-center gap-2 text-xs text-blue-600 mb-2 py-1">
+              <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0" />
+              <span className="text-blue-700">{workLockReason ?? 'Processing...'}</span>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => navigate(`/works/${workId}/discuss`)}
@@ -1195,73 +1249,83 @@ export default function WorkDetailPanel({
               Discuss
             </button>
             <button
-              onClick={() => fetchBwd.mutate(workId, { onSettled: onEnrichComplete })}
-              disabled={fetchBwd.isPending || isAutoEnriching}
+              onClick={() => {
+                lastEnrichTypeRef.current = 'backward';
+                setEnrichMsg(null);
+                fetchBwd.mutate(workId, {
+                  onError: (err) => {
+                    lastEnrichTypeRef.current = null;
+                    const msg = err instanceof Error ? err.message : String(err);
+                    try { setEnrichMsg({ kind: 'err', text: JSON.parse(msg).detail ?? msg }); }
+                    catch { setEnrichMsg({ kind: 'err', text: msg }); }
+                  },
+                });
+              }}
+              disabled={fetchBwd.isPending || isAutoEnriching || workLocked}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
-              {fetchBwd.isPending ? 'Fetching...' : 'Fetch references (OA)'}
+              {fetchBwd.isPending ? 'Queuing...' : 'Fetch references (OA)'}
             </button>
             <button
-              onClick={() => fetchFwd.mutate({ workId }, { onSettled: onEnrichComplete })}
-              disabled={fetchFwd.isPending || isAutoEnriching}
+              onClick={() => {
+                lastEnrichTypeRef.current = 'forward';
+                setEnrichMsg(null);
+                fetchFwd.mutate({ workId }, {
+                  onError: (err) => {
+                    lastEnrichTypeRef.current = null;
+                    const msg = err instanceof Error ? err.message : String(err);
+                    try { setEnrichMsg({ kind: 'err', text: JSON.parse(msg).detail ?? msg }); }
+                    catch { setEnrichMsg({ kind: 'err', text: msg }); }
+                  },
+                });
+              }}
+              disabled={fetchFwd.isPending || isAutoEnriching || workLocked}
               className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
             >
-              {fetchFwd.isPending ? 'Fetching...' : 'Fetch citing papers (OA)'}
+              {fetchFwd.isPending ? 'Queuing...' : 'Fetch citing papers (OA)'}
             </button>
             {(work.doi || work.semantic_scholar_id) && (
               <button
                 onClick={() => {
-                  setSsEnrichMsg(null);
+                  lastEnrichTypeRef.current = 'backward';
+                  setEnrichMsg(null);
                   enrichSS.mutate({ workId, direction: 'backward' }, {
-                    onSuccess: (result) => {
-                      if (result.raw_references === 0) {
-                        setSsEnrichMsg('S2 has no reference list for this paper');
-                      } else if (result.new_references === 0) {
-                        setSsEnrichMsg(`All ${result.existing_references} references already in library`);
-                      } else {
-                        setSsEnrichMsg(
-                          `Added ${result.new_references} new references` +
-                          (result.existing_references > 0
-                            ? ` (${result.existing_references} already existed)`
-                            : '')
-                        );
-                      }
-                      onEnrichComplete?.();
-                    },
                     onError: (err) => {
-                      setSsEnrichMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                      lastEnrichTypeRef.current = null;
+                      const msg = err instanceof Error ? err.message : String(err);
+                      try { setEnrichMsg({ kind: 'err', text: JSON.parse(msg).detail ?? msg }); }
+                      catch { setEnrichMsg({ kind: 'err', text: msg }); }
                     },
                   });
                 }}
-                disabled={enrichSS.isPending || isAutoEnriching}
+                disabled={enrichSS.isPending || isAutoEnriching || workLocked}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >
-                {enrichSS.isPending ? 'Fetching...' : 'Fetch references (S2)'}
+                {enrichSS.isPending ? 'Queuing...' : 'Fetch references (S2)'}
               </button>
             )}
             {(() => {
               const hasPDFs = (pdfsQuery.data?.length ?? 0) > 0;
               const grobidAvailable = grobidStatus?.available ?? false;
-              const disabled = !hasPDFs || !grobidAvailable || grobidEnrich.isPending;
+              const disabled = !hasPDFs || !grobidAvailable || grobidEnrich.isPending || workLocked;
               const tooltip = !hasPDFs
                 ? 'Upload a PDF first'
                 : !grobidAvailable
                 ? 'GROBID not configured — see Settings'
+                : workLocked
+                ? 'Work is being processed'
                 : undefined;
               return (
                 <button
                   onClick={() => {
-                    setGrobidEnrichMsg(null);
+                    lastEnrichTypeRef.current = 'backward';
+                    setEnrichMsg(null);
                     grobidEnrich.mutate(workId, {
-                      onSuccess: (result) => {
-                        setGrobidEnrichMsg(
-                          `GROBID: ${result.new_count} new, ${result.existing_count} existing, ${result.failed_count} unresolved (of ${result.total_extracted} extracted)`
-                        );
-                        qc.invalidateQueries({ queryKey: ['works', workId, 'citations', 'backward'] });
-                        onEnrichComplete?.();
-                      },
                       onError: (err) => {
-                        setGrobidEnrichMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                        lastEnrichTypeRef.current = null;
+                        const msg = err instanceof Error ? err.message : String(err);
+                        try { setEnrichMsg({ kind: 'err', text: JSON.parse(msg).detail ?? msg }); }
+                        catch { setEnrichMsg({ kind: 'err', text: msg }); }
                       },
                     });
                   }}
@@ -1272,48 +1336,48 @@ export default function WorkDetailPanel({
                   {grobidEnrich.isPending && (
                     <span className="inline-block w-3 h-3 border border-gray-400 border-t-transparent rounded-full animate-spin" />
                   )}
-                  {grobidEnrich.isPending ? 'Extracting...' : 'Extract refs (GROBID)'}
+                  {grobidEnrich.isPending ? 'Queuing...' : 'Extract refs (GROBID)'}
                 </button>
               );
             })()}
             {(work.doi || work.semantic_scholar_id) && (
               <button
                 onClick={() => {
-                  setSsEnrichMsg(null);
+                  lastEnrichTypeRef.current = 'forward';
+                  setEnrichMsg(null);
                   enrichSS.mutate({ workId, direction: 'forward' }, {
-                    onSuccess: (result) => {
-                      if (result.raw_citing === 0) {
-                        setSsEnrichMsg('S2 has no citing papers for this paper');
-                      } else if (result.new_citing === 0) {
-                        setSsEnrichMsg(`All ${result.existing_citing} citing papers already in library`);
-                      } else {
-                        setSsEnrichMsg(
-                          `Added ${result.new_citing} new citing papers` +
-                          (result.existing_citing > 0
-                            ? ` (${result.existing_citing} already existed)`
-                            : '')
-                        );
-                      }
-                      onEnrichComplete?.();
-                    },
                     onError: (err) => {
-                      setSsEnrichMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+                      lastEnrichTypeRef.current = null;
+                      const msg = err instanceof Error ? err.message : String(err);
+                      try { setEnrichMsg({ kind: 'err', text: JSON.parse(msg).detail ?? msg }); }
+                      catch { setEnrichMsg({ kind: 'err', text: msg }); }
                     },
                   });
                 }}
-                disabled={enrichSS.isPending || isAutoEnriching}
+                disabled={enrichSS.isPending || isAutoEnriching || workLocked}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >
-                {enrichSS.isPending ? 'Fetching...' : 'Fetch citing papers (S2)'}
+                {enrichSS.isPending ? 'Queuing...' : 'Fetch citing papers (S2)'}
               </button>
             )}
             {work.doi && (
               <button
-                onClick={() => crossref.mutate(workId, { onSettled: onEnrichComplete })}
-                disabled={crossref.isPending || isAutoEnriching}
+                onClick={() => {
+                  lastEnrichTypeRef.current = 'crossref';
+                  setEnrichMsg(null);
+                  crossref.mutate(workId, {
+                    onError: (err) => {
+                      lastEnrichTypeRef.current = null;
+                      const msg = err instanceof Error ? err.message : String(err);
+                      try { setEnrichMsg({ kind: 'err', text: JSON.parse(msg).detail ?? msg }); }
+                      catch { setEnrichMsg({ kind: 'err', text: msg }); }
+                    },
+                  });
+                }}
+                disabled={crossref.isPending || isAutoEnriching || workLocked}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >
-                {crossref.isPending ? 'Enriching...' : 'Enrich from Crossref'}
+                {crossref.isPending ? 'Queuing...' : 'Enrich from Crossref'}
               </button>
             )}
             {!work.doi && (
@@ -1336,7 +1400,7 @@ export default function WorkDetailPanel({
                     },
                   });
                 }}
-                disabled={resolveDOI.isPending || isAutoEnriching}
+                disabled={resolveDOI.isPending || isAutoEnriching || workLocked}
                 className="px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
               >
                 {resolveDOI.isPending ? 'Resolving...' : 'Resolve DOI (CrossRef)'}
@@ -1346,27 +1410,14 @@ export default function WorkDetailPanel({
           {isAutoEnriching && (
             <p className="text-xs text-blue-600 mt-1 animate-pulse">Auto-enriching references and citations...</p>
           )}
-          {fetchBwd.data && (
-            fetchBwd.data.raw_count === 0
-              ? <p className="text-xs text-amber-600 mt-1">OpenAlex has no reference list for this paper</p>
-              : <p className="text-xs text-green-600 mt-1">Fetched {fetchBwd.data.count} references</p>
-          )}
-          {fetchFwd.data && (
-            <p className="text-xs text-green-600 mt-1">Fetched {fetchFwd.data.count} citing papers</p>
+          {enrichMsg && (
+            <p className={`text-xs mt-1 ${enrichMsg.kind === 'err' ? 'text-red-600' : 'text-blue-600'}`}>
+              {enrichMsg.text}
+            </p>
           )}
           {resolveMsg && (
             <p className={`text-xs mt-1 ${resolveMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
               {resolveMsg}
-            </p>
-          )}
-          {ssEnrichMsg && (
-            <p className={`text-xs mt-1 ${ssEnrichMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
-              {ssEnrichMsg}
-            </p>
-          )}
-          {grobidEnrichMsg && (
-            <p className={`text-xs mt-1 ${grobidEnrichMsg.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
-              {grobidEnrichMsg}
             </p>
           )}
           {timelineContext?.direction === 'seed' && timelineContext.forwardCitationsFetchedAt && (
@@ -1455,10 +1506,15 @@ export default function WorkDetailPanel({
         {/* Delete from library (library context only) */}
         {onDelete && (
           <div>
+            {workLocked && (
+              <p className="text-xs text-gray-400 mb-1">Cannot delete: work is currently being processed.</p>
+            )}
             {!confirmDelete ? (
               <button
                 onClick={() => setConfirmDelete(true)}
-                className="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-300 rounded hover:bg-red-50"
+                disabled={workLocked}
+                title={workLocked ? 'Work is being processed — try again when done' : undefined}
+                className="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-300 rounded hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Delete from Library
               </button>
@@ -1472,6 +1528,12 @@ export default function WorkDetailPanel({
                     onClick={() => {
                       deleteMutation.mutate(workId, {
                         onSuccess: () => { onDelete(); onClose(); },
+                        onError: (err) => {
+                          const msg = err instanceof Error ? err.message : String(err);
+                          try { alert(JSON.parse(msg).detail ?? msg); }
+                          catch { alert(msg); }
+                          setConfirmDelete(false);
+                        },
                       });
                     }}
                     disabled={deleteMutation.isPending}

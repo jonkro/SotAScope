@@ -11,6 +11,7 @@ import {
   reorderExtractionColumns,
   runExtraction,
   runBatchExtraction,
+  fetchExtractionJob,
   getExtractionResults,
   updateWorkNote,
   manualFillExtractionCell,
@@ -141,7 +142,6 @@ export function useExtractionResults(schemaId: number | undefined, workIds: numb
 }
 
 export function useRunBatchExtraction(schemaId: number) {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: ({
       workIds,
@@ -150,18 +150,30 @@ export function useRunBatchExtraction(schemaId: number) {
       workIds: number[];
       reEvaluateEdited?: boolean;
     }) => runBatchExtraction(schemaId, workIds, reEvaluateEdited),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
-    },
+    // Results are invalidated by the caller once the job completes
   });
 }
 
 export function useRunSingleExtraction(schemaId: number) {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: (workId: number) => runExtraction(schemaId, workId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
+    // Results are invalidated by the caller once the job completes
+  });
+}
+
+/**
+ * Polls the status of an extraction job.
+ * Polling stops automatically when the job status is "completed".
+ */
+export function useExtractionJob(jobId: string | null) {
+  return useQuery({
+    queryKey: ['extraction', 'job', jobId],
+    queryFn: () => fetchExtractionJob(jobId!),
+    enabled: jobId != null,
+    refetchInterval: (query) => {
+      const job = query.state.data;
+      if (!job || job.status === 'completed') return false;
+      return 2000;
     },
   });
 }

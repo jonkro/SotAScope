@@ -439,3 +439,41 @@ export interface ExtractionCellResult {
 export interface ExtractionResultsResponse {
   cells: ExtractionCellResult[];
 }
+
+// ---- Async background operations ----
+
+/** Returned by enrichment endpoints that now run as background tasks (202 Accepted) */
+export interface BackgroundAccepted {
+  message: string;
+  work_id: number;
+}
+
+/** Returned by extraction run endpoints (202 Accepted) */
+export interface ExtractionJobAccepted {
+  job_id: string;
+  message: string;
+}
+
+export interface ExtractionJobProgress {
+  total: number;
+  completed: number;
+  failed: number;
+}
+
+export interface ExtractionJobWorkStatus {
+  status: 'pending' | 'running' | 'done' | 'failed';
+  error?: string;
+}
+
+export interface ExtractionJobStatus {
+  job_id: string;
+  schema_id: number;
+  status: 'running' | 'completed';
+  progress: ExtractionJobProgress;
+  works: Record<string, ExtractionJobWorkStatus>;
+}
+
+/** Lock status response from GET /api/works/lock-status */
+export interface LockStatusResponse {
+  locks: Record<string, string>;
+}

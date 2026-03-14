@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useDuplicates, useMergeWorks } from '../hooks/useWorks';
+import { useLockStatus } from '../hooks/useLockStatus';
 import type { DuplicateGroup, WorkOut } from '../types';
 
 interface Props {
@@ -46,6 +47,7 @@ function WorkCard({
 export default function SanitizeDialog({ onClose }: Props) {
   const { data: groups, isLoading, error: fetchError } = useDuplicates(true);
   const mergeMutation = useMergeWorks();
+  const { isLocked } = useLockStatus();
 
   // Snapshot groups on first successful load so the list stays stable
   const snapshotRef = useRef<DuplicateGroup[] | null>(null);
@@ -150,6 +152,7 @@ export default function SanitizeDialog({ onClose }: Props) {
   const currentGroup = allGroups[currentIndex];
   const liveWorks = getLiveWorks(currentGroup);
   const effectiveSelected = selectedWorkId ?? liveWorks[0]?.id ?? null;
+  const anyLocked = liveWorks.some((w) => isLocked(w.id));
 
   const handleMerge = async () => {
     if (effectiveSelected === null) return;
@@ -237,13 +240,19 @@ export default function SanitizeDialog({ onClose }: Props) {
           >
             Dismiss
           </button>
-          <button
-            onClick={handleMerge}
-            disabled={isMerging}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
-          >
-            {isMerging ? 'Merging...' : 'Merge'}
-          </button>
+          <div className="flex items-center gap-3">
+            {anyLocked && (
+              <span className="text-xs text-amber-600">One or more works are being processed</span>
+            )}
+            <button
+              onClick={handleMerge}
+              disabled={isMerging || anyLocked}
+              title={anyLocked ? 'Cannot merge: one or more works are being processed' : undefined}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isMerging ? 'Merging...' : 'Merge'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

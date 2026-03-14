@@ -6,6 +6,7 @@ import {
   useExtractionResults,
   useRunBatchExtraction,
   useRunSingleExtraction,
+  useExtractionJob,
   useAcceptExtractionNote,
   useAcceptExtractionProposal,
   useEditExtractionNote,
@@ -423,6 +424,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
 
   // Extraction progress state
   const [isExtracting, setIsExtracting] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [extractProgress, setExtractProgress] = useState<{
     done: number;
     total: number;
@@ -438,26 +440,40 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
 
   const runBatch = useRunBatchExtraction(schema.id);
   const runSingle = useRunSingleExtraction(schema.id);
+  const jobQuery = useExtractionJob(activeJobId);
+
+  // Track job progress via polling
+  useEffect(() => {
+    const job = jobQuery.data;
+    if (!job) return;
+    if (job.status === 'running') {
+      setExtractProgress({ done: job.progress.completed, total: job.progress.total });
+    } else if (job.status === 'completed') {
+      setExtractProgress({ done: job.progress.completed, total: job.progress.total });
+      const errs = Object.entries(job.works)
+        .filter(([, w]) => w.status === 'failed')
+        .map(([wid, w]) => ({ workId: Number(wid), msg: w.error ?? 'Extraction failed' }));
+      setExtractErrors(errs);
+      setIsExtracting(false);
+      setActiveJobId(null);
+      refetchResults();
+    }
+  }, [jobQuery.data, refetchResults]);
 
   const doExtract = async (ids: number[], reEval = false) => {
     setIsExtracting(true);
     setExtractProgress({ done: 0, total: ids.length });
-    const errs: { workId: number; msg: string }[] = [];
-
+    setExtractErrors([]);
     try {
-      const result = await runBatch.mutateAsync({ workIds: ids, reEvaluateEdited: reEval });
-      for (const e of result.errors) {
-        errs.push({ workId: e.work_id, msg: e.error });
-      }
+      const accepted = await runBatch.mutateAsync({ workIds: ids, reEvaluateEdited: reEval });
+      setActiveJobId(accepted.job_id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      for (const id of ids) errs.push({ workId: id, msg });
+      let detail = msg;
+      try { detail = JSON.parse(msg).detail ?? msg; } catch { /* not JSON */ }
+      setExtractErrors(ids.map((id) => ({ workId: id, msg: detail })));
+      setIsExtracting(false);
     }
-
-    setExtractProgress({ done: ids.length, total: ids.length });
-    setExtractErrors(errs);
-    setIsExtracting(false);
-    refetchResults();
   };
 
   const handleExtractClick = () => {
@@ -471,12 +487,11 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
   const handleExtractSingle = async (workId: number) => {
     setIsExtracting(true);
     try {
-      await runSingle.mutateAsync(workId);
+      const accepted = await runSingle.mutateAsync(workId);
+      setActiveJobId(accepted.job_id);
     } catch {
-      // shown via error state if needed
+      setIsExtracting(false);
     }
-    setIsExtracting(false);
-    refetchResults();
   };
 
   const handleShowPrompt = async () => {
@@ -695,7 +710,9 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
               </svg>
-              Processing {extractProgress.done} of {extractProgress.total}…
+              {activeJobId
+                ? `Extracting: ${extractProgress.done}/${extractProgress.total} done`
+                : `Queuing ${extractProgress.total} paper${extractProgress.total !== 1 ? 's' : ''}…`}
             </span>
           )}
           {isDone && extractErrors.length === 0 && (
@@ -705,7 +722,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
           )}
           {isDone && extractErrors.length > 0 && (
             <span className="text-xs text-amber-600">
-              Done with {extractErrors.length} error{extractErrors.length !== 1 ? 's' : ''}
+              Extraction complete — {extractErrors.length} of {extractProgress!.total} failed
             </span>
           )}
           <label

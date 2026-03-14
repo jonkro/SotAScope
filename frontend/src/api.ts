@@ -16,9 +16,6 @@ import type {
   TopicListWorkOut,
   EnrichDOIResult,
   EnrichDOIBatchResult,
-  CitationResult,
-  CrossrefEnrichResult,
-  SemanticScholarEnrichResult,
   SearchImportCandidatesResult,
   DOIResolutionResult,
   DOIInfoResult,
@@ -33,10 +30,11 @@ import type {
   PDFMigrationResult,
   ExtractionSchema,
   ExtractionColumn,
-  ExtractionWorkResult,
-  ExtractionBatchResult,
   ExtractionResultsResponse,
-  GrobidEnrichResult,
+  BackgroundAccepted,
+  ExtractionJobAccepted,
+  ExtractionJobStatus,
+  LockStatusResponse,
 } from './types';
 
 class ApiError extends Error {
@@ -482,26 +480,26 @@ export function enrichDOIBatch(dois: string[]) {
 }
 
 export function fetchBackwardCitationsEnrich(workId: number) {
-  return apiFetch<CitationResult>(`/api/enrich/works/${workId}/citations/backward`, {
+  return apiFetch<BackgroundAccepted>(`/api/enrich/works/${workId}/citations/backward`, {
     method: 'POST',
   });
 }
 
 export function fetchForwardCitationsEnrich(workId: number, forceRefresh = false) {
   const sp = forceRefresh ? '?force_refresh=true' : '';
-  return apiFetch<CitationResult>(`/api/enrich/works/${workId}/citations/forward${sp}`, {
+  return apiFetch<BackgroundAccepted>(`/api/enrich/works/${workId}/citations/forward${sp}`, {
     method: 'POST',
   });
 }
 
 export function enrichFromCrossref(workId: number) {
-  return apiFetch<CrossrefEnrichResult>(`/api/enrich/works/${workId}/crossref`, {
+  return apiFetch<BackgroundAccepted>(`/api/enrich/works/${workId}/crossref`, {
     method: 'POST',
   });
 }
 
 export function enrichFromSemanticScholar(workId: number, direction: 'both' | 'backward' | 'forward' = 'both') {
-  return apiFetch<SemanticScholarEnrichResult>(
+  return apiFetch<BackgroundAccepted>(
     `/api/enrich/works/${workId}/semantic-scholar?direction=${direction}`,
     { method: 'POST' },
   );
@@ -685,17 +683,25 @@ export function reorderExtractionColumns(schemaId: number, columnIds: number[]) 
 }
 
 export function runExtraction(schemaId: number, workId: number) {
-  return apiFetch<ExtractionWorkResult>(
+  return apiFetch<ExtractionJobAccepted>(
     `/api/extraction/schemas/${schemaId}/extract/${workId}`,
     { method: 'POST' },
   );
 }
 
 export function runBatchExtraction(schemaId: number, workIds: number[], reEvaluateEdited = false) {
-  return apiFetch<ExtractionBatchResult>(`/api/extraction/schemas/${schemaId}/extract`, {
+  return apiFetch<ExtractionJobAccepted>(`/api/extraction/schemas/${schemaId}/extract`, {
     method: 'POST',
     body: JSON.stringify({ work_ids: workIds, re_evaluate_edited: reEvaluateEdited }),
   });
+}
+
+export function fetchExtractionJob(jobId: string) {
+  return apiFetch<ExtractionJobStatus>(`/api/extraction/jobs/${jobId}`);
+}
+
+export function fetchLockStatus() {
+  return apiFetch<LockStatusResponse>('/api/works/lock-status');
 }
 
 export function manualFillExtractionCell(
@@ -760,6 +766,6 @@ export function startGrobid(): Promise<{ success: boolean; message: string }> {
   return apiFetch<{ success: boolean; message: string }>('/api/grobid/start', { method: 'POST' });
 }
 
-export function enrichFromGrobid(workId: number): Promise<GrobidEnrichResult> {
-  return apiFetch<GrobidEnrichResult>(`/api/enrich/works/${workId}/grobid`, { method: 'POST' });
+export function enrichFromGrobid(workId: number): Promise<BackgroundAccepted> {
+  return apiFetch<BackgroundAccepted>(`/api/enrich/works/${workId}/grobid`, { method: 'POST' });
 }
