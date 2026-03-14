@@ -32,7 +32,7 @@ from litexplorer.schemas.enrichment import (
     SemanticScholarEnrichResult,
 )
 from litexplorer.schemas.works import WorkOut
-from litexplorer.services.enrichment import EnrichmentService
+from litexplorer.services.enrichment import EnrichmentService, normalize_identifier
 from litexplorer.services.work_lock import work_lock
 
 logger = logging.getLogger(__name__)
@@ -247,20 +247,43 @@ def _enrich_grobid_bg(work_id: int) -> None:
 
 @router.post("/doi", response_model=EnrichDOIResult)
 def enrich_by_doi(body: EnrichDOIRequest, db: Session = Depends(get_db)):
-    """Import a single work by DOI from OpenAlex (with Crossref fallback)."""
-    client = _get_client(db)
-    cr_client = _get_crossref_client(db)
-    try:
-        svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
-        work = svc.import_by_doi(body.doi)
-    finally:
-        client.close()
-        cr_client.close()
+    """Import a work by DOI or arXiv ID from OpenAlex (with appropriate fallback).
 
-    if work is None:
-        raise HTTPException(status_code=404, detail=f"DOI not found: {body.doi}")
+    Detection: strings starting with "10." are treated as DOIs; everything else
+    (modern arXiv IDs like "2301.12345" or old-style like "hep-th/0601001") is
+    treated as an arXiv ID.
+    """
+    identifier = normalize_identifier(body.doi)
 
-    return EnrichDOIResult(work=WorkOut.model_validate(work))
+    if identifier.startswith("10."):
+        # ---- DOI path (OpenAlex → Crossref fallback) ----
+        client = _get_client(db)
+        cr_client = _get_crossref_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
+            work = svc.import_by_doi(identifier)
+        finally:
+            client.close()
+            cr_client.close()
+
+        if work is None:
+            raise HTTPException(status_code=404, detail=f"DOI not found: {identifier}")
+        return EnrichDOIResult(work=WorkOut.model_validate(work), identifier_type="doi")
+
+    else:
+        # ---- arXiv ID path (OpenAlex → Semantic Scholar fallback) ----
+        client = _get_client(db)
+        ss_client = _get_ss_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=client)
+            work = svc.import_by_arxiv_id(identifier, ss_client=ss_client)
+        finally:
+            client.close()
+            ss_client.close()
+
+        if work is None:
+            raise HTTPException(status_code=404, detail=f"arXiv ID not found: {identifier}")
+        return EnrichDOIResult(work=WorkOut.model_validate(work), identifier_type="arxiv")
 
 
 @router.post("/doi/batch", response_model=EnrichDOIBatchResult)

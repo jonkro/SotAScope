@@ -19,6 +19,7 @@ class EnrichDOIResult(BaseModel):
     work: WorkOut
     source: str = "openalex"
     cached: bool = False
+    identifier_type: str = "doi"  # "doi" or "arxiv"
 
 
 class EnrichDOIBatchResult(BaseModel):

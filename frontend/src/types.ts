@@ -289,6 +289,7 @@ export interface EnrichDOIResult {
   work: WorkOut;
   source: string | null;
   cached: boolean | null;
+  identifier_type: 'doi' | 'arxiv';
 }
 
 export interface EnrichDOIBatchResult {

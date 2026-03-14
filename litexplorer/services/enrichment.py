@@ -38,6 +38,10 @@ from litexplorer.schemas.enrichment import DOICandidate, DOIResolutionResult, Se
 
 logger = logging.getLogger(__name__)
 
+# Regex patterns for arXiv ID normalization
+_ARXIV_PREFIX_RE = re.compile(r'^arxiv:', re.IGNORECASE)
+_ARXIV_VERSION_RE = re.compile(r'v\d+$', re.IGNORECASE)
+
 # Regex patterns for venue name normalization
 _ORDINAL_RE = re.compile(r'\b\d{1,3}(?:st|nd|rd|th)\b', re.IGNORECASE)
 _YEAR_RE = re.compile(r'\b(?:19|20)\d{2}\b')
@@ -59,6 +63,23 @@ def _normalize_title_for_cmp(title: str) -> str:
     title = unicodedata.normalize("NFKD", title).lower()
     title = re.sub(r"[^a-z0-9]", " ", title)
     return re.sub(r"\s+", " ", title).strip()
+
+
+def normalize_identifier(identifier: str) -> str:
+    """Normalize a DOI or arXiv ID input string.
+
+    - Strips whitespace.
+    - Removes a leading "arXiv:" prefix (case-insensitive), e.g.
+      "arXiv:2204.05862" → "2204.05862".
+    - Removes a trailing version suffix, e.g. "2402.03300v3" → "2402.03300".
+
+    DOIs (starting with "10.") pass through unchanged in practice because they
+    don't carry arXiv prefixes or version suffixes.
+    """
+    identifier = identifier.strip()
+    identifier = _ARXIV_PREFIX_RE.sub('', identifier)
+    identifier = _ARXIV_VERSION_RE.sub('', identifier)
+    return identifier
 
 
 def normalize_venue_name(name: str) -> str:
@@ -210,6 +231,51 @@ class EnrichmentService:
         self._set_cache("crossref", cr_cache_key, json.dumps(cr_raw), "permanent")
         ext_work = parse_crossref_work(cr_raw)
         return self._upsert_work(ext_work)
+
+    def import_by_arxiv_id(self, arxiv_id: str, ss_client=None) -> Work | None:
+        """Import a work by arXiv ID. OpenAlex first, then Semantic Scholar fallback.
+
+        Resolution order:
+        1. Dedup: return existing Work if arxiv_id is already in the library.
+        2. Cache: return from ApiCache if a previous OA response was cached.
+        3. OpenAlex: GET /works/arxiv:{arxiv_id}
+        4. Semantic Scholar fallback (if ss_client provided): GET /paper/ARXIV:{arxiv_id}
+
+        Returns the persisted Work, or None if all sources fail.
+        doi, openalex_id, arxiv_id, and semantic_scholar_id are populated from
+        whichever source responded.
+        """
+        arxiv_id = normalize_identifier(arxiv_id)
+
+        # 1. Dedup — avoid any API call if we already have this paper
+        existing = self.db.execute(
+            select(Work).where(Work.arxiv_id == arxiv_id)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+
+        # 2. OA cache
+        oa_cache_key = f"work:arxiv:{arxiv_id}"
+        cached = self._get_cache("openalex", oa_cache_key)
+        if cached is not None:
+            raw = json.loads(cached.response_json)
+            ext_work = parse_work(raw)
+            return self._upsert_work(ext_work)
+
+        # 3. OpenAlex API
+        raw = self.client.get_work_by_arxiv_id_raw(arxiv_id)
+        if raw is not None:
+            self._set_cache("openalex", oa_cache_key, json.dumps(raw), "permanent")
+            ext_work = parse_work(raw)
+            return self._upsert_work(ext_work)
+
+        # 4. Semantic Scholar fallback
+        if ss_client is None:
+            return None
+        ss_paper = ss_client.get_paper(f"ARXIV:{arxiv_id}")
+        if ss_paper is None:
+            return None
+        return self._upsert_work(ss_paper)
 
     def fetch_backward_citations(self, work_id: int) -> tuple[list[Work], int]:
         """Fetch and persist backward citations (references) for a work.

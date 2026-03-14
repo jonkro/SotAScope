@@ -267,7 +267,7 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                     tab === 'doi' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
                   }`}
                 >
-                  DOI Import
+                  DOI / arXiv
                 </button>
                 <button
                   onClick={() => switchTab('bibtex')}
@@ -275,7 +275,7 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                     tab === 'bibtex' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
                   }`}
                 >
-                  BibTeX Import
+                  BibTeX
                 </button>
                 <button
                   onClick={() => switchTab('search')}
@@ -291,21 +291,26 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                 {tab === 'doi' && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      DOIs (one per line, or comma-separated)
+                      DOIs / arXiv IDs (one per line, or comma-separated)
                     </label>
                     <textarea
                       rows={5}
                       value={doiInput}
                       onChange={(e) => setDoiInput(e.target.value)}
-                      placeholder="10.1145/1234567.1234568&#10;10.1109/TNET.2020.1234567"
+                      placeholder="10.1145/1234567.1234568&#10;2301.12345&#10;arXiv:2402.03300v3"
                       className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
                     />
+                    <p className="mt-1.5 text-xs text-gray-500">
+                      DOIs and arXiv IDs can be freely mixed. The{' '}
+                      <code className="font-mono bg-gray-100 px-0.5 rounded">arXiv:</code> prefix and
+                      version suffixes (v1, v2, …) are stripped automatically.
+                    </p>
                     <button
                       onClick={() => doiMutation.mutate()}
                       disabled={isPending}
                       className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
                     >
-                      {doiMutation.isPending ? 'Importing...' : 'Import DOIs'}
+                      {doiMutation.isPending ? 'Importing...' : 'Import'}
                     </button>
                   </div>
                 )}
@@ -325,7 +330,7 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                       disabled={isPending}
                       className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
                     >
-                      {bibtexMutation.isPending ? 'Importing...' : isResolving ? 'Resolving DOIs...' : 'Import BibTeX'}
+                      {bibtexMutation.isPending ? 'Importing...' : isResolving ? 'Resolving DOIs...' : 'Import'}
                     </button>
                   </div>
                 )}

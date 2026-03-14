@@ -185,6 +185,22 @@ class OpenAlexClient(ExternalLiteratureClient):
         resp.raise_for_status()
         return parse_work(resp.json())
 
+    def get_work_by_arxiv_id(self, arxiv_id: str) -> ExternalWork | None:
+        """Fetch a single work by arXiv ID. Returns None if not found."""
+        resp = self._http.get(f"/works/arxiv:{arxiv_id}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return parse_work(resp.json())
+
+    def get_work_by_arxiv_id_raw(self, arxiv_id: str) -> dict | None:
+        """Fetch raw JSON for a single work by arXiv ID. Returns None if not found."""
+        resp = self._http.get(f"/works/arxiv:{arxiv_id}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
     def get_work_by_doi_raw(self, doi: str) -> dict | None:
         """Fetch raw JSON for a single work by DOI. Returns None if not found."""
         resp = self._http.get(f"/works/doi:{doi}")

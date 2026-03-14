@@ -8,7 +8,9 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from litexplorer.external.base import ExternalWork
 from litexplorer.external.openalex import OpenAlexClient, parse_work
+from litexplorer.external.semantic_scholar import SemanticScholarClient
 from litexplorer.models.base import Base
 from litexplorer.models.cache import ApiCache
 from litexplorer.models.library import (
@@ -353,3 +355,139 @@ class TestVenueAliasAutoCreation:
         aliases = db_session.execute(select(VenueAlias)).scalars().all()
         assert len(aliases) == 1
         assert aliases[0].alias == "SIGCOMM '18"
+
+
+# ---------------------------------------------------------------------------
+# import_by_arxiv_id
+# ---------------------------------------------------------------------------
+
+# Realistic OA raw response for an arXiv-only paper
+_ARXIV_OA_RAW = {
+    "id": "https://openalex.org/W3333333333",
+    "doi": None,
+    "title": "An arXiv Paper",
+    "display_name": "An arXiv Paper",
+    "publication_year": 2023,
+    "cited_by_count": 10,
+    "abstract_inverted_index": {"Hello": [0], "world.": [1]},
+    "primary_location": {
+        "source": None,
+        "is_primary": True,
+        "landing_page_url": "https://arxiv.org/abs/2301.12345",
+    },
+    "locations": [
+        {
+            "source": None,
+            "is_primary": True,
+            "landing_page_url": "https://arxiv.org/abs/2301.12345",
+            "pdf_url": "https://arxiv.org/pdf/2301.12345",
+        }
+    ],
+    "authorships": [],
+    "referenced_works": [],
+    "counts_by_year": [],
+}
+
+# ExternalWork returned by the S2 client when OA has no data
+_ARXIV_S2_PAPER = ExternalWork(
+    title="An arXiv Paper (from S2)",
+    doi=None,
+    arxiv_id="2301.12345",
+    semantic_scholar_id="s2abc123",
+    publication_year=2023,
+    citation_count=8,
+)
+
+
+class TestImportByArxivId:
+    @pytest.fixture()
+    def mock_ss_client(self):
+        return MagicMock(spec=SemanticScholarClient)
+
+    def test_import_via_openalex(self, service, mock_client, db_session):
+        """OA returns data → work created with openalex_id and arxiv_id."""
+        mock_client.get_work_by_arxiv_id_raw.return_value = _ARXIV_OA_RAW
+
+        work = service.import_by_arxiv_id("2301.12345")
+
+        assert work is not None
+        assert work.arxiv_id == "2301.12345"
+        assert work.openalex_id == "W3333333333"
+        assert work.doi is None
+        assert work.semantic_scholar_id is None
+        mock_client.get_work_by_arxiv_id_raw.assert_called_once_with("2301.12345")
+
+    def test_fallback_to_s2_when_oa_misses(self, service, mock_client, mock_ss_client, db_session):
+        """OA returns None → S2 fallback called; work created with semantic_scholar_id."""
+        mock_client.get_work_by_arxiv_id_raw.return_value = None
+        mock_ss_client.get_paper.return_value = _ARXIV_S2_PAPER
+
+        work = service.import_by_arxiv_id("2301.12345", ss_client=mock_ss_client)
+
+        assert work is not None
+        assert work.arxiv_id == "2301.12345"
+        assert work.semantic_scholar_id == "s2abc123"
+        assert work.openalex_id is None
+        mock_ss_client.get_paper.assert_called_once_with("ARXIV:2301.12345")
+
+    def test_s2_not_called_when_oa_succeeds(self, service, mock_client, mock_ss_client, db_session):
+        """S2 is never contacted if OA returns data."""
+        mock_client.get_work_by_arxiv_id_raw.return_value = _ARXIV_OA_RAW
+
+        service.import_by_arxiv_id("2301.12345", ss_client=mock_ss_client)
+
+        mock_ss_client.get_paper.assert_not_called()
+
+    def test_dedup_returns_existing_without_api_call(self, service, mock_client, db_session):
+        """If arxiv_id already exists in DB, return it without any external call."""
+        # Seed the DB directly
+        existing = Work(arxiv_id="2301.12345", title="Already Here", publication_year=2020)
+        db_session.add(existing)
+        db_session.commit()
+
+        result = service.import_by_arxiv_id("2301.12345")
+
+        assert result.id == existing.id
+        mock_client.get_work_by_arxiv_id_raw.assert_not_called()
+
+    def test_returns_none_when_both_sources_fail(self, service, mock_client, mock_ss_client):
+        """Both OA and S2 return nothing → return None."""
+        mock_client.get_work_by_arxiv_id_raw.return_value = None
+        mock_ss_client.get_paper.return_value = None
+
+        result = service.import_by_arxiv_id("9999.99999", ss_client=mock_ss_client)
+
+        assert result is None
+
+    def test_returns_none_without_ss_client_when_oa_misses(self, service, mock_client):
+        """If OA misses and no ss_client provided, return None (no error)."""
+        mock_client.get_work_by_arxiv_id_raw.return_value = None
+
+        result = service.import_by_arxiv_id("9999.99999")
+
+        assert result is None
+
+    def test_caches_oa_response(self, service, mock_client, db_session):
+        mock_client.get_work_by_arxiv_id_raw.return_value = _ARXIV_OA_RAW
+
+        service.import_by_arxiv_id("2301.12345")
+
+        cached = db_session.execute(
+            select(ApiCache).where(
+                ApiCache.source == "openalex",
+                ApiCache.query_key == "work:arxiv:2301.12345",
+            )
+        ).scalar_one_or_none()
+        assert cached is not None
+        assert cached.cache_type == "permanent"
+
+    def test_uses_oa_cache_on_second_call(self, service, mock_client, db_session):
+        """After first import, the OA API is not called again even if DB dedup is bypassed."""
+        mock_client.get_work_by_arxiv_id_raw.return_value = _ARXIV_OA_RAW
+
+        work1 = service.import_by_arxiv_id("2301.12345")
+        work2 = service.import_by_arxiv_id("2301.12345")
+
+        # Dedup fires on second call (work already in DB), so API is called exactly once
+        assert mock_client.get_work_by_arxiv_id_raw.call_count == 1
+        assert work1.id == work2.id
