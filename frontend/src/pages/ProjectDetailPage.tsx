@@ -12,6 +12,7 @@ import CitationTimeline from '../components/CitationTimeline';
 import TimelineControls, { type CandidateFilter } from '../components/TimelineControls';
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
 import ExtractionRunView from '../components/ExtractionRunView';
+import ProjectVenueTiersTab from '../components/ProjectVenueTiersTab';
 import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
   useAddIgnoredWork, useRemoveIgnoredWork, useRemoveWorkFromTopicList, useTopicList,
@@ -27,7 +28,7 @@ import type { TimelineNeighborWork, ProjectNote } from '../types';
 import { useExtractionSchemas, useExtractionSchema } from '../hooks/useExtraction';
 
 // `schema:{id}` tabs are promoted extraction schema tabs
-type ActiveTab = 'timeline' | 'lists' | 'notes' | 'tables' | string;
+type ActiveTab = 'timeline' | 'lists' | 'notes' | 'tables' | 'venue-tiers' | string;
 
 interface ProjectViewSettings {
   activeTab?: string;
@@ -138,7 +139,7 @@ export default function ProjectDetailPage() {
           if (promoted.includes(schemaId)) return `schema:${schemaId}` as ActiveTab;
         }
       }
-    } else if (urlTab && (['timeline', 'lists', 'notes', 'tables'] as string[]).includes(urlTab)) {
+    } else if (urlTab && (['timeline', 'lists', 'notes', 'tables', 'venue-tiers'] as string[]).includes(urlTab)) {
       return urlTab as ActiveTab;
     }
     const savedTab = saved.activeTab ?? 'timeline';
@@ -592,6 +593,16 @@ export default function ProjectDetailPage() {
             )}
           </button>
           <button
+            onClick={() => setActiveTab('venue-tiers')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
+              activeTab === 'venue-tiers'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Venue Tiers
+          </button>
+          <button
             onClick={() => setActiveTab('tables')}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'tables'
@@ -987,6 +998,10 @@ export default function ProjectDetailPage() {
               })}
             </div>
           </div>
+        )}
+
+        {activeTab === 'venue-tiers' && (
+          <ProjectVenueTiersTab projectId={projectId} />
         )}
 
         {/* Promoted schema tabs content */}

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from litexplorer.models.base import Base
@@ -27,6 +27,9 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     ignored_work_associations: Mapped[list["ProjectIgnoredWork"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    venue_tier_overrides: Mapped[list["ProjectVenueTier"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
 
@@ -85,3 +88,18 @@ class ProjectIgnoredWork(Base):
 
     project: Mapped["Project"] = relationship(back_populates="ignored_work_associations")
     work: Mapped["Work"] = relationship()
+
+
+class ProjectVenueTier(Base):
+    """Per-project venue tier override.  Absence = inherit global Venue.tier."""
+
+    __tablename__ = "project_venue_tiers"
+    __table_args__ = (UniqueConstraint("project_id", "venue_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    venue_id: Mapped[int] = mapped_column(ForeignKey("venues.id", ondelete="CASCADE"))
+    tier: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    project: Mapped["Project"] = relationship(back_populates="venue_tier_overrides")
+    venue: Mapped["Venue"] = relationship()

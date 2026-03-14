@@ -220,6 +220,19 @@ def _migrate_schema() -> None:
                     ))
                     db.commit()
 
+        # Create project_venue_tiers table if it doesn't exist
+        if "project_venue_tiers" not in existing_tables:
+            db.execute(text(
+                "CREATE TABLE project_venue_tiers ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,"
+                "  venue_id INTEGER NOT NULL REFERENCES venues(id) ON DELETE CASCADE,"
+                "  tier INTEGER NOT NULL,"
+                "  UNIQUE(project_id, venue_id)"
+                ")"
+            ))
+            db.commit()
+
         # Create chat_messages table if it doesn't exist
         if "chat_messages" not in existing_tables:
             db.execute(text(

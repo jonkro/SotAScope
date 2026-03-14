@@ -181,6 +181,15 @@ export interface ProjectDetail extends ProjectOut {
   ignored_works: ProjectIgnoredWorkOut[];
 }
 
+export interface ProjectVenueTierOut {
+  venue_id: number;
+  venue_name: string;
+  all_names: string[];
+  global_tier: number;
+  local_tier: number | null;
+  effective_tier: number;
+}
+
 // ---- Timeline ----
 
 export interface CitationsByYearEntry {

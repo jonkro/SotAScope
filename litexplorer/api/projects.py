@@ -4,15 +4,15 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from litexplorer.services.work_lock import work_lock
 
 logger = logging.getLogger(__name__)
 
 from litexplorer.api.deps import get_db
-from litexplorer.models.library import Work
-from litexplorer.models.project import Project, ProjectIgnoredWork, TopicList, TopicListWork
+from litexplorer.models.library import Citation, Venue, Work
+from litexplorer.models.project import Project, ProjectIgnoredWork, ProjectVenueTier, TopicList, TopicListWork
 from litexplorer.schemas.projects import (
     ProjectCreate,
     ProjectDetail,
@@ -20,6 +20,8 @@ from litexplorer.schemas.projects import (
     ProjectIgnoredWorkOut,
     ProjectOut,
     ProjectUpdate,
+    ProjectVenueTierOut,
+    ProjectVenueTierUpdate,
     TopicListCreate,
     TopicListDetail,
     TopicListOut,
@@ -382,4 +384,163 @@ def remove_ignored_work(
     if not assoc:
         raise HTTPException(status_code=404, detail="Work not in ignored list")
     db.delete(assoc)
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Per-project venue tiers
+# ---------------------------------------------------------------------------
+
+def _preferred_venue_name(venue: Venue) -> str:
+    """Return the preferred display name: first alias by sort_order, else venue.name."""
+    if venue.aliases:
+        return venue.aliases[0].alias
+    return venue.name
+
+
+def _project_venue_ids(project_id: int, db: Session) -> set[int]:
+    """Return all venue IDs that appear in this project (seeds + citation neighbors)."""
+    # Seed work IDs
+    seed_ids: set[int] = set(
+        db.scalars(
+            select(TopicListWork.work_id).join(
+                TopicList, TopicListWork.topic_list_id == TopicList.id
+            ).where(TopicList.project_id == project_id)
+        ).all()
+    )
+
+    # Neighbor work IDs (backward + forward citations of seeds)
+    neighbor_ids: set[int] = set()
+    if seed_ids:
+        bwd = db.execute(
+            select(Citation.cited_work_id).where(Citation.citing_work_id.in_(seed_ids))
+        ).scalars().all()
+        fwd = db.execute(
+            select(Citation.citing_work_id).where(Citation.cited_work_id.in_(seed_ids))
+        ).scalars().all()
+        neighbor_ids = set(bwd) | set(fwd)
+
+    all_work_ids = seed_ids | neighbor_ids
+    if not all_work_ids:
+        return set()
+
+    venue_ids: set[int] = set(
+        db.scalars(
+            select(Work.venue_id).where(
+                Work.id.in_(all_work_ids),
+                Work.venue_id.is_not(None),
+            ).distinct()
+        ).all()
+    )
+    return venue_ids
+
+
+@router.get("/{project_id}/venue-tiers", response_model=list[ProjectVenueTierOut])
+def list_project_venue_tiers(project_id: int, db: Session = Depends(get_db)):
+    """Return tier info for all venues relevant to this project."""
+    _get_project(db, project_id)
+
+    venue_ids = _project_venue_ids(project_id, db)
+    if not venue_ids:
+        return []
+
+    # Load venues with aliases eagerly (single extra query, avoids N+1)
+    venues = db.scalars(
+        select(Venue)
+        .where(Venue.id.in_(venue_ids))
+        .options(selectinload(Venue.aliases))
+        .order_by(Venue.name)
+    ).all()
+
+    # Load all local overrides for this project in one query
+    overrides: dict[int, int] = {}
+    if venue_ids:
+        rows = db.execute(
+            select(ProjectVenueTier.venue_id, ProjectVenueTier.tier).where(
+                ProjectVenueTier.project_id == project_id,
+                ProjectVenueTier.venue_id.in_(venue_ids),
+            )
+        ).all()
+        overrides = {vid: tier for vid, tier in rows}
+
+    result: list[ProjectVenueTierOut] = []
+    for venue in venues:
+        local_tier = overrides.get(venue.id)
+        alias_names = [a.alias for a in venue.aliases]  # already sorted by sort_order
+        # all_names: deduplicated list of (alias names) + canonical name
+        all_names = alias_names + ([] if venue.name in alias_names else [venue.name])
+        result.append(
+            ProjectVenueTierOut(
+                venue_id=venue.id,
+                venue_name=_preferred_venue_name(venue),
+                all_names=all_names,
+                global_tier=venue.tier,
+                local_tier=local_tier,
+                effective_tier=local_tier if local_tier is not None else venue.tier,
+            )
+        )
+    return result
+
+
+@router.put(
+    "/{project_id}/venue-tiers/{venue_id}",
+    response_model=ProjectVenueTierOut,
+)
+def set_project_venue_tier(
+    project_id: int,
+    venue_id: int,
+    body: ProjectVenueTierUpdate,
+    db: Session = Depends(get_db),
+):
+    """Create or update a per-project venue tier override."""
+    _get_project(db, project_id)
+    venue = db.get(Venue, venue_id)
+    if not venue:
+        raise HTTPException(status_code=404, detail="Venue not found")
+
+    # Load aliases for the response
+    db.refresh(venue)
+    override = db.scalars(
+        select(ProjectVenueTier).where(
+            ProjectVenueTier.project_id == project_id,
+            ProjectVenueTier.venue_id == venue_id,
+        )
+    ).one_or_none()
+
+    if override:
+        override.tier = body.tier
+    else:
+        override = ProjectVenueTier(
+            project_id=project_id, venue_id=venue_id, tier=body.tier
+        )
+        db.add(override)
+    db.commit()
+
+    alias_names = [a.alias for a in venue.aliases]
+    all_names = alias_names + ([] if venue.name in alias_names else [venue.name])
+    return ProjectVenueTierOut(
+        venue_id=venue.id,
+        venue_name=_preferred_venue_name(venue),
+        all_names=all_names,
+        global_tier=venue.tier,
+        local_tier=override.tier,
+        effective_tier=override.tier,
+    )
+
+
+@router.delete("/{project_id}/venue-tiers/{venue_id}", status_code=204)
+def reset_project_venue_tier(
+    project_id: int, venue_id: int, db: Session = Depends(get_db)
+):
+    """Delete a per-project venue tier override (reverts to global tier)."""
+    _get_project(db, project_id)
+    override = db.scalars(
+        select(ProjectVenueTier).where(
+            ProjectVenueTier.project_id == project_id,
+            ProjectVenueTier.venue_id == venue_id,
+        )
+    ).one_or_none()
+    if not override:
+        raise HTTPException(status_code=404, detail="No local override for this venue")
+    db.delete(override)
     db.commit()

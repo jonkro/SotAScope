@@ -96,3 +96,22 @@ class ProjectOut(BaseModel):
 class ProjectDetail(ProjectOut):
     topic_lists: list[TopicListOut] = []
     ignored_works: list[ProjectIgnoredWorkOut] = []
+
+
+# ---------------------------------------------------------------------------
+# Per-project venue tiers
+# ---------------------------------------------------------------------------
+
+class ProjectVenueTierOut(BaseModel):
+    venue_id: int
+    venue_name: str          # preferred alias or canonical name
+    all_names: list[str]     # all aliases + canonical name, for client-side search
+    global_tier: int
+    local_tier: int | None   # None = no override (inheriting global)
+    effective_tier: int
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectVenueTierUpdate(BaseModel):
+    tier: int

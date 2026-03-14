@@ -19,6 +19,7 @@ from litexplorer.schemas.timeline import (
     TimelineSeedWork,
 )
 from litexplorer.schemas.projects import TopicListOut
+from litexplorer.services.venue_tiers import bulk_resolve_venue_tiers
 
 router = APIRouter(prefix="/api/projects", tags=["timeline"])
 
@@ -171,19 +172,16 @@ def get_project_timeline(
         ).scalars().all()
         seeds_with_pdfs = set(pdf_rows)
 
-    # 6. Tier-based venue ids — read directly from Venue.tier
+    # 6. Tier-based venue ids — resolved via project overrides first, then global
     tier1_venue_ids: list[int] = []
     ignored_venue_ids: list[int] = []
 
-    # Collect all venue_ids referenced by works in this timeline
     all_venue_ids = {
         w.venue_id for w in works_by_id.values() if w.venue_id is not None
     }
     if all_venue_ids:
-        venue_rows = db.execute(
-            select(Venue.id, Venue.tier).where(Venue.id.in_(all_venue_ids))
-        ).all()
-        for vid, tier in venue_rows:
+        effective_tiers = bulk_resolve_venue_tiers(project_id, all_venue_ids, db)
+        for vid, tier in effective_tiers.items():
             if tier == 1:
                 tier1_venue_ids.append(vid)
             elif tier == 3:

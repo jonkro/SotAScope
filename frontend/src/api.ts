@@ -12,6 +12,7 @@ import type {
   ProjectOut,
   ProjectDetail,
   ProjectIgnoredWorkOut,
+  ProjectVenueTierOut,
   TopicListDetail,
   TopicListWorkOut,
   EnrichDOIResult,
@@ -380,6 +381,25 @@ export function addIgnoredWork(projectId: number, workId: number) {
 
 export function removeIgnoredWork(projectId: number, workId: number) {
   return apiFetch<void>(`/api/projects/${projectId}/ignored-works/${workId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ---- Project Venue Tiers ----
+
+export function fetchProjectVenueTiers(projectId: number) {
+  return apiFetch<ProjectVenueTierOut[]>(`/api/projects/${projectId}/venue-tiers`);
+}
+
+export function setProjectVenueTier(projectId: number, venueId: number, tier: number) {
+  return apiFetch<ProjectVenueTierOut>(`/api/projects/${projectId}/venue-tiers/${venueId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ tier }),
+  });
+}
+
+export function resetProjectVenueTier(projectId: number, venueId: number) {
+  return apiFetch<void>(`/api/projects/${projectId}/venue-tiers/${venueId}`, {
     method: 'DELETE',
   });
 }
