@@ -60,6 +60,14 @@ All API responses are cached in an `api_cache` table with source and query key.
 ### Auto-enrichment
 When a work is added to a topic list (becoming a seed), the system automatically fetches backward citations, forward citations, and Crossref venue metadata as a BackgroundTask. Forward citation fetch also refreshes the seed work's own metadata (`citation_count`, `citations_by_year`) via `_refresh_work_metadata()`.
 
+### DOI / arXiv import
+The DOI import endpoint (`/api/enrich/doi`) also accepts arXiv IDs. Detection heuristic: input starting with `10.` is a DOI; anything else is treated as an arXiv ID. Old-style arXiv IDs contain slashes (e.g., `hep-th/0601001`) so "/" is NOT a reliable DOI indicator — the `10.` prefix is the only unambiguous signal.
+
+For arXiv ID import, the resolution chain is:
+1. OpenAlex lookup by arXiv ID (filter `ids.arxiv`)
+2. If OpenAlex has no match: Semantic Scholar lookup (`GET /paper/ARXIV:{id}`)
+3. Store with `arxiv_id` as the primary key; DOI and openalex_id populated if the source provides them.
+
 ### DOI resolution
 For works without a DOI, the system can auto-resolve via Crossref fuzzy search (score >= 80, ratio to 2nd candidate >= 1.5, marks `doi_auto_resolved = true`) or present candidates for manual confirmation. Batch resolution is supported.
 
@@ -189,7 +197,8 @@ frontend/src/
     ├── TimelineEnrichBar.tsx   # Enrichment progress; reads GROBID status from query cache
     │                           #   (no new fetch); accepts onSelectWork prop
     ├── ExtractionRunView.tsx   # Standalone; readOnlyPaperSelection prop for promoted tabs
-    ├── ImportDialog.tsx        # 3-tab import (DOI list, BibTeX, Search by title);
+    ├── ImportDialog.tsx        # 3-tab import (DOI / arXiv, BibTeX, Search by title); first tab
+    │                           #   auto-detects input type (10. prefix = DOI, else arXiv ID);
     │                           #   optional post-import topic list assignment via projectTopicLists prop
     ├── ColumnProposalCard.tsx  # LLM column proposal states; UserCancelledError exported for silent cancel
     └── ...
@@ -262,7 +271,12 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Unpaywall requires contact email**: OA PDF fetch via Unpaywall is only attempted when `api_contact_email` is configured in Settings. Without it, only arXiv is tried (works that have `arxiv_id`). Works that have only a DOI but no `arxiv_id` and no configured email will return 404 from the fetch endpoint.
 - **LLM local server auth**: `list_models()` correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 - **Column-proposal re-prompting (not implemented)**: when all five `parseProposals()` strategies fail and the LLM response contains no parseable proposal, the UI silently shows the message as plain text. A possible future enhancement is to detect this case client-side and automatically re-prompt the LLM asking it to reformat its answer as a fenced `column-proposal` block.
-- **GROBID reference extraction**: Requires Docker (`docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf`). Title-only resolution relies on first-author + year matching (no venue); some references will fail to resolve. CRF-only image is lightweight and fast; for better accuracy use the `-full` image (needs GPU). Settings page has a "Start" button (calls `POST /api/grobid/start`) that appears after a failed "Test connection" check; on success waits 5 s and auto-re-tests.
+- **GROBID reference extraction**: Requires Docker (`docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf`). CRF-only image is lightweight and fast; for better accuracy use the `-full` image (needs GPU). Settings page has a "Start" button (calls `POST /api/grobid/start`) that appears after a failed "Test connection" check; on success waits 5 s and auto-re-tests. Reference resolution follows a 4-step chain per extracted reference:
+  1. DOI present in GROBID output → existing DOI import path
+  2. arXiv ID present → arXiv import path (OpenAlex → S2 fallback, as above)
+  3. Neither → S2 title search with verification: match first-author surname AND year (±1). If S2 provides a DOI, validate it against Crossref (title/author comparison) — discard the DOI if it resolves to a different work, but keep the S2 CorpusId.
+  4. No match → store as unresolved reference with GROBID metadata (title, authors, year, raw_url), shown in the UI with an "unresolved" badge for manual resolution later.
+- **S2 CorpusId as last-resort identifier**: papers imported via `semantic_scholar_id` only (no DOI, arXiv ID, or OpenAlex ID) cannot be enriched through OpenAlex. Citation graph data for these relies entirely on S2's API, subject to rate limits (see above).
 
 ---
 
