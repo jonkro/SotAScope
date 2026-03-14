@@ -260,6 +260,90 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **BackgroundTask DB sessions**: background functions must NOT use the request-scoped `db` session (FastAPI closes it after the response is sent). Each background function creates its own session via `SessionLocal()` from `litexplorer.database` and closes it in a `finally` block alongside `work_lock.release()`. In tests, `SessionLocal()` connects to the real SQLite file (not the in-memory test DB), so background functions fail silently at the DB lookup stage — this is acceptable; API tests only assert the 202 status code. Service-layer behavior is covered by `test_enrichment_service.py`.
 - **409 on destructive operations**: `DELETE /api/works/{id}` and `POST /api/works/{target_id}/merge/{source_id}` both check `work_lock.is_locked()` before proceeding and return 409 if a background task is in progress for any involved work ID.
 - **Auto-enrichment on topic list addition**: `add_work_to_topic_list` in `api/projects.py` schedules `_auto_enrich_bg` (backward citations + forward citations + Crossref) as a BackgroundTask when a work is added to a topic list. If the work is already locked, enrichment is silently skipped (the addition still succeeds). `GET /api/works/lock-status` returns `{"locks": {"<work_id>": "<task>", …}}` for frontend polling.
+- **Project venue tier resolution**: always use the helper function `resolve_venue_tier(project_id, venue_id, db)` rather than reading `Venue.tier` directly when in a project context. This ensures local overrides are respected.
+- **Merge is absorptive**: merging A into B deletes A. All foreign keys pointing to A must be repointed to B before deletion. Check: TopicList, TopicListWork, ProjectIgnoredWork, ProjectVenueTier, WorkNote (project_id), ChatSession (project_id), ExtractionSchema (project_id).
+- **Export uses stable IDs**: the export manifest references works by DOI or arXiv ID, venues by OpenAlex ID or ISSN, never by SQLite row IDs. This makes archives portable across LitExplorer instances.
+
+---
+
+## Planned features (in progress)
+
+### 1. Per-project venue tiers
+
+**Design:**
+- New table `ProjectVenueTier` (project_id FK, venue_id FK, tier INTEGER, unique constraint on project_id+venue_id). Absence of a row = inherit global tier.
+- When a global tier changes, the project tier is NOT updated if a `ProjectVenueTier` row exists for that venue — the local override persists.
+- Resolving the effective tier for a venue in a project context: check `ProjectVenueTier` first, fall back to `Venue.tier`.
+- Timeline filtering must use the resolved (project-specific) tier, not the global tier.
+
+**Frontend:**
+- A new rightmost tab "Venue Tiers" in the project view. Resembles the global venue page but simplified: no venue detail/focus, just a flat list with a tier dropdown per venue. Shows "(global)" or "(local)" next to the dropdown. A small reset-to-global "✕" button appears next to venues with a local override.
+- The dropdown only shows venues that appear in the project (seeds + candidates).
+
+**Backend:**
+- New API endpoints:
+  - `GET  /api/projects/{id}/venue-tiers` → list of `{venue_id, tier, is_local}`
+  - `PUT  /api/projects/{id}/venue-tiers/{venue_id}` → set local override
+  - `DELETE /api/projects/{id}/venue-tiers/{venue_id}` → reset to global
+- Timeline endpoint must accept project_id and return resolved tiers, or the frontend resolves tiers client-side after fetching project overrides.
+
+---
+
+### 2. Project merging (merge A into B, A is deleted)
+
+**Rules:**
+- Topic lists: same name → merge memberships. Different names → move as-is.
+- Ignored works: if a work is a seed in one project and ignored in the other, seeds win (auto-resolved, no user prompt).
+- Extraction schemas: same name → user chooses "rename incoming" or "drop incoming". No column-level merge.
+- Extraction results (WorkNotes): kept for schemas that survive the merge. Dropped schemas' notes remain in the DB (they are general work notes) but lose their schema association.
+- Per-project venue tiers: if both projects have a local override for the same venue, present a conflict dialog. Options per venue: keep A's tier, keep B's tier. Bulk option: "always keep higher (lower number) tier".
+- Chat sessions: all sessions from A are repointed to B.
+- Project-scoped work notes (project_id = A) → repointed to B.
+- localStorage: not migrated — timeline settings and promoted schemas for A are lost. Acceptable.
+- Deep links: old project A URLs will 404. No redirect mapping (acceptable).
+
+**Backend:**
+- New endpoint: `POST /api/projects/{target_id}/merge/{source_id}`
+  Body: `{ schema_decisions: {schema_id: "rename"/"drop", new_name?: string}, venue_tier_decisions: {venue_id: tier} }`
+  Returns the merged project.
+- A pre-merge preview endpoint:
+  `GET /api/projects/{target_id}/merge-preview/{source_id}`
+  Returns: `{ topic_list_merges: [...], schema_conflicts: [{source_schema, target_schema}], venue_tier_conflicts: [{venue_id, venue_name, source_tier, target_tier}], ignored_work_overrides: [work_ids where seed wins over ignored] }`
+
+**Frontend:**
+- Merge dialog accessible from project settings or a merge button.
+- Step 1: choose source project A from a dropdown.
+- Step 2: review preview — show schema conflicts with rename/drop controls, venue tier conflicts with per-venue dropdowns + "always max" bulk button.
+- Step 3: confirm and execute.
+
+---
+
+### 3. Import / Export
+
+#### BibTeX export
+- Library-wide: export all works as BibTeX.
+- Project-scoped: export dialog with paper selector (select all, none, per-topic-list checkboxes — same pattern as extraction table paper selector).
+- Endpoint: `GET /api/works/export/bibtex?work_ids=...`
+
+#### Project export (.zip)
+- Contents: JSON manifest (format_version: 1) + BibTeX file for all seed works.
+- Manifest includes: project metadata, topic lists with work memberships (works referenced by DOI/arXiv ID — never by DB row ID), extraction schemas with columns, extraction results (WorkNotes for schema columns), per-project venue tiers, chat sessions + messages, project-scoped work notes, citation edges between included works.
+- Only seeds are exported. Candidates are NOT included — the importer re-enriches to discover neighbors.
+- PDF/txt export: NOT implemented yet but the manifest schema reserves a "files" key (empty array for now). The export dialog will have a disabled checkbox "Include paper content (PDFs/text)" with a tooltip "Coming soon". This ensures the ZIP structure and manifest are forward-compatible.
+- Endpoint: `GET /api/projects/{id}/export` → streams .zip
+
+#### Project import (.zip)
+- Endpoint: `POST /api/projects/import` (multipart upload)
+- Import steps:
+  1. Parse manifest, validate format_version.
+  2. Import works from BibTeX — match by DOI/arXiv ID against existing library. 100% matches (same DOI or arXiv ID) → auto-link, no user action. New works → create in library.
+  3. Automatically trigger library sanitization for new works (title+year dedup). 100% matches auto-merged; ambiguous matches surfaced to user.
+  4. If project name already exists: offer "merge into existing" (triggers project merge flow from feature 2 — incoming project is temporarily named "$name - incoming") or "rename incoming project".
+  5. Recreate topic lists, schema definitions, extraction results, venue tier overrides, chat sessions, work notes.
+  6. Auto-trigger enrichment (backward + forward citations + Crossref) for all imported seed works, same as the existing auto-enrich-on-topic-list-add logic.
+- Venue matching: match imported venues by OpenAlex ID or ISSN first, then by normalized name. Create new venues only if no match.
+- Schema column sort_order: re-index after import to avoid collisions.
+- Import idempotency: if the same archive is imported twice, DOI/arXiv matching prevents duplicate works; duplicate topic lists within the same project are detected by name and merged.
 
 ---
 
