@@ -30,6 +30,7 @@ from litexplorer.schemas.projects import (
     TopicListWorkOut,
 )
 from litexplorer.schemas.works import WorkOut
+from litexplorer.schemas.project_merge import MergeDecisions, MergePreview
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -544,3 +545,49 @@ def reset_project_venue_tier(
         raise HTTPException(status_code=404, detail="No local override for this venue")
     db.delete(override)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Project merging
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{target_id}/merge-preview/{source_id}",
+    response_model=MergePreview,
+)
+def get_merge_preview(
+    target_id: int, source_id: int, db: Session = Depends(get_db)
+):
+    """Preview what merging source into target would do."""
+    if target_id == source_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a project into itself")
+    if not db.get(Project, target_id):
+        raise HTTPException(status_code=404, detail="Target project not found")
+    if not db.get(Project, source_id):
+        raise HTTPException(status_code=404, detail="Source project not found")
+
+    from litexplorer.services.project_merge import merge_preview as _preview
+    return _preview(target_id, source_id, db)
+
+
+@router.post(
+    "/{target_id}/merge/{source_id}",
+    response_model=ProjectDetail,
+)
+def merge_project(
+    target_id: int,
+    source_id: int,
+    body: MergeDecisions,
+    db: Session = Depends(get_db),
+):
+    """Merge source project into target. Source is deleted after merge."""
+    if target_id == source_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a project into itself")
+    if not db.get(Project, target_id):
+        raise HTTPException(status_code=404, detail="Target project not found")
+    if not db.get(Project, source_id):
+        raise HTTPException(status_code=404, detail="Source project not found")
+
+    from litexplorer.services.project_merge import execute_merge as _merge
+    merged = _merge(target_id, source_id, body, db)
+    return _project_detail(merged)
