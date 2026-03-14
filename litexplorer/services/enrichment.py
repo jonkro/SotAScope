@@ -1414,8 +1414,14 @@ class EnrichmentService:
         if ref.title and ss_client is not None and not skip_s2:
             ref_first_surname: str | None = None
             if ref.authors:
-                parts = ref.authors[0].strip().split()
-                ref_first_surname = parts[-1].lower() if parts else None
+                first_author = ref.authors[0].strip()
+                if "," in first_author:
+                    # "Smith, John" or "Smith, John M." → surname is before the comma
+                    ref_first_surname = first_author.split(",")[0].strip().lower() or None
+                else:
+                    # "John Smith" or "John M. Smith" → surname is the last word
+                    parts = first_author.split()
+                    ref_first_surname = parts[-1].lower() if parts else None
 
             try:
                 raw_items = ss_client.search_by_title(ref.title, limit=5)

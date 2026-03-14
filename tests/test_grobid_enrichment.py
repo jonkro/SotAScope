@@ -563,6 +563,59 @@ class TestGrobidResolutionChain:
         assert mock_oa.get_work_by_doi_raw.call_count == 0
 
     # ------------------------------------------------------------------
+    # PATH C: GROBID author in "Lastname, Firstname" comma format
+    # ------------------------------------------------------------------
+
+    def test_s2_title_search_comma_format_author_matches(self, db_session):
+        """PATH C: GROBID produces author as 'Smith, John' (comma-separated) while
+        S2 returns 'John M. Smith'. The surname extraction must use the part before
+        the comma so 'smith' == 'smith' and the reference resolves correctly.
+        """
+        work = _make_work(db_session, title="Seed Paper")
+        self._seed_pdf_settings(db_session, work.id)
+
+        mock_oa = MagicMock()
+        mock_oa.get_work_by_doi_raw.return_value = None
+        mock_oa.get_work_by_arxiv_id_raw.return_value = None
+
+        mock_cr = MagicMock()
+        mock_cr.get_work_by_doi_raw.return_value = {
+            "title": ["Attention Is All You Need"],
+        }
+        mock_cr.search_works.return_value = []
+
+        mock_ss = MagicMock()
+        mock_ss.search_by_title.return_value = [
+            {
+                "paperId": "s2-attention-sha",
+                "title": "Attention Is All You Need",
+                "year": 2017,
+                # S2 has "Firstname [Middle] Lastname" format
+                "authors": [{"name": "Ashish M. Vaswani"}],
+                "externalIds": {"DOI": "10.5555/3295222.3295349"},
+            }
+        ]
+
+        imported_work = Work(title="Attention Is All You Need", citation_count=0)
+        db_session.add(imported_work)
+        db_session.commit()
+        db_session.refresh(imported_work)
+
+        svc = self._make_service(db_session, mock_oa=mock_oa, mock_cr=mock_cr)
+
+        with patch.object(svc, "import_by_doi", return_value=imported_work):
+            # GROBID produces "Vaswani, Ashish" — surname before comma
+            refs = [_make_grobid_ref(
+                title="Attention Is All You Need",
+                authors=["Vaswani, Ashish"],
+                year="2017",
+            )]
+            result = self._run(svc, work.id, refs, ss_client=mock_ss)
+
+        assert result.resolved_by_s2 == 1
+        assert result.failed_count == 0
+
+    # ------------------------------------------------------------------
     # S2 rate-limited: 429 → unresolved stub, no crash, skip_s2 for rest
     # ------------------------------------------------------------------
 
