@@ -627,45 +627,47 @@ export default function ProjectDetailPage() {
         </div>
 
         {activeTab === 'timeline' && (
-          <div className="flex-1 flex flex-col min-h-0">
-            {timeline && (
-              <TimelineEnrichBar seeds={timeline.seeds} projectId={projectId} onSelectWork={setSelectedWorkId} />
-            )}
-            <TimelineControls
-              citationsSinceYears={citationsSinceYears}
-              onCitationsSinceYearsChange={setCitationsSinceYears}
-              showBackward={showBackward}
-              onShowBackwardChange={setShowBackward}
-              showForward={showForward}
-              onShowForwardChange={setShowForward}
-              startYear={startYear}
-              onStartYearChange={setStartYear}
-              minYear={yearRange.min}
-              maxYear={yearRange.max}
-              totalNeighbors={timeline?.neighbors.length ?? 0}
-              filteredNeighbors={filteredNeighbors.length}
-              candidateFilter={candidateFilter}
-              onCandidateFilterChange={setCandidateFilter}
-              hops={hops}
-              onHopsChange={setHops}
-            />
-            <div className="flex-1 min-h-0">
-              <CitationTimeline
-                seeds={filteredSeeds}
-                neighbors={filteredNeighbors}
-                topicLists={timeline?.topic_lists ?? project.topic_lists}
-                seedCitations={filteredSeedCitations}
-                selectedWorkId={selectedWorkId}
-                onSelectWork={setSelectedWorkId}
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <div className="flex flex-col min-h-full">
+              {timeline && (
+                <TimelineEnrichBar seeds={timeline.seeds} projectId={projectId} onSelectWork={setSelectedWorkId} />
+              )}
+              <TimelineControls
                 citationsSinceYears={citationsSinceYears}
-                startYear={startYear}
+                onCitationsSinceYearsChange={setCitationsSinceYears}
                 showBackward={showBackward}
+                onShowBackwardChange={setShowBackward}
                 showForward={showForward}
-                tier1VenueIds={tier1Set}
+                onShowForwardChange={setShowForward}
+                startYear={startYear}
+                onStartYearChange={setStartYear}
+                minYear={yearRange.min}
+                maxYear={yearRange.max}
+                totalNeighbors={timeline?.neighbors.length ?? 0}
+                filteredNeighbors={filteredNeighbors.length}
+                candidateFilter={candidateFilter}
+                onCandidateFilterChange={setCandidateFilter}
                 hops={hops}
-                activeTopicListIds={activeTopicListIds}
-                onToggleTopicList={handleToggleTopicList}
+                onHopsChange={setHops}
               />
+              <div className="flex-1 min-h-[400px]">
+                <CitationTimeline
+                  seeds={filteredSeeds}
+                  neighbors={filteredNeighbors}
+                  topicLists={timeline?.topic_lists ?? project.topic_lists}
+                  seedCitations={filteredSeedCitations}
+                  selectedWorkId={selectedWorkId}
+                  onSelectWork={setSelectedWorkId}
+                  citationsSinceYears={citationsSinceYears}
+                  startYear={startYear}
+                  showBackward={showBackward}
+                  showForward={showForward}
+                  tier1VenueIds={tier1Set}
+                  hops={hops}
+                  activeTopicListIds={activeTopicListIds}
+                  onToggleTopicList={handleToggleTopicList}
+                />
+              </div>
             </div>
           </div>
         )}
