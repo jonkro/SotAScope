@@ -77,7 +77,7 @@ For works without a DOI, the system can auto-resolve via Crossref fuzzy search (
 
 The main project view is a D3 scatter plot (x = publication year, y = log-scaled citation count). Seeds are squares colored by topic list, backward neighbors are circles, forward neighbors are diamonds. Implemented in `CitationTimeline.tsx`, controlled by `TimelineControls.tsx`, paper details in `WorkDetailPanel.tsx`.
 
-**Citation window**: A slider controls the time window: **All** (all-time `citation_count`) or **Of last Ny** (1–10 years, sums `citations_by_year`). Computed client-side — no re-fetch on slider change. Works without `citations_by_year` (e.g., imported from Crossref or BibTeX only) fall back to all-time count regardless of slider position. Timeline settings persist in `localStorage` per project (`litexplorer:project:{id}:view`).
+**Citation window**: A slider controls the time window: **All** (all-time `citation_count`) or **Of last Ny** (1–10 years, sums `citations_by_year`). Computed client-side — no re-fetch on slider change. Works without `citations_by_year` (e.g., imported from Crossref or BibTeX only) fall back to all-time count regardless of slider position. Timeline settings persist in `localStorage` per project (`litexplorer:project:{id}:view`). URL search params (`?tab=`, `?work=`, `?schema=`) encode view state for deep links and the **Share** button (copies current URL to clipboard). On initial mount, URL params override localStorage; after that, normal interaction and localStorage take over. `?tab=extract&schema={id}` activates a promoted schema tab. URL is kept in sync via `useSearchParams` with `replace: true`.
 
 ---
 

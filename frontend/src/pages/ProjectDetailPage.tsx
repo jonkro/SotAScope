@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import SearchInput from '../components/SearchInput';
 import EmptyState from '../components/EmptyState';
@@ -84,6 +84,29 @@ function PromotedSchemaTabContent({
 }
 
 // ---------------------------------------------------------------------------
+// Share button
+// ---------------------------------------------------------------------------
+
+function ShareButton({ href }: { href?: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleShare = () => {
+    navigator.clipboard.writeText(href ?? window.location.href).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+  return (
+    <button
+      onClick={handleShare}
+      className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+      title="Copy link to clipboard"
+    >
+      {copied ? 'Link copied!' : 'Share'}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -91,6 +114,7 @@ export default function ProjectDetailPage() {
   const { projectId: pid } = useParams<{ projectId: string }>();
   const projectId = Number(pid);
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const { data: project, isLoading } = useProject(projectId);
 
@@ -102,8 +126,21 @@ export default function ProjectDetailPage() {
     () => loadPromotedSchemaIds(projectId),
   );
 
-  // Tab state — initialized with fallback for stale promoted schema tabs
+  // Tab state — initialized from URL param if present (deep link), then localStorage
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+    const urlTab = searchParams.get('tab');
+    if (urlTab === 'extract') {
+      const urlSchema = searchParams.get('schema');
+      if (urlSchema) {
+        const schemaId = parseInt(urlSchema, 10);
+        if (!isNaN(schemaId)) {
+          const promoted = loadPromotedSchemaIds(projectId);
+          if (promoted.includes(schemaId)) return `schema:${schemaId}` as ActiveTab;
+        }
+      }
+    } else if (urlTab && (['timeline', 'lists', 'notes', 'tables'] as string[]).includes(urlTab)) {
+      return urlTab as ActiveTab;
+    }
     const savedTab = saved.activeTab ?? 'timeline';
     if (savedTab.startsWith('schema:')) {
       const schemaId = parseInt(savedTab.split(':')[1], 10);
@@ -113,18 +150,42 @@ export default function ProjectDetailPage() {
     return savedTab;
   });
 
-  // Timeline filter state
-  const [citationsSinceYears, setCitationsSinceYears] = useState<number | null>(
-    saved.citationsSinceYears !== undefined ? saved.citationsSinceYears : null,
-  );
-  const [showBackward, setShowBackward] = useState(saved.showBackward ?? true);
-  const [showForward, setShowForward] = useState(saved.showForward ?? true);
-  const [startYear, setStartYear] = useState<number | null>(saved.startYear ?? null);
-  const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>(saved.candidateFilter ?? 'all');
-  const [hops, setHops] = useState(saved.hops ?? 1);
-  const [inactiveTopicListIds, setInactiveTopicListIds] = useState<Set<number>>(
-    () => new Set(saved.inactiveTopicListIds ?? []),
-  );
+  // Timeline filter state — initialized from URL params if present (deep link), then localStorage
+  const [citationsSinceYears, setCitationsSinceYears] = useState<number | null>(() => {
+    const p = searchParams.get('cites');
+    if (p !== null) { const n = parseInt(p, 10); return isNaN(n) ? null : n; }
+    return saved.citationsSinceYears !== undefined ? saved.citationsSinceYears : null;
+  });
+  const [showBackward, setShowBackward] = useState(() => {
+    const p = searchParams.get('bwd');
+    if (p !== null) return p !== '0';
+    return saved.showBackward ?? true;
+  });
+  const [showForward, setShowForward] = useState(() => {
+    const p = searchParams.get('fwd');
+    if (p !== null) return p !== '0';
+    return saved.showForward ?? true;
+  });
+  const [startYear, setStartYear] = useState<number | null>(() => {
+    const p = searchParams.get('from');
+    if (p !== null) { const n = parseInt(p, 10); return isNaN(n) ? null : n; }
+    return saved.startYear ?? null;
+  });
+  const [candidateFilter, setCandidateFilter] = useState<CandidateFilter>(() => {
+    const p = searchParams.get('filter');
+    if (p === 'all' || p === 'top-venues' || p === 'none') return p;
+    return saved.candidateFilter ?? 'all';
+  });
+  const [hops, setHops] = useState(() => {
+    const p = searchParams.get('hops');
+    if (p !== null) { const n = parseInt(p, 10); return isNaN(n) ? 1 : n; }
+    return saved.hops ?? 1;
+  });
+  const [inactiveTopicListIds, setInactiveTopicListIds] = useState<Set<number>>(() => {
+    const p = searchParams.get('inactive');
+    if (p !== null) return new Set(p ? p.split(',').map(Number).filter((n) => !isNaN(n)) : []);
+    return new Set(saved.inactiveTopicListIds ?? []);
+  });
 
   // Persist view settings to localStorage
   useEffect(() => {
@@ -164,7 +225,36 @@ export default function ProjectDetailPage() {
   const [showProjectImport, setShowProjectImport] = useState(false);
   const [editList, setEditList] = useState<{ id: number; name: string; color: string } | null>(null);
   const [deleteListId, setDeleteListId] = useState<number | null>(null);
-  const [selectedWorkId, setSelectedWorkId] = useState<number | null>(null);
+  const [selectedWorkId, setSelectedWorkId] = useState<number | null>(() => {
+    const urlWork = searchParams.get('work');
+    if (urlWork) {
+      const id = parseInt(urlWork, 10);
+      if (!isNaN(id)) return id;
+    }
+    return null;
+  });
+
+  // Sync state to URL params (replace, not push)
+  useEffect(() => {
+    const params: Record<string, string> = {};
+    if (activeTab.startsWith('schema:')) {
+      params['tab'] = 'extract';
+      params['schema'] = activeTab.split(':')[1];
+    } else {
+      params['tab'] = activeTab;
+    }
+    if (selectedWorkId !== null) params['work'] = String(selectedWorkId);
+    // Timeline filter options
+    if (citationsSinceYears !== null) params['cites'] = String(citationsSinceYears);
+    params['hops'] = String(hops);
+    if (startYear !== null) params['from'] = String(startYear);
+    params['bwd'] = showBackward ? '1' : '0';
+    params['fwd'] = showForward ? '1' : '0';
+    params['filter'] = candidateFilter;
+    const inactiveArr = [...inactiveTopicListIds];
+    if (inactiveArr.length > 0) params['inactive'] = inactiveArr.join(',');
+    setSearchParams(params, { replace: true });
+  }, [activeTab, selectedWorkId, citationsSinceYears, hops, startYear, showBackward, showForward, candidateFilter, inactiveTopicListIds, setSearchParams]);
 
   // Detail panel fold state (persists across paper selections within this project)
   const [panelFoldState, setPanelFoldState] = useState<PanelFoldState>({ ...DEFAULT_FOLD_STATE });
@@ -455,6 +545,11 @@ export default function ProjectDetailPage() {
           >
             New Topic List
           </button>
+          <ShareButton
+            href={activeSchemaId !== null
+              ? `${window.location.origin}/projects/${projectId}/extraction?schema=${activeSchemaId}&view=review`
+              : undefined}
+          />
         </PageHeader>
 
         {project.description && (

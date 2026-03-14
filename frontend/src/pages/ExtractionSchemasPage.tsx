@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -198,6 +198,29 @@ function ColumnFormModal({ schemaId, initial, nextSortOrder, onClose }: ColumnFo
 }
 
 // ---------------------------------------------------------------------------
+// Share button
+// ---------------------------------------------------------------------------
+
+function ShareButton() {
+  const [copied, setCopied] = useState(false);
+  const handleShare = () => {
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+  return (
+    <button
+      onClick={handleShare}
+      className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+      title="Copy link to clipboard"
+    >
+      {copied ? 'Link copied!' : 'Share'}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Schema editor (title/description + column management + extract/review)
 // ---------------------------------------------------------------------------
 
@@ -205,15 +228,16 @@ interface SchemaEditorProps {
   schemaId: number;
   projectId: number;
   onBack: () => void;
+  initialTab?: EditorTab;
 }
 
 type EditorTab = 'schema' | 'review';
 
-function SchemaEditor({ schemaId, projectId, onBack }: SchemaEditorProps) {
+function SchemaEditor({ schemaId, projectId, onBack, initialTab }: SchemaEditorProps) {
   const navigate = useNavigate();
   const { data: schema, isLoading } = useExtractionSchema(schemaId);
 
-  const [activeTab, setActiveTab] = useState<EditorTab>('schema');
+  const [activeTab, setActiveTab] = useState<EditorTab>(initialTab ?? 'schema');
 
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [descDraft, setDescDraft] = useState<string | null>(null);
@@ -285,6 +309,7 @@ function SchemaEditor({ schemaId, projectId, onBack }: SchemaEditorProps) {
         >
           Refine with AI
         </button>
+        <ShareButton />
       </PageHeader>
 
       {/* Tab bar */}
@@ -645,7 +670,7 @@ export default function ExtractionSchemasPage() {
   const navigate = useNavigate();
 
   // Support ?schema={id} URL param to auto-open a specific schema editor
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const schemaIdFromUrl = searchParams.get('schema');
 
   const [view, setView] = useState<View>(() => {
@@ -656,6 +681,15 @@ export default function ExtractionSchemasPage() {
     return { kind: 'list' };
   });
   const [deleteSchemaId, setDeleteSchemaId] = useState<number | null>(null);
+
+  // Sync view to URL params (replace, not push)
+  useEffect(() => {
+    if (view.kind === 'editor') {
+      setSearchParams({ schema: String(view.schemaId) }, { replace: true });
+    } else if (view.kind === 'list') {
+      setSearchParams({}, { replace: true });
+    }
+  }, [view, setSearchParams]);
 
   const { data: schemas, isLoading } = useExtractionSchemas(projectId);
   const deleteSchema = useDeleteExtractionSchema();
@@ -671,11 +705,13 @@ export default function ExtractionSchemasPage() {
   }
 
   if (view.kind === 'editor') {
+    const viewParam = searchParams.get('view');
     return (
       <SchemaEditor
         schemaId={view.schemaId}
         projectId={projectId}
         onBack={() => setView({ kind: 'list' })}
+        initialTab={viewParam === 'review' ? 'review' : undefined}
       />
     );
   }
@@ -696,6 +732,7 @@ export default function ExtractionSchemasPage() {
         >
           New Table Schema
         </button>
+        <ShareButton />
       </PageHeader>
 
       <div className="p-6 max-w-2xl space-y-3">
