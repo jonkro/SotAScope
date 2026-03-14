@@ -551,6 +551,9 @@ class EnrichmentService:
         # Refresh the seed work's own metadata (citation_count, citations_by_year)
         self._refresh_work_metadata(work)
 
+        # Floor citation_count at the number of Citation records we actually stored
+        self._ensure_citation_count_floor(work)
+
         self.db.commit()
         return results
 
@@ -691,7 +694,7 @@ class EnrichmentService:
         return work
 
     def _update_work(self, work: Work, ext: ExternalWork) -> Work:
-        """Update-without-overwrite: only fill None fields. Always update citation_count."""
+        """Update-without-overwrite: only fill None fields. citation_count keeps the max."""
         if work.doi is None and ext.doi:
             work.doi = ext.doi
         if work.arxiv_id is None and ext.arxiv_id:
@@ -707,9 +710,12 @@ class EnrichmentService:
         if work.title == "(untitled)" and ext.title and ext.title != "(untitled)":
             work.title = ext.title
 
-        # Always update citation count and per-year breakdown (they change over time)
+        # citation_count: keep the higher of the stored value and the incoming value.
+        # This ensures S2-only data doesn't overwrite higher OA counts, and OA data
+        # still wins when it reports a higher number (the common case).
         if ext.citation_count is not None:
-            work.citation_count = ext.citation_count
+            if work.citation_count is None or work.citation_count < ext.citation_count:
+                work.citation_count = ext.citation_count
         if ext.citations_by_year is not None:
             work.citations_by_year = ext.citations_by_year
 
@@ -863,6 +869,17 @@ class EnrichmentService:
             return True
         return False
 
+    def _ensure_citation_count_floor(self, work: Work) -> None:
+        """Floor work.citation_count at the number of Citation records in the DB.
+
+        Runs after any forward-citation fetch.  Handles the case where we have
+        actually stored more citing papers than the reported citation_count (e.g.
+        because S2/OA reported a stale or partial count).
+        """
+        actual = self.db.query(Citation).filter(Citation.cited_work_id == work.id).count()
+        if work.citation_count is None or work.citation_count < actual:
+            work.citation_count = actual
+
     def import_by_semantic_scholar_id(self, ss_id: str, ss_client) -> Work | None:
         """Import a work by Semantic Scholar ID. Returns the persisted Work or None if not found."""
         ss_paper = ss_client.get_paper_by_id(ss_id)
@@ -956,7 +973,10 @@ class EnrichmentService:
     ) -> list[SearchImportCandidate]:
         candidates: list[SearchImportCandidate] = []
         for i, item in enumerate(items):
+            corpus_id = item.get("corpusId")
             paper_id = item.get("paperId") or None
+            # Prefer stable corpusId over the SHA paperId
+            s2_id = str(corpus_id) if corpus_id is not None else paper_id
             ext_ids = item.get("externalIds") or {}
             doi_raw = ext_ids.get("DOI") or ""
             doi = doi_raw.lower() or None
@@ -973,7 +993,7 @@ class EnrichmentService:
                 year=year,
                 venue=None,  # S2 search results don't include venue
                 doi=doi,
-                semantic_scholar_id=paper_id,
+                semantic_scholar_id=s2_id,
                 source="semantic_scholar",
                 score=score,
             ))
@@ -1021,9 +1041,11 @@ class EnrichmentService:
             candidates = ss_client.search_by_title(work.title, limit=5)
             for cand in candidates:
                 if _normalize_title_for_cmp(cand.get("title") or "") == norm_local:
-                    paper_id = cand.get("paperId")
-                    if paper_id:
-                        ss_paper = ss_client.get_paper_by_id(paper_id)
+                    # Always use SHA paperId for the API call — CorpusId: prefix can 404.
+                    # _parse_paper() will store the CorpusId from the response.
+                    cand_id = cand.get("paperId")
+                    if cand_id:
+                        ss_paper = ss_client.get_paper_by_id(cand_id)
                         break
 
         if ss_paper is None:
@@ -1036,10 +1058,9 @@ class EnrichmentService:
         if not paper_id:
             raise RuntimeError("Semantic Scholar returned a paper without a paperId")
 
-        # Store the S2 ID on the work if we just discovered it
-        if work.semantic_scholar_id is None and paper_id:
-            work.semantic_scholar_id = paper_id
-            self.db.commit()
+        # Update seed work metadata from S2 (fills missing IDs, updates citation_count
+        # using the "keep higher" rule so S2 data never overwrites a better OA count).
+        self._update_work(work, ss_paper)
 
         # Fetch backward citations (references)
         new_refs = 0
@@ -1098,6 +1119,8 @@ class EnrichmentService:
                     new_citing += 1
                 else:
                     existing_citing += 1
+            # Floor citation_count at the number of Citation records we actually stored
+            self._ensure_citation_count_floor(work)
             self.db.commit()
 
         logger.info(
@@ -1431,7 +1454,16 @@ class EnrichmentService:
                 break
 
             if best_item is not None:
-                paper_id: str | None = best_item.get("paperId") or None
+                # SHA paperId for API calls (reliable); corpusId for DB dedup only.
+                # Do NOT pass corpusId to get_paper_by_id — the CorpusId: prefix lookup
+                # can 404 for papers where the SHA-based lookup works fine.  The stored
+                # semantic_scholar_id will be the CorpusId anyway, because _parse_paper()
+                # extracts it from the individual-paper API response.
+                sha_id: str | None = best_item.get("paperId") or None
+                corpus_id_raw = best_item.get("corpusId")
+                corpus_id: str | None = str(corpus_id_raw) if corpus_id_raw is not None else None
+                # paper_id used for DB dedup (prefer CorpusId — what _parse_paper now stores)
+                paper_id: str | None = corpus_id or sha_id
                 ext_ids = best_item.get("externalIds") or {}
                 raw_s2_doi: str | None = (ext_ids.get("DOI") or "").lower() or None
 
@@ -1477,21 +1509,30 @@ class EnrichmentService:
                     existing = self.db.execute(
                         select(Work).where(Work.semantic_scholar_id == paper_id)
                     ).scalar_one_or_none()
+                    if existing is None and corpus_id and sha_id and corpus_id != sha_id:
+                        # Also check SHA for backwards compat with legacy DB rows
+                        existing = self.db.execute(
+                            select(Work).where(Work.semantic_scholar_id == sha_id)
+                        ).scalar_one_or_none()
                     if existing is not None:
                         return existing.id, False, "s2"
+                    # Always use SHA for the API call — CorpusId: prefix lookup can 404
+                    # for papers where the SHA-based path works.  _parse_paper() will
+                    # store the CorpusId from the individual-paper response regardless.
+                    api_call_id = sha_id or paper_id
                     try:
                         imported_s2 = self.import_by_semantic_scholar_id(
-                            paper_id, ss_client
+                            api_call_id, ss_client
                         )
                         if imported_s2 is not None:
                             return imported_s2.id, True, "s2"
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code == 429:
                             raise _S2RateLimitedError(
-                                f"S2 rate limit during paper fetch for {paper_id!r}"
+                                f"S2 rate limit during paper fetch for {api_call_id!r}"
                             ) from exc
                         logger.debug(
-                            "GROBID: S2 paper fetch failed for %r: %s", paper_id, exc
+                            "GROBID: S2 paper fetch failed for %r: %s", api_call_id, exc
                         )
 
         # ---- PATH D: Store as unresolved Work with GROBID metadata ----------

@@ -22,9 +22,9 @@ _DOI_PREFIX = "https://doi.org/"
 _PAGE_SIZE = 500
 
 # Fields requested for individual paper lookups
-_PAPER_FIELDS = "paperId,externalIds,title,year,citationCount,abstract"
+_PAPER_FIELDS = "paperId,corpusId,externalIds,title,year,citationCount,abstract"
 # Fields requested for bulk citation/reference lists (skip abstract to reduce payload)
-_CITATION_FIELDS = "paperId,externalIds,title,year,citationCount"
+_CITATION_FIELDS = "paperId,corpusId,externalIds,title,year,citationCount"
 
 # ---------------------------------------------------------------------------
 # Process-level rate limiter — shared across all SemanticScholarClient instances
@@ -59,10 +59,31 @@ def _normalize_doi(raw: str | None) -> str | None:
     return doi.lower() if doi else None
 
 
+def _to_s2_paper_id(id_str: str) -> str:
+    """Convert a stored semantic_scholar_id to the S2 API endpoint identifier.
+
+    CorpusIds are stored as plain numeric strings (e.g. "123456789").
+    S2 API endpoints require the ``CorpusId:`` prefix for numeric IDs.
+    40-char hex SHA IDs and already-prefixed strings (e.g. ``DOI:``) pass through unchanged.
+    """
+    if id_str.isdigit():
+        return f"CorpusId:{id_str}"
+    return id_str
+
+
 def _parse_paper(raw: dict) -> ExternalWork:
-    """Parse a single Semantic Scholar paper dict into an ExternalWork."""
+    """Parse a single Semantic Scholar paper dict into an ExternalWork.
+
+    Stores the stable ``corpusId`` (numeric string) as ``semantic_scholar_id``
+    when available, falling back to ``paperId`` (40-char SHA) for papers that
+    S2 has not yet assigned a corpus ID.
+    """
+    corpus_id = raw.get("corpusId")
     paper_id = raw.get("paperId") or None
     ext_ids = raw.get("externalIds") or {}
+
+    # Prefer corpusId (stable numeric) over paperId (SHA that can change)
+    semantic_scholar_id = str(corpus_id) if corpus_id is not None else paper_id
 
     doi = _normalize_doi(ext_ids.get("DOI"))
     arxiv_id = ext_ids.get("ArXiv") or None
@@ -71,7 +92,7 @@ def _parse_paper(raw: dict) -> ExternalWork:
         title=raw.get("title") or "(untitled)",
         doi=doi,
         arxiv_id=arxiv_id,
-        semantic_scholar_id=paper_id,
+        semantic_scholar_id=semantic_scholar_id,
         abstract=raw.get("abstract"),
         publication_year=raw.get("year"),
         citation_count=raw.get("citationCount"),
@@ -131,16 +152,21 @@ class SemanticScholarClient:
         return self.get_paper(f"DOI:{doi}")
 
     def get_paper_by_id(self, paper_id: str) -> ExternalWork | None:
-        """Fetch a paper by its Semantic Scholar paper ID. Returns None if not found."""
-        return self.get_paper(paper_id)
+        """Fetch a paper by its Semantic Scholar paper ID or CorpusId.
+
+        Accepts both 40-char SHA IDs and numeric CorpusId strings (e.g. "123456789").
+        Numeric IDs are automatically prefixed with ``CorpusId:`` for the API call.
+        Returns None if not found.
+        """
+        return self.get_paper(_to_s2_paper_id(paper_id))
 
     def search_by_title(self, query: str, limit: int = 5) -> list[dict]:
         """Search for papers by title (or combined bibliographic query).
 
-        Returns raw Semantic Scholar paper dicts including paperId, externalIds,
-        title, year, and authors.  Returns an empty list on 400/404/429.
+        Returns raw Semantic Scholar paper dicts including paperId, corpusId,
+        externalIds, title, year, and authors.  Returns an empty list on 400/404/429.
         """
-        fields = "paperId,externalIds,title,year,authors"
+        fields = "paperId,corpusId,externalIds,title,year,authors"
         resp = self._call(
             "GET",
             "/paper/search",
@@ -153,12 +179,13 @@ class SemanticScholarClient:
 
     def get_references(self, paper_id: str) -> list[ExternalWork]:
         """Fetch all references (backward citations) for a paper, paginated."""
+        api_id = _to_s2_paper_id(paper_id)
         results: list[ExternalWork] = []
         offset = 0
         while True:
             resp = self._call(
                 "GET",
-                f"/paper/{paper_id}/references",
+                f"/paper/{api_id}/references",
                 params={"fields": _CITATION_FIELDS, "limit": _PAGE_SIZE, "offset": offset},
             )
             resp.raise_for_status()
@@ -174,12 +201,13 @@ class SemanticScholarClient:
 
     def get_citations(self, paper_id: str) -> list[ExternalWork]:
         """Fetch all citing papers (forward citations) for a paper, paginated."""
+        api_id = _to_s2_paper_id(paper_id)
         results: list[ExternalWork] = []
         offset = 0
         while True:
             resp = self._call(
                 "GET",
-                f"/paper/{paper_id}/citations",
+                f"/paper/{api_id}/citations",
                 params={"fields": _CITATION_FIELDS, "limit": _PAGE_SIZE, "offset": offset},
             )
             resp.raise_for_status()

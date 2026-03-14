@@ -1,7 +1,7 @@
 """Unit tests for the enrichment service (mock client, real in-memory DB)."""
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -491,3 +491,253 @@ class TestImportByArxivId:
         # Dedup fires on second call (work already in DB), so API is called exactly once
         assert mock_client.get_work_by_arxiv_id_raw.call_count == 1
         assert work1.id == work2.id
+
+
+# ---------------------------------------------------------------------------
+# Citation count updates
+# ---------------------------------------------------------------------------
+
+
+class TestCitationCountUpdates:
+    """citation_count keeps the max value across sources; floor at actual citation edges."""
+
+    def test_s2_citation_count_stored_on_new_import(self, service, db_session):
+        """Importing a work via S2 stores the S2 citationCount."""
+        mock_ss = MagicMock(spec=SemanticScholarClient)
+        s2_paper = ExternalWork(
+            title="New S2 Paper",
+            doi=None,
+            semantic_scholar_id="123456789",
+            citation_count=41,
+        )
+        mock_ss.get_paper_by_id.return_value = s2_paper
+
+        work = service.import_by_semantic_scholar_id("123456789", mock_ss)
+
+        assert work is not None
+        assert work.citation_count == 41
+
+    def test_s2_citation_count_does_not_overwrite_higher_oa_count(
+        self, service, db_session
+    ):
+        """Enriching from S2 with a lower citationCount keeps the existing higher value."""
+        # Simulate a work already imported with OA citation_count = 100
+        existing = Work(
+            title="OA Paper",
+            doi="10.1234/oatest",
+            openalex_id="W999",
+            citation_count=100,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        mock_ss = MagicMock(spec=SemanticScholarClient)
+        s2_seed = ExternalWork(
+            title="OA Paper",
+            doi="10.1234/oatest",
+            semantic_scholar_id="42",
+            citation_count=41,
+        )
+        mock_ss.get_paper_by_doi.return_value = s2_seed
+        mock_ss.get_references.return_value = []
+        mock_ss.get_citations.return_value = []
+
+        service.enrich_from_semantic_scholar(existing.id, mock_ss)
+
+        db_session.refresh(existing)
+        assert existing.citation_count == 100  # unchanged — 100 > 41
+
+    def test_s2_citation_count_updates_when_higher_than_stored(
+        self, service, db_session
+    ):
+        """When S2 reports a higher count than stored, the higher value wins."""
+        existing = Work(
+            title="Low Count Paper",
+            doi="10.1234/lowcount",
+            openalex_id="W111",
+            citation_count=10,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        mock_ss = MagicMock(spec=SemanticScholarClient)
+        s2_seed = ExternalWork(
+            title="Low Count Paper",
+            doi="10.1234/lowcount",
+            semantic_scholar_id="999",
+            citation_count=50,
+        )
+        mock_ss.get_paper_by_doi.return_value = s2_seed
+        mock_ss.get_references.return_value = []
+        mock_ss.get_citations.return_value = []
+
+        service.enrich_from_semantic_scholar(existing.id, mock_ss)
+
+        db_session.refresh(existing)
+        assert existing.citation_count == 50  # S2's higher count wins
+
+    def test_citation_count_floor_raises_below_actual_edges(self, service, db_session):
+        """Floor sets citation_count to actual edge count when stored count is lower."""
+        cited = Work(title="Cited Paper", citation_count=0)
+        db_session.add(cited)
+        db_session.flush()
+        # Create 5 Citation records pointing at cited
+        for i in range(5):
+            citer = Work(title=f"Citer {i}")
+            db_session.add(citer)
+            db_session.flush()
+            db_session.add(Citation(
+                citing_work_id=citer.id,
+                cited_work_id=cited.id,
+                source="openalex",
+            ))
+        db_session.commit()
+
+        service._ensure_citation_count_floor(cited)
+        db_session.flush()
+
+        assert cited.citation_count == 5
+
+    def test_citation_count_floor_does_not_lower_existing_count(
+        self, service, db_session
+    ):
+        """Floor never decreases citation_count — a higher stored value is kept."""
+        cited = Work(title="Popular Paper", citation_count=100)
+        db_session.add(cited)
+        db_session.flush()
+        # Only 5 actual Citation records in DB
+        for i in range(5):
+            citer = Work(title=f"Citer {i}")
+            db_session.add(citer)
+            db_session.flush()
+            db_session.add(Citation(
+                citing_work_id=citer.id,
+                cited_work_id=cited.id,
+                source="openalex",
+            ))
+        db_session.commit()
+
+        service._ensure_citation_count_floor(cited)
+        db_session.flush()
+
+        assert cited.citation_count == 100  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# S2 CorpusId storage
+# ---------------------------------------------------------------------------
+
+
+class TestS2CorpusId:
+    """semantic_scholar_id should store CorpusId (numeric), not paperId (SHA)."""
+
+    def _make_s2_response(self, corpus_id: int, paper_id: str, title: str = "Test") -> dict:
+        return {
+            "paperId": paper_id,
+            "corpusId": corpus_id,
+            "externalIds": {},
+            "title": title,
+            "year": 2023,
+            "citationCount": 5,
+            "abstract": None,
+        }
+
+    def test_parse_paper_uses_corpus_id(self):
+        """_parse_paper stores corpusId (as string), not the 40-char SHA."""
+        from litexplorer.external.semantic_scholar import _parse_paper
+
+        raw = self._make_s2_response(
+            corpus_id=123456789,
+            paper_id="a" * 40,
+        )
+        ext = _parse_paper(raw)
+
+        assert ext.semantic_scholar_id == "123456789"
+        assert ext.semantic_scholar_id != "a" * 40
+
+    def test_parse_paper_falls_back_to_paper_id_when_no_corpus_id(self):
+        """When corpusId is absent, _parse_paper falls back to paperId."""
+        from litexplorer.external.semantic_scholar import _parse_paper
+
+        raw = {
+            "paperId": "b" * 40,
+            "externalIds": {},
+            "title": "Fallback",
+            "year": 2023,
+            "citationCount": 0,
+            "abstract": None,
+        }
+        ext = _parse_paper(raw)
+
+        assert ext.semantic_scholar_id == "b" * 40
+
+    def test_get_paper_by_id_uses_corpus_id_prefix(self):
+        """get_paper_by_id auto-prepends CorpusId: for numeric IDs."""
+        from litexplorer.external.semantic_scholar import SemanticScholarClient
+
+        client = SemanticScholarClient()
+        with patch.object(client, "_call") as mock_call:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = self._make_s2_response(
+                corpus_id=123456789, paper_id="a" * 40
+            )
+            mock_call.return_value = mock_response
+
+            client.get_paper_by_id("123456789")
+
+            call_args = mock_call.call_args
+            assert "CorpusId:123456789" in call_args[0][1]
+
+    def test_get_paper_by_id_passes_sha_unchanged(self):
+        """40-char SHA IDs are passed through without modification."""
+        from litexplorer.external.semantic_scholar import SemanticScholarClient
+
+        sha = "c" * 40
+        client = SemanticScholarClient()
+        with patch.object(client, "_call") as mock_call:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = self._make_s2_response(
+                corpus_id=111, paper_id=sha
+            )
+            mock_call.return_value = mock_response
+
+            client.get_paper_by_id(sha)
+
+            call_args = mock_call.call_args
+            assert sha in call_args[0][1]
+            assert "CorpusId" not in call_args[0][1]
+
+    def test_search_by_title_results_use_corpus_id(self, service, db_session):
+        """_parse_ss_search_candidates uses corpusId from search results."""
+        items = [
+            {
+                "paperId": "d" * 40,
+                "corpusId": 987654321,
+                "externalIds": {"DOI": "10.1234/test"},
+                "title": "Search Result",
+                "year": 2022,
+                "authors": [{"name": "Alice Author"}],
+            }
+        ]
+        candidates = service._parse_ss_search_candidates(items)
+
+        assert len(candidates) == 1
+        assert candidates[0].semantic_scholar_id == "987654321"
+        assert candidates[0].semantic_scholar_id != "d" * 40
+
+    def test_import_stores_corpus_id_not_sha(self, service, db_session):
+        """import_by_semantic_scholar_id stores corpusId in the Work row."""
+        mock_ss = MagicMock(spec=SemanticScholarClient)
+        mock_ss.get_paper_by_id.return_value = ExternalWork(
+            title="Corpus Paper",
+            doi=None,
+            semantic_scholar_id="42000001",  # corpusId as string
+            citation_count=7,
+        )
+
+        work = service.import_by_semantic_scholar_id("42000001", mock_ss)
+
+        assert work is not None
+        assert work.semantic_scholar_id == "42000001"
