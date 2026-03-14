@@ -336,3 +336,56 @@ def test_timeline_backward_citations_no_oa_data(client, db_session):
     s_not_fetched = seeds_by_id[seed_not_fetched.id]
     assert s_not_fetched["has_backward_citations"] is False
     assert s_not_fetched["backward_citations_no_oa_data"] is False
+
+
+def test_backward_neighbor_has_citation_data_false_when_no_openalex_id(db_session, client):
+    """A backward neighbor imported without an OpenAlex ID must have has_citation_data=False."""
+    seed = Work(
+        title="Seed With Stub Ref",
+        publication_year=2023,
+        openalex_id="W_SEED_HCD",
+        citation_count=5,
+    )
+    # Stub neighbor: no openalex_id (imported from GROBID without OA data)
+    stub_ref = Work(
+        title="Unresolved Stub Reference",
+        publication_year=2020,
+        openalex_id=None,
+        citation_count=0,
+    )
+    # Normal neighbor: has openalex_id
+    normal_ref = Work(
+        title="Normal Reference",
+        publication_year=2019,
+        openalex_id="W_NORMAL_REF",
+        citation_count=10,
+    )
+    db_session.add_all([seed, stub_ref, normal_ref])
+    db_session.flush()
+
+    project = Project(name="HCD Test Project")
+    db_session.add(project)
+    db_session.flush()
+
+    tl = TopicList(project_id=project.id, name="TL", color="#aabbcc")
+    db_session.add(tl)
+    db_session.flush()
+    db_session.add(TopicListWork(topic_list_id=tl.id, work_id=seed.id))
+
+    db_session.add(Citation(citing_work_id=seed.id, cited_work_id=stub_ref.id, source="grobid"))
+    db_session.add(Citation(citing_work_id=seed.id, cited_work_id=normal_ref.id, source="openalex"))
+    db_session.commit()
+
+    resp = client.get(f"/api/projects/{project.id}/timeline")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    neighbors_by_id = {n["id"]: n for n in data["neighbors"]}
+
+    stub_neighbor = neighbors_by_id[stub_ref.id]
+    assert stub_neighbor["direction"] == "backward"
+    assert stub_neighbor["has_citation_data"] is False
+
+    normal_neighbor = neighbors_by_id[normal_ref.id]
+    assert normal_neighbor["direction"] == "backward"
+    assert normal_neighbor["has_citation_data"] is True

@@ -114,7 +114,8 @@ litexplorer/
 ├── models/
 │   ├── library.py        # Work (citations_by_year JSON), WorkLocation, Author, WorkAuthor,
 │   │                     #   Venue, VenueAlias, Field (passive_deletes=True), VenueField,
-│   │                     #   Citation, WorkPDF (extraction_status: pending/ready/failed),
+│   │                     #   Citation (source: 'openalex'|'semantic_scholar'|'grobid'|'crossref'),
+│   │                     #   WorkPDF (extraction_status: pending/ready/failed),
 │   │                     #   WorkNote, WorkDOI (secondary DOIs, CASCADE delete)
 │   ├── project.py        # Project, TopicList, TopicListWork, ProjectIgnoredWork
 │   ├── extraction.py     # ExtractionSchema (nullable project_id = global scope),
@@ -219,7 +220,7 @@ tests/
 ## Startup lifecycle (app.py lifespan)
 
 1. `init_db()` — create engine and tables
-2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois, extraction_schemas, extraction_columns, chat_sessions, chat_messages)
+2. `_migrate_schema()` — add new columns/tables (doi_auto_resolved, sort_order, work_pdfs, citations_by_year, drop pdf_path, work_notes, extraction_status on work_pdfs, semantic_scholar_id on works, work_dois, extraction_schemas, extraction_columns, chat_sessions, chat_messages, source on citations backfilled to 'openalex')
 3. `_seed_default_fields()` — create "AI/ML" and "Computer Networks" fields
 4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, `s2_api_key`, `llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`, `llm_system_prompt_prefix`, `grobid_url` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
@@ -271,7 +272,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Unpaywall requires contact email**: OA PDF fetch via Unpaywall is only attempted when `api_contact_email` is configured in Settings. Without it, only arXiv is tried (works that have `arxiv_id`). Works that have only a DOI but no `arxiv_id` and no configured email will return 404 from the fetch endpoint.
 - **LLM local server auth**: `list_models()` correctly omits the `Authorization` header when `api_key` is empty for local servers (was sending `Bearer local`, causing 401 on servers that validate auth). The `chat()` endpoint still uses the openai SDK which sends `Bearer local`; most local servers (Ollama, LM Studio) accept this, but servers with strict auth validation may reject it.
 - **Column-proposal re-prompting (not implemented)**: when all five `parseProposals()` strategies fail and the LLM response contains no parseable proposal, the UI silently shows the message as plain text. A possible future enhancement is to detect this case client-side and automatically re-prompt the LLM asking it to reformat its answer as a fenced `column-proposal` block.
-- **GROBID reference extraction**: Requires Docker (`docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf`). CRF-only image is lightweight and fast; for better accuracy use the `-full` image (needs GPU). Settings page has a "Start" button (calls `POST /api/grobid/start`) that appears after a failed "Test connection" check; on success waits 5 s and auto-re-tests. Reference resolution follows a 4-step chain per extracted reference:
+- **GROBID reference extraction**: Requires Docker (`docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf`). CRF-only image is lightweight and fast; for better accuracy use the `-full` image (needs GPU). Settings page has a "Start" button (calls `POST /api/grobid/start`) that appears after a failed "Test connection" check; on success waits 5 s and auto-re-tests. **Re-run cleanup**: at the start of each GROBID enrichment run, all `Citation` records where `citing_work_id = seed` AND `source = "grobid"` are deleted. Any cited work that is now orphaned (no external IDs, not in any topic list, no remaining citation records) is also deleted. This prevents duplicate unresolved stubs from accumulating on re-runs while preserving works that were later manually enriched or added to topic lists. Reference resolution follows a 4-step chain per extracted reference:
   1. DOI present in GROBID output → existing DOI import path
   2. arXiv ID present → arXiv import path (OpenAlex → S2 fallback, as above)
   3. Neither → S2 title search with verification: match first-author surname AND year (±1). If S2 provides a DOI, validate it against Crossref (title/author comparison) — discard the DOI if it resolves to a different work, but keep the S2 CorpusId.

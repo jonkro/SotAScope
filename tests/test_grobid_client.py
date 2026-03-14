@@ -107,6 +107,7 @@ def _make_biblio(
     authors=None,
     doi=None,
     arxiv_id=None,
+    url=None,
     journal=None,
     volume=None,
     first_page=None,
@@ -124,6 +125,7 @@ def _make_biblio(
     b.authors = authors if authors is not None else []
     b.doi = doi
     b.arxiv_id = arxiv_id
+    b.url = url
     b.journal = journal
     b.volume = volume
     b.first_page = first_page
@@ -458,3 +460,185 @@ class TestExtractReferencesErrors:
             with pytest.raises(GrobidError, match="Service is down"):
                 client.extract_references(b"PDF")
             client.close()
+
+
+# ---------------------------------------------------------------------------
+# arXiv ID extraction
+# ---------------------------------------------------------------------------
+
+
+class TestArxivIdExtraction:
+    """Tests for arXiv ID extraction in _biblio_to_reference."""
+
+    def _extract_single(self, biblio):
+        """Helper: extract references from a single-entry mock document."""
+        with (
+            patch.object(httpx.Client, "post", return_value=_http_ok()),
+            _mock_grobid_tei_xml(_make_doc([biblio])),
+        ):
+            client = GrobidClient("http://localhost:8070")
+            refs = client.extract_references(b"%PDF-1.4 fake")
+            client.close()
+        assert len(refs) == 1
+        return refs[0]
+
+    def test_idno_arxiv_prefix_stripped(self):
+        """<idno type="arXiv">arXiv:2301.12345</idno> — 'arXiv:' prefix must be stripped."""
+        bib = _make_biblio(title="A Paper", arxiv_id="arXiv:2301.12345")
+        ref = self._extract_single(bib)
+        assert ref.arxiv_id == "2301.12345"
+
+    def test_idno_without_prefix_unchanged(self):
+        """arxiv_id already clean (no prefix) — must be preserved as-is."""
+        bib = _make_biblio(title="A Paper", arxiv_id="1810.04805")
+        ref = self._extract_single(bib)
+        assert ref.arxiv_id == "1810.04805"
+
+    def test_arxiv_id_from_abs_url(self):
+        """No idno, but URL contains arxiv.org/abs/ — arXiv ID extracted from URL."""
+        bib = _make_biblio(
+            title="A Paper",
+            arxiv_id=None,
+            url="https://arxiv.org/abs/2301.12345",
+        )
+        ref = self._extract_single(bib)
+        assert ref.arxiv_id == "2301.12345"
+
+    def test_arxiv_id_from_pdf_url(self):
+        """No idno, URL contains arxiv.org/pdf/ — arXiv ID extracted from URL."""
+        bib = _make_biblio(
+            title="A Paper",
+            arxiv_id=None,
+            url="https://arxiv.org/pdf/2301.12345v2",
+        )
+        ref = self._extract_single(bib)
+        assert ref.arxiv_id == "2301.12345v2"
+
+    def test_both_doi_and_arxiv_id_populated(self):
+        """When both DOI and arXiv ID are present, both fields must be set."""
+        bib = _make_biblio(
+            title="A Paper",
+            doi="10.48550/arXiv.1706.03762",
+            arxiv_id="arXiv:1706.03762",
+        )
+        ref = self._extract_single(bib)
+        assert ref.doi == "10.48550/arXiv.1706.03762"
+        assert ref.arxiv_id == "1706.03762"
+
+    def test_neither_idno_nor_url_gives_none(self):
+        """No arXiv idno and no URL — arxiv_id must be None."""
+        bib = _make_biblio(title="A Paper", doi="10.1234/example", arxiv_id=None, url=None)
+        ref = self._extract_single(bib)
+        assert ref.arxiv_id is None
+
+    def test_non_arxiv_url_gives_none(self):
+        """A URL that is not an arxiv.org link must not produce an arXiv ID."""
+        bib = _make_biblio(
+            title="A Paper",
+            arxiv_id=None,
+            url="https://proceedings.mlr.press/v97/paper.html",
+        )
+        ref = self._extract_single(bib)
+        assert ref.arxiv_id is None
+
+    def test_old_style_arxiv_id_from_url(self):
+        """Old-style arXiv IDs (category/number) embedded in URLs are extracted correctly."""
+        bib = _make_biblio(
+            title="A Paper",
+            arxiv_id=None,
+            url="https://arxiv.org/abs/hep-th/0601001",
+        )
+        ref = self._extract_single(bib)
+        assert ref.arxiv_id == "hep-th/0601001"
+
+
+# ---------------------------------------------------------------------------
+# URL and venue_name extraction
+# ---------------------------------------------------------------------------
+
+
+class TestUrlExtraction:
+    """Tests for url field extraction from <ptr target> in _biblio_to_reference."""
+
+    def _extract_single(self, biblio):
+        with (
+            patch.object(httpx.Client, "post", return_value=_http_ok()),
+            _mock_grobid_tei_xml(_make_doc([biblio])),
+        ):
+            client = GrobidClient("http://localhost:8070")
+            refs = client.extract_references(b"%PDF-1.4 fake")
+            client.close()
+        assert len(refs) == 1
+        return refs[0]
+
+    def test_url_stored_when_ptr_present(self):
+        """URL from <ptr target="..."> must be stored in the url field."""
+        bib = _make_biblio(
+            title="A Paper",
+            url="https://proceedings.mlr.press/v97/paper.html",
+        )
+        ref = self._extract_single(bib)
+        assert ref.url == "https://proceedings.mlr.press/v97/paper.html"
+
+    def test_url_none_when_no_ptr(self):
+        """If bib.url is None (no <ptr> element), url field must be None."""
+        bib = _make_biblio(title="A Paper", url=None)
+        ref = self._extract_single(bib)
+        assert ref.url is None
+
+    def test_arxiv_url_stored_and_arxiv_id_extracted(self):
+        """An arXiv URL must be stored in url AND used to populate arxiv_id."""
+        bib = _make_biblio(
+            title="A Paper",
+            arxiv_id=None,
+            url="https://arxiv.org/abs/2301.12345",
+        )
+        ref = self._extract_single(bib)
+        assert ref.url == "https://arxiv.org/abs/2301.12345"
+        assert ref.arxiv_id == "2301.12345"
+
+
+class TestVenueNameExtraction:
+    """Tests for venue_name field extraction in _biblio_to_reference."""
+
+    def _extract_single(self, biblio):
+        with (
+            patch.object(httpx.Client, "post", return_value=_http_ok()),
+            _mock_grobid_tei_xml(_make_doc([biblio])),
+        ):
+            client = GrobidClient("http://localhost:8070")
+            refs = client.extract_references(b"%PDF-1.4 fake")
+            client.close()
+        assert len(refs) == 1
+        return refs[0]
+
+    def test_pattern_a_journal_level_j(self):
+        """Pattern A with <title level="j"> (journal) maps journal → venue_name."""
+        bib = _make_biblio(
+            title="A Paper",
+            journal="Neural Information Processing Systems",
+        )
+        ref = self._extract_single(bib)
+        assert ref.venue_name == "Neural Information Processing Systems"
+
+    def test_pattern_a_journal_level_m(self):
+        """Pattern A with <title level="m"> (monograph/book chapter) also sets venue_name."""
+        # grobid_tei_xml stores both level="j" and level="m" in the journal field
+        bib = _make_biblio(
+            title="A Chapter",
+            journal="Handbook of Machine Learning",
+        )
+        ref = self._extract_single(bib)
+        assert ref.venue_name == "Handbook of Machine Learning"
+
+    def test_pattern_b_no_venue(self):
+        """Pattern B (standalone monograph, no <analytic>) has journal=None → venue_name=None."""
+        bib = _make_biblio(title="A Standalone Work", journal=None)
+        ref = self._extract_single(bib)
+        assert ref.venue_name is None
+
+    def test_venue_name_same_as_journal(self):
+        """venue_name must equal journal (both come from the same bib.journal field)."""
+        bib = _make_biblio(title="A Paper", journal="ICML 2023")
+        ref = self._extract_single(bib)
+        assert ref.venue_name == ref.journal == "ICML 2023"

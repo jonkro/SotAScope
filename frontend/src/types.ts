@@ -216,6 +216,7 @@ export interface TimelineNeighborWork {
   citations_by_year: CitationsByYearEntry[] | null;
   direction: 'backward' | 'forward';
   connected_seed_ids: number[];
+  has_citation_data: boolean;
 }
 
 export interface SeedCitation {

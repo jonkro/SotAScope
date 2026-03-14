@@ -228,6 +228,7 @@ def get_project_timeline(
             citations_by_year=w.citations_by_year,
             direction="backward",
             connected_seed_ids=sorted(bwd_neighbor_seeds[nid]),
+            has_citation_data=w.openalex_id is not None,
         ))
 
     for nid in sorted(fwd_neighbor_seeds.keys()):
@@ -245,6 +246,7 @@ def get_project_timeline(
             citations_by_year=w.citations_by_year,
             direction="forward",
             connected_seed_ids=sorted(fwd_neighbor_seeds[nid]),
+            has_citation_data=w.openalex_id is not None,
         ))
 
     topic_lists_out = [

@@ -13,11 +13,20 @@ Leave the setting empty to disable GROBID integration.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Matches arXiv IDs embedded in arxiv.org URLs:
+#   https://arxiv.org/abs/2301.12345
+#   https://arxiv.org/pdf/hep-th/0601001v2
+_ARXIV_URL_RE = re.compile(
+    r"arxiv\.org/(?:abs|pdf)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|[a-z\-]+/[0-9]{7}(?:v\d+)?)",
+    re.IGNORECASE,
+)
 
 
 class GrobidError(Exception):
@@ -37,6 +46,8 @@ class GrobidReference:
     pages: str | None = None
     year: str | None = None
     raw_string: str | None = None
+    url: str | None = None
+    venue_name: str | None = None
 
 
 class GrobidClient:
@@ -178,14 +189,32 @@ def _biblio_to_reference(bib) -> GrobidReference:  # type: ignore[no-untyped-def
     elif first_page:
         pages = str(first_page)
 
+    # URL: always read from <ptr target> attribute.
+    url: str | None = getattr(bib, "url", None) or None
+
+    # arXiv ID: prefer <idno type="arXiv">, fall back to URL extraction.
+    arxiv_id: str | None = None
+    arxiv_raw = getattr(bib, "arxiv_id", None) or None
+    if arxiv_raw:
+        # Strip optional "arXiv:" (or "arxiv:") prefix that some GROBID versions retain.
+        arxiv_id = re.sub(r"^arxiv:", "", arxiv_raw, flags=re.IGNORECASE).strip() or None
+    elif url:
+        m = _ARXIV_URL_RE.search(url)
+        arxiv_id = m.group(1) if m else None
+
+    # Venue name: journal field (set for Pattern A / analytic references only).
+    venue_name: str | None = getattr(bib, "journal", None) or None
+
     return GrobidReference(
         title=getattr(bib, "title", None) or None,
         authors=authors,
         doi=getattr(bib, "doi", None) or None,
-        arxiv_id=getattr(bib, "arxiv_id", None) or None,
+        arxiv_id=arxiv_id,
         journal=getattr(bib, "journal", None) or None,
         volume=getattr(bib, "volume", None) or None,
         pages=pages,
         year=year,
         raw_string=getattr(bib, "unstructured", None) or None,
+        url=url,
+        venue_name=venue_name,
     )

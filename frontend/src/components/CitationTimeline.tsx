@@ -32,6 +32,7 @@ interface DotDatum {
   citationCount: number | null;
   score: number;
   connectivity: number; // inter-seed citation connectivity (1 = base)
+  hasCitationData: boolean;
 }
 
 const MARGIN = { top: 20, right: 30, bottom: 36, left: 50 };
@@ -96,6 +97,7 @@ export default function CitationTimeline({
         colors, topicListIds: s.topic_list_ids, connectedSeedIds: [],
         venueId: s.venue_id, citationCount: citCount,
         score: Math.log1p(citCount), connectivity: seedConnectivity.get(s.id) ?? 1,
+        hasCitationData: true,
       });
     }
     for (const n of neighbors) {
@@ -107,6 +109,7 @@ export default function CitationTimeline({
         colors: ['#9ca3af'], topicListIds: [], connectedSeedIds: n.connected_seed_ids,
         venueId: n.venue_id, citationCount: citCount,
         score: Math.log1p(citCount), connectivity: 1,
+        hasCitationData: n.has_citation_data ?? true,
       });
     }
     return result;
@@ -494,13 +497,15 @@ export default function CitationTimeline({
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
             .on('mouseleave', () => hideTooltip(tooltip));
         } else {
+          // Backward neighbor: hollow (no OA data) or solid (has OA data)
+          const isHollow = !d.hasCitationData;
           dotGroup.append('circle')
             .attr('cx', pos.x).attr('cy', pos.y)
             .attr('r', r)
-            .attr('fill', color)
+            .attr('fill', isHollow ? 'none' : color)
             .attr('opacity', dimmed ? 0.1 : NEIGHBOR_OPACITY)
-            .attr('stroke', markerStroke)
-            .attr('stroke-width', markerStrokeW)
+            .attr('stroke', markerStroke || (isHollow ? '#9ca3af' : 'none'))
+            .attr('stroke-width', markerStroke ? markerStrokeW : (isHollow ? 1.5 : 0))
             .attr('cursor', 'pointer')
             .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
             .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))

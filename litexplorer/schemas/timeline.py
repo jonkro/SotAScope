@@ -37,6 +37,7 @@ class TimelineNeighborWork(BaseModel):
     citations_by_year: list[dict] | None
     direction: str  # 'backward' | 'forward'
     connected_seed_ids: list[int]
+    has_citation_data: bool = True  # False when openalex_id is None (no OA citation graph data)
 
 
 class SeedCitation(BaseModel):

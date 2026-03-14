@@ -118,6 +118,10 @@ class DOIInfoResult(BaseModel):
 class GrobidEnrichResult(BaseModel):
     new_count: int        # references resolved to newly imported works
     existing_count: int   # references resolved to works already in the library
-    failed_count: int     # references that could not be resolved
+    failed_count: int     # references that raised an unexpected exception
     total_extracted: int  # total references extracted by GROBID from the PDF
+    resolved_by_doi: int = 0    # PATH A successes
+    resolved_by_arxiv: int = 0  # PATH B successes
+    resolved_by_s2: int = 0     # PATH C successes
+    s2_rate_limited: bool = False  # True if S2 returned 429 during this run
 

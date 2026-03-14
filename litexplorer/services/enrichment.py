@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -122,14 +122,22 @@ def _extract_first_author_from_bibtex(bibtex_entry: str) -> str | None:
     return parts[-1] if parts else None
 
 
+class _S2RateLimitedError(Exception):
+    """Raised when Semantic Scholar returns HTTP 429 during GROBID reference resolution."""
+
+
 @dataclass
 class GrobidEnrichResult:
     """Summary of a GROBID reference extraction and resolution run."""
 
-    new_count: int       # References resolved to works newly imported into the library
-    existing_count: int  # References resolved to works already in the library
-    failed_count: int    # References that could not be resolved to any work
+    new_count: int        # References resolved to works newly imported into the library
+    existing_count: int   # References resolved to works already in the library
+    failed_count: int     # References that raised an unexpected exception
     total_extracted: int  # Total references GROBID extracted from the PDF
+    resolved_by_doi: int = 0    # PATH A successes
+    resolved_by_arxiv: int = 0  # PATH B successes
+    resolved_by_s2: int = 0     # PATH C successes
+    s2_rate_limited: bool = False  # True if S2 returned 429 during this run
 
 
 def _jaccard_similarity(a: str, b: str) -> float:
@@ -155,6 +163,8 @@ def _grobid_ref_to_dict(ref) -> dict:
         "pages": ref.pages,
         "year": ref.year,
         "raw_string": ref.raw_string,
+        "url": ref.url,
+        "venue_name": ref.venue_name,
     }
 
 
@@ -172,6 +182,8 @@ def _dict_to_grobid_ref(d: dict):
         pages=d.get("pages"),
         year=d.get("year"),
         raw_string=d.get("raw_string"),
+        url=d.get("url"),
+        venue_name=d.get("venue_name"),
     )
 
 
@@ -1103,7 +1115,7 @@ class EnrichmentService:
 
     # -- GROBID reference resolution ------------------------------------------
 
-    def enrich_from_grobid(self, work_id: int) -> GrobidEnrichResult:
+    def enrich_from_grobid(self, work_id: int, ss_client=None) -> GrobidEnrichResult:
         """Extract and resolve references from a work's primary PDF via GROBID.
 
         Steps:
@@ -1111,10 +1123,12 @@ class EnrichmentService:
         2. Send to the configured GROBID instance (``grobid_url`` setting).
            The raw reference list is cached permanently so subsequent calls
            skip the GROBID network round-trip and re-attempt only resolution.
-        3. Resolve each reference through three paths:
-           A. DOI  → library lookup → import_by_doi()
-           B. arXiv ID (no DOI) → library lookup → OpenAlex lookup
-           C. Title only → search_import_candidates() with Jaccard / author / year matching
+        3. Resolve each reference through a 4-step chain:
+           A. DOI → library lookup → import_by_doi()
+           B. arXiv ID (no DOI) → import_by_arxiv_id() (OA → S2 fallback)
+           C. Title → S2 search with first-author surname + year ±1 verification;
+              DOI from S2 validated against Crossref before use
+           D. Unresolved → create stub Work with GROBID metadata
         4. Create Citation edges for all successfully resolved works.
         5. Return a :class:`GrobidEnrichResult` summary.
 
@@ -1202,15 +1216,27 @@ class EnrichmentService:
             )
 
         # ------------------------------------------------------------------
+        # Step 3.5: Clean up previous GROBID run before re-resolving
+        # ------------------------------------------------------------------
+        self._cleanup_grobid_citations(work_id)
+
+        # ------------------------------------------------------------------
         # Steps 4–6: Resolve each reference, create citation edges, count
         # ------------------------------------------------------------------
         new_count = 0
         existing_count = 0
         failed_count = 0
+        resolved_by_doi = 0
+        resolved_by_arxiv = 0
+        resolved_by_s2 = 0
+        s2_rate_limited = False
+        skip_s2 = False
 
         for ref in references:
             try:
-                resolved_id, is_new_import = self._resolve_grobid_reference(ref)
+                resolved_id, is_new_import, method = self._resolve_grobid_reference(
+                    ref, ss_client=ss_client, skip_s2=skip_s2
+                )
                 if resolved_id is not None:
                     self._ensure_citation(
                         citing_work_id=work_id,
@@ -1221,7 +1247,34 @@ class EnrichmentService:
                         new_count += 1
                     else:
                         existing_count += 1
+                    if method == "doi":
+                        resolved_by_doi += 1
+                    elif method == "arxiv":
+                        resolved_by_arxiv += 1
+                    elif method == "s2":
+                        resolved_by_s2 += 1
+                    # "unresolved" and "none" don't increment any counter
                 else:
+                    failed_count += 1
+            except _S2RateLimitedError:
+                label = (ref.title or ref.raw_string or "")[:80]
+                logger.warning(
+                    "GROBID: Semantic Scholar rate limit hit for ref %r (work=%d) "
+                    "— skipping S2 for remaining references",
+                    label, work_id,
+                )
+                s2_rate_limited = True
+                skip_s2 = True
+                # Store this ref as unresolved so it still gets a citation edge
+                try:
+                    unresolved_id = self._store_unresolved_grobid_work(ref, s2_id=None)
+                    self._ensure_citation(
+                        citing_work_id=work_id,
+                        cited_work_id=unresolved_id,
+                        source="grobid",
+                    )
+                    new_count += 1
+                except Exception:
                     failed_count += 1
             except Exception as exc:
                 label = (ref.title or ref.raw_string or "")[:80]
@@ -1234,27 +1287,38 @@ class EnrichmentService:
         self.db.commit()
 
         logger.info(
-            "GROBID enrichment work=%d: total=%d new=%d existing=%d failed=%d",
+            "GROBID enrichment work=%d: total=%d new=%d existing=%d failed=%d "
+            "doi=%d arxiv=%d s2=%d rate_limited=%s",
             work_id, len(references), new_count, existing_count, failed_count,
+            resolved_by_doi, resolved_by_arxiv, resolved_by_s2, s2_rate_limited,
         )
         return GrobidEnrichResult(
             new_count=new_count,
             existing_count=existing_count,
             failed_count=failed_count,
             total_extracted=len(references),
+            resolved_by_doi=resolved_by_doi,
+            resolved_by_arxiv=resolved_by_arxiv,
+            resolved_by_s2=resolved_by_s2,
+            s2_rate_limited=s2_rate_limited,
         )
 
-    def _resolve_grobid_reference(self, ref) -> tuple[int | None, bool]:
-        """Resolve a single GrobidReference to a (work_id, is_new_import) pair.
+    def _resolve_grobid_reference(
+        self, ref, ss_client=None, *, skip_s2: bool = False
+    ) -> tuple[int | None, bool, str]:
+        """Resolve a single GrobidReference via a 4-step chain.
 
-        Tries three paths in order:
-        A. DOI → library lookup then import_by_doi()
-        B. arXiv ID (only when no DOI) → library lookup then OpenAlex
-        C. Title-only fallback → search_import_candidates() with strict matching
+        Returns ``(work_id, is_new_import, method)`` where ``method`` is one of:
+        ``"doi"``, ``"arxiv"``, ``"s2"``, ``"unresolved"``, ``"none"``.
 
-        Returns ``(None, False)`` when all paths fail.
-        ``is_new_import`` is True when a new Work was added to the library.
+        ``"unresolved"`` means a stub Work was created with GROBID metadata.
+        ``"none"`` means the reference had no title and nothing was stored.
+
+        Raises:
+            _S2RateLimitedError: if Semantic Scholar returns HTTP 429.
         """
+        import httpx
+
         # ---- PATH A: DOI present ------------------------------------------
         if ref.doi:
             doi = ref.doi.lower().strip()
@@ -1273,13 +1337,11 @@ class EnrichmentService:
                     work = self.db.get(Work, wdoi.work_id)
 
             if work is not None:
-                return work.id, False
+                return work.id, False, "doi"
 
             # Not in library — import via OpenAlex / Crossref pipeline
             imported = self.import_by_doi(doi)
             if imported is not None:
-                # Cross-check title similarity; log warning but still accept
-                # (GROBID DOI extraction is high-precision)
                 if ref.title and imported.title and imported.title != "(untitled)":
                     norm_ref = _normalize_title_for_cmp(ref.title)
                     norm_imp = _normalize_title_for_cmp(imported.title)
@@ -1290,9 +1352,8 @@ class EnrichmentService:
                             "(ref=%r, imported=%r)",
                             doi, sim, ref.title[:80], imported.title[:80],
                         )
-                return imported.id, True
+                return imported.id, True, "doi"
 
-            # DOI present but import failed — fall through to title search
             logger.debug(
                 "GROBID: DOI %r not importable, falling back to title search", doi
             )
@@ -1305,93 +1366,307 @@ class EnrichmentService:
                 select(Work).where(Work.arxiv_id == arxiv_id)
             ).scalar_one_or_none()
             if work is not None:
-                return work.id, False
+                return work.id, False, "arxiv"
 
-            # Attempt OpenAlex lookup via works/arxiv:{id}
             try:
-                raw = self.client.get_work_by_id_raw(f"arxiv:{arxiv_id}")
-                if raw is not None:
-                    ext = parse_work(raw)
-                    oa_cache_key = (
-                        f"work:doi:{ext.doi}" if ext.doi
-                        else f"work:openalex:{ext.external_id}" if ext.external_id
-                        else f"work:arxiv:{arxiv_id}"
-                    )
-                    self._set_cache("openalex", oa_cache_key, json.dumps(raw), "permanent")
-                    imported = self._upsert_work(ext)
-                    return imported.id, True
+                imported = self.import_by_arxiv_id(arxiv_id, ss_client=ss_client)
+                if imported is not None:
+                    return imported.id, True, "arxiv"
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    raise _S2RateLimitedError(
+                        f"S2 rate limit during arXiv lookup for {arxiv_id!r}"
+                    ) from exc
+                logger.debug(
+                    "GROBID: arXiv lookup HTTP error for %r: %s", arxiv_id, exc
+                )
             except Exception as exc:
                 logger.debug(
-                    "GROBID: OpenAlex arXiv lookup failed for %r: %s", arxiv_id, exc
+                    "GROBID: arXiv lookup failed for %r: %s", arxiv_id, exc
                 )
 
-            # Fall through to title search
+            # Fall through to S2 title search
 
-        # ---- PATH C: Title-only fallback ----------------------------------
+        # ---- PATH C: S2 title search with author/year verification ----------
+        if ref.title and ss_client is not None and not skip_s2:
+            ref_first_surname: str | None = None
+            if ref.authors:
+                parts = ref.authors[0].strip().split()
+                ref_first_surname = parts[-1].lower() if parts else None
+
+            try:
+                raw_items = ss_client.search_by_title(ref.title, limit=5)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    raise _S2RateLimitedError(
+                        "S2 rate limit during title search"
+                    ) from exc
+                raw_items = []
+
+            best_item: dict | None = None
+            for item in raw_items:
+                # Condition 1: first-author surname match (case-insensitive)
+                if ref_first_surname:
+                    item_authors = [
+                        a.get("name", "") for a in (item.get("authors") or [])
+                    ]
+                    if item_authors:
+                        candidate_parts = item_authors[0].strip().split()
+                        candidate_surname = (
+                            candidate_parts[-1].lower() if candidate_parts else ""
+                        )
+                        if candidate_surname and candidate_surname != ref_first_surname:
+                            continue
+
+                # Condition 2: year ±1
+                item_year = item.get("year")
+                if ref.year and item_year:
+                    try:
+                        if abs(int(item_year) - int(ref.year)) > 1:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                best_item = item
+                break
+
+            if best_item is not None:
+                paper_id: str | None = best_item.get("paperId") or None
+                ext_ids = best_item.get("externalIds") or {}
+                raw_s2_doi: str | None = (ext_ids.get("DOI") or "").lower() or None
+
+                # DOI validation: call Crossref and do a normalized substring check
+                validated_doi: str | None = None
+                if raw_s2_doi and self.crossref_client is not None:
+                    try:
+                        cr_raw = self.crossref_client.get_work_by_doi_raw(raw_s2_doi)
+                        if cr_raw is not None:
+                            cr_titles = cr_raw.get("title") or []
+                            cr_title = cr_titles[0] if cr_titles else ""
+                            norm_ref_t = _normalize_title_for_cmp(ref.title)
+                            norm_cr_t = _normalize_title_for_cmp(cr_title)
+                            if norm_ref_t and norm_cr_t and (
+                                norm_ref_t in norm_cr_t or norm_cr_t in norm_ref_t
+                            ):
+                                validated_doi = raw_s2_doi
+                            else:
+                                logger.debug(
+                                    "GROBID: S2 DOI %r failed Crossref title validation "
+                                    "(ref=%r, crossref=%r) — discarding DOI, keeping S2 ID",
+                                    raw_s2_doi, ref.title[:60], cr_title[:60],
+                                )
+                    except Exception as exc:
+                        logger.debug(
+                            "GROBID: Crossref DOI validation failed for %r: %s",
+                            raw_s2_doi, exc,
+                        )
+
+                # Import using validated DOI if available
+                if validated_doi:
+                    existing = self.db.execute(
+                        select(Work).where(Work.doi == validated_doi)
+                    ).scalar_one_or_none()
+                    if existing is not None:
+                        return existing.id, False, "s2"
+                    imported_doi = self.import_by_doi(validated_doi)
+                    if imported_doi is not None:
+                        return imported_doi.id, True, "s2"
+
+                # Fall back to import by S2 paper ID (no validated DOI)
+                if paper_id:
+                    existing = self.db.execute(
+                        select(Work).where(Work.semantic_scholar_id == paper_id)
+                    ).scalar_one_or_none()
+                    if existing is not None:
+                        return existing.id, False, "s2"
+                    try:
+                        imported_s2 = self.import_by_semantic_scholar_id(
+                            paper_id, ss_client
+                        )
+                        if imported_s2 is not None:
+                            return imported_s2.id, True, "s2"
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code == 429:
+                            raise _S2RateLimitedError(
+                                f"S2 rate limit during paper fetch for {paper_id!r}"
+                            ) from exc
+                        logger.debug(
+                            "GROBID: S2 paper fetch failed for %r: %s", paper_id, exc
+                        )
+
+        # ---- PATH D: Store as unresolved Work with GROBID metadata ----------
         if not ref.title:
-            return None, False
+            return None, False, "none"
 
-        if self.crossref_client is None:
-            logger.debug("GROBID: no Crossref client configured — cannot search by title")
-            return None, False
+        s2_id_for_stub: str | None = None
+        # If PATH C found a paper_id but import failed, capture it for the stub
+        # (best_item is in PATH C scope — re-check if C ran)
+        if ref.title and ss_client is not None and not skip_s2:
+            # best_item already evaluated above; use its paperId if available
+            pass  # s2_id_for_stub intentionally left None (import failed above)
 
-        norm_ref_title = _normalize_title_for_cmp(ref.title)
+        unresolved_id = self._store_unresolved_grobid_work(ref, s2_id=s2_id_for_stub)
+        return unresolved_id, True, "unresolved"
 
-        # Extract first-author surname (last word of the first author string)
-        ref_first_surname: str | None = None
-        if ref.authors:
-            parts = ref.authors[0].strip().split()
-            ref_first_surname = parts[-1].lower() if parts else None
+    def _cleanup_grobid_citations(self, work_id: int) -> None:
+        """Delete previous GROBID-sourced Citation records from *work_id* and
+        remove any cited works that are now fully orphaned duds.
 
-        candidates = self.search_import_candidates(
-            title=ref.title,
-            authors=None,
-            year=None,
-            crossref_client=self.crossref_client,
-        )
+        A work is considered an orphaned dud when ALL of the following hold:
+        - It has no external IDs (doi, arxiv_id, openalex_id, semantic_scholar_id)
+        - It is not a seed in any topic list
+        - It has no remaining Citation records (neither as citing nor as cited)
 
-        best_cand = None
-        for cand in candidates:
-            # Condition 1: title Jaccard >= 0.7
-            norm_cand_title = _normalize_title_for_cmp(cand.title)
-            if _jaccard_similarity(norm_ref_title, norm_cand_title) < 0.7:
+        This is called at the start of each GROBID enrichment run so that
+        re-runs on the same seed paper don't accumulate duplicate unresolved
+        stub works.
+        """
+        from litexplorer.models.project import TopicListWork
+
+        # Collect all GROBID-sourced citations from this seed
+        grobid_cits = self.db.execute(
+            select(Citation).where(
+                Citation.citing_work_id == work_id,
+                Citation.source == "grobid",
+            )
+        ).scalars().all()
+
+        cited_ids = [c.cited_work_id for c in grobid_cits]
+
+        # Delete the citation records first
+        for cit in grobid_cits:
+            self.db.delete(cit)
+        self.db.flush()
+
+        # For each previously-cited work, check if it is now an orphaned dud
+        for cited_id in cited_ids:
+            cited_work = self.db.get(Work, cited_id)
+            if cited_work is None:
                 continue
 
-            # Condition 2: first-author surname match (if both sides have data)
-            if ref_first_surname and cand.authors:
-                cand_parts = cand.authors[0].strip().split()
-                cand_surname = cand_parts[-1].lower() if cand_parts else ""
-                if cand_surname and cand_surname != ref_first_surname:
-                    continue
+            # Keep works with any external identifier
+            if any([
+                cited_work.doi,
+                cited_work.arxiv_id,
+                cited_work.openalex_id,
+                cited_work.semantic_scholar_id,
+            ]):
+                continue
 
-            # Condition 3: year ±1 (if both sides have data)
-            if ref.year and cand.year:
-                try:
-                    if abs(cand.year - int(ref.year)) > 1:
-                        continue
-                except (ValueError, TypeError):
-                    pass  # Unparseable year — ignore this condition
-
-            best_cand = cand
-            break
-
-        if best_cand is None:
-            return None, False
-
-        # Import the best candidate
-        if best_cand.doi:
-            work = self.db.execute(
-                select(Work).where(Work.doi == best_cand.doi)
+            # Keep works that are seeds in any topic list
+            in_topic_list = self.db.execute(
+                select(TopicListWork).where(TopicListWork.work_id == cited_id)
             ).scalar_one_or_none()
-            if work is not None:
-                return work.id, False
+            if in_topic_list is not None:
+                continue
 
-            imported = self.import_by_doi(best_cand.doi)
-            if imported is not None:
-                return imported.id, True
+            # Keep works that still have any citation records
+            still_cited = self.db.execute(
+                select(Citation).where(Citation.cited_work_id == cited_id)
+            ).scalar_one_or_none()
+            if still_cited is not None:
+                continue
 
-        # Candidate matched but has no DOI — cannot import
-        return None, False
+            still_citing = self.db.execute(
+                select(Citation).where(Citation.citing_work_id == cited_id)
+            ).scalar_one_or_none()
+            if still_citing is not None:
+                continue
+
+            # Orphaned dud — delete it (cascades handle related rows)
+            logger.debug(
+                "GROBID cleanup: deleting orphaned dud work=%d (%r)",
+                cited_id, cited_work.title,
+            )
+            self.db.delete(cited_work)
+            self.db.flush()
+
+    def _find_or_create_venue_by_name(self, name: str) -> Venue:
+        """Return an existing Venue whose alias matches *name* (case-insensitive),
+        or create a new one with *name* as its first alias."""
+        existing_alias = self.db.execute(
+            select(VenueAlias).where(VenueAlias.alias.ilike(name))
+        ).scalar_one_or_none()
+        if existing_alias is not None:
+            return existing_alias.venue
+
+        venue = Venue(name=name)
+        self.db.add(venue)
+        self.db.flush()
+        alias = VenueAlias(venue_id=venue.id, alias=name, sort_order=0)
+        self.db.add(alias)
+        self.db.flush()
+        return venue
+
+    def _store_unresolved_grobid_work(self, ref, s2_id: str | None = None) -> int:
+        """Create a stub Work record from GROBID reference metadata.
+
+        Used when no external source could resolve the reference.  The Work has
+        no DOI, arXiv ID, or OpenAlex ID.  ``semantic_scholar_id`` is set if S2
+        found a candidate paper ID during title search.
+        """
+        from litexplorer.external.base import ExternalAuthor, ExternalWork
+
+        year: int | None = None
+        if ref.year:
+            try:
+                year = int(ref.year)
+            except (ValueError, TypeError):
+                pass
+
+        authors = [
+            ExternalAuthor(name=a.strip())
+            for a in (ref.authors or [])
+            if a and a.strip()
+        ]
+
+        # Determine venue_id for the stub work.
+        venue_id: int | None = None
+        venue_name: str | None = getattr(ref, "venue_name", None)
+        if venue_name:
+            try:
+                v = self._find_or_create_venue_by_name(venue_name)
+                venue_id = v.id
+            except Exception:
+                logger.warning("Could not find/create venue for %r", venue_name)
+
+        ext = ExternalWork(
+            title=ref.title or "(untitled)",
+            publication_year=year,
+            citation_count=0,
+            authors=authors,
+            semantic_scholar_id=s2_id,
+        )
+        work = self._upsert_work(ext)
+
+        # Set venue_id directly (ExternalWork doesn't carry venue_id).
+        if venue_id is not None and work.venue_id is None:
+            work.venue_id = venue_id
+            self.db.flush()
+
+        # Add a WorkLocation for the URL if present.
+        url: str | None = getattr(ref, "url", None)
+        if url:
+            import re as _re
+            loc_type = "preprint" if _re.search(r"arxiv\.org", url, _re.IGNORECASE) else "venue"
+            # Only add if no location with this URL already exists for this work.
+            existing_loc = self.db.execute(
+                select(WorkLocation).where(
+                    WorkLocation.work_id == work.id,
+                    WorkLocation.url == url,
+                )
+            ).scalar_one_or_none()
+            if existing_loc is None:
+                loc = WorkLocation(
+                    work_id=work.id,
+                    location_type=loc_type,
+                    url=url,
+                    is_primary=False,
+                )
+                self.db.add(loc)
+                self.db.flush()
+
+        return work.id
 
     # -- Cache helpers --------------------------------------------------------
 

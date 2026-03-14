@@ -224,9 +224,10 @@ def _enrich_grobid_bg(work_id: int) -> None:
     try:
         oa_client = _get_client(db)
         cr_client = _get_crossref_client(db)
+        ss_client = _get_ss_client(db)
         try:
             svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
-            svc.enrich_from_grobid(work_id)
+            svc.enrich_from_grobid(work_id, ss_client=ss_client)
         except ValueError as e:
             logger.warning("GROBID enrichment validation error for work %d: %s", work_id, e)
         except GrobidError as e:
@@ -236,6 +237,7 @@ def _enrich_grobid_bg(work_id: int) -> None:
         finally:
             oa_client.close()
             cr_client.close()
+            ss_client.close()
     finally:
         work_lock.release(work_id)
         db.close()

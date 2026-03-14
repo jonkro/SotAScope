@@ -310,7 +310,7 @@ class Citation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     citing_work_id: Mapped[int] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
     cited_work_id: Mapped[int] = mapped_column(ForeignKey("works.id", ondelete="CASCADE"))
-    source: Mapped[str] = mapped_column(String(32))  # 'openalex' | 'crossref' | 'semantic_scholar'
+    source: Mapped[str] = mapped_column(String(32))  # 'openalex' | 'crossref' | 'semantic_scholar' | 'grobid'
 
     citing_work: Mapped["Work"] = relationship(foreign_keys=[citing_work_id])
     cited_work: Mapped["Work"] = relationship(foreign_keys=[cited_work_id])
