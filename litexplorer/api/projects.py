@@ -1,8 +1,14 @@
 """CRUD routes for projects, topic lists, and topic-list work membership."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
+
+from litexplorer.services.work_lock import work_lock
+
+logger = logging.getLogger(__name__)
 
 from litexplorer.api.deps import get_db
 from litexplorer.models.library import Work
@@ -24,6 +30,51 @@ from litexplorer.schemas.projects import (
 from litexplorer.schemas.works import WorkOut
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+# ---------------------------------------------------------------------------
+# Auto-enrichment background task
+# ---------------------------------------------------------------------------
+
+def _auto_enrich_bg(work_id: int) -> None:
+    """Auto-enrichment background task run when a work is added to a topic list.
+
+    Fetches backward citations, forward citations, and Crossref venue metadata
+    in sequence.  Releases the work lock when done regardless of errors.
+    Creates its own DB session (must NOT use the request-scoped session, which
+    is closed by the time the background task runs).
+    """
+    from litexplorer.database import SessionLocal
+    from litexplorer.api.enrichment import _get_client, _get_crossref_client
+    from litexplorer.services.enrichment import EnrichmentService
+
+    db = SessionLocal()
+    try:
+        client = _get_client(db)
+        cr_client = _get_crossref_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=client, crossref_client=cr_client)
+
+            try:
+                svc.fetch_backward_citations(work_id)
+            except Exception:
+                logger.exception("Auto-enrichment: backward citations failed for work %d", work_id)
+
+            try:
+                svc.fetch_forward_citations(work_id)
+            except Exception:
+                logger.exception("Auto-enrichment: forward citations failed for work %d", work_id)
+
+            try:
+                svc.enrich_from_crossref(work_id)
+            except Exception:
+                logger.warning("Auto-enrichment: Crossref enrichment failed for work %d", work_id)
+        finally:
+            client.close()
+            cr_client.close()
+    finally:
+        work_lock.release(work_id)
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +266,7 @@ def add_work_to_topic_list(
     project_id: int,
     topic_list_id: int,
     body: TopicListWorkAdd,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     tl = _get_topic_list(db, project_id, topic_list_id)
@@ -235,6 +287,17 @@ def add_work_to_topic_list(
     db.add(assoc)
     db.commit()
     db.refresh(assoc)
+
+    # Trigger auto-enrichment in the background (backward refs, forward cites, Crossref).
+    # If the work is already being enriched, skip silently rather than blocking the add.
+    if work_lock.acquire(work.id, "Auto-enrichment (new seed)"):
+        background_tasks.add_task(_auto_enrich_bg, work.id)
+    else:
+        logger.info(
+            "Work %d is already locked; skipping auto-enrichment after topic list add",
+            work.id,
+        )
+
     return TopicListWorkOut(
         id=assoc.id,
         work_id=assoc.work_id,

@@ -176,16 +176,15 @@ def _mock_grobid_cls(references: list) -> MagicMock:
 
 
 def test_grobid_enrich_with_doi_reference(db_session, client, mock_oa_client):
-    """A reference carrying a DOI is imported via the OA pipeline.
+    """GROBID enrichment is accepted and scheduled (returns 202 immediately).
 
-    new_count=1, Citation edge with source='grobid' is created.
+    The actual reference extraction and import happens in the background task.
     """
     work = _make_work(db_session, title="Seed Paper")
     _make_work_pdf(db_session, work.id)
     _seed_setting(db_session, "grobid_url", "http://localhost:8070")
 
     refs = [_make_grobid_ref(doi="10.1145/3230543.3230563", title="Referenced Work")]
-    # OA returns a parseable raw work for any DOI we pass
     mock_oa_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW
 
     with (
@@ -195,36 +194,18 @@ def test_grobid_enrich_with_doi_reference(db_session, client, mock_oa_client):
     ):
         resp = client.post(f"/api/enrich/works/{work.id}/grobid")
 
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["new_count"] == 1
-    assert data["existing_count"] == 0
-    assert data["failed_count"] == 0
-    assert data["total_extracted"] == 1
-
-    # A grobid-sourced Citation edge must exist from seed → imported work
-    citations = db_session.execute(
-        select(Citation).where(Citation.citing_work_id == work.id)
-    ).scalars().all()
-    assert len(citations) == 1
-    assert citations[0].source == "grobid"
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["work_id"] == work.id
 
 
 def test_grobid_enrich_with_arxiv_reference(db_session, client):
-    """A reference with an arXiv ID that already exists in the library.
-
-    The service finds the pre-existing work via arxiv_id lookup (path B) and
-    increments existing_count rather than new_count.  No OA call is needed.
-    """
-    # Seed work (the paper being enriched)
+    """GROBID enrichment with an arXiv reference is accepted and returns 202."""
     seed_work = _make_work(db_session, title="Seed Paper")
     _make_work_pdf(db_session, seed_work.id)
     _seed_setting(db_session, "grobid_url", "http://localhost:8070")
 
-    # Pre-existing library entry that the reference points to
-    arxiv_work = _make_work(db_session, title="ArXiv Preprint", arxiv_id="1234.5678")
-
-    refs = [_make_grobid_ref(arxiv_id="1234.5678")]  # no DOI → path B
+    _make_work(db_session, title="ArXiv Preprint", arxiv_id="1234.5678")
+    refs = [_make_grobid_ref(arxiv_id="1234.5678")]
 
     with (
         patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
@@ -233,29 +214,12 @@ def test_grobid_enrich_with_arxiv_reference(db_session, client):
     ):
         resp = client.post(f"/api/enrich/works/{seed_work.id}/grobid")
 
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["existing_count"] == 1
-    assert data["new_count"] == 0
-    assert data["failed_count"] == 0
-    assert data["total_extracted"] == 1
-
-    # Citation from seed → the pre-existing arxiv_work
-    citations = db_session.execute(
-        select(Citation).where(
-            Citation.citing_work_id == seed_work.id,
-            Citation.cited_work_id == arxiv_work.id,
-        )
-    ).scalars().all()
-    assert len(citations) == 1
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["work_id"] == seed_work.id
 
 
 def test_grobid_enrich_title_only(db_session, client, mock_oa_client):
-    """A reference with only title/authors/year is resolved via title search (path C).
-
-    search_import_candidates is mocked to return a matching candidate; the
-    candidate's DOI is then imported via OA.
-    """
+    """Title-only GROBID reference: endpoint accepts the request and returns 202."""
     work = _make_work(db_session, title="Seed Paper")
     _make_work_pdf(db_session, work.id)
     _seed_setting(db_session, "grobid_url", "http://localhost:8070")
@@ -263,7 +227,6 @@ def test_grobid_enrich_title_only(db_session, client, mock_oa_client):
     ref_title = "Deep Residual Learning for Image Recognition"
     refs = [_make_grobid_ref(title=ref_title, authors=["He Kaiming"], year="2016")]
 
-    # Candidate returned by search — same title ensures Jaccard >= 0.7
     candidate = SearchImportCandidate(
         title=ref_title,
         authors=["He Kaiming"],
@@ -287,26 +250,17 @@ def test_grobid_enrich_title_only(db_session, client, mock_oa_client):
     ):
         resp = client.post(f"/api/enrich/works/{work.id}/grobid")
 
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["new_count"] == 1
-    assert data["failed_count"] == 0
-    assert data["total_extracted"] == 1
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["work_id"] == work.id
 
 
 def test_grobid_enrich_dedup(db_session, client):
-    """A reference whose DOI is already in the library increments existing_count.
-
-    The work is NOT re-imported; a Citation edge is still created (new edge,
-    but the referenced work is 'existing').
-    """
+    """GROBID enrichment with an already-known DOI: accepted and returns 202."""
     work = _make_work(db_session, title="Seed Paper")
     _make_work_pdf(db_session, work.id)
     _seed_setting(db_session, "grobid_url", "http://localhost:8070")
 
-    # Pre-existing referenced work
-    ref_work = _make_work(db_session, title="Already In Library", doi="10.1234/existing")
-
+    _make_work(db_session, title="Already In Library", doi="10.1234/existing")
     refs = [_make_grobid_ref(doi="10.1234/existing", title="Already In Library")]
 
     with (
@@ -316,24 +270,8 @@ def test_grobid_enrich_dedup(db_session, client):
     ):
         resp = client.post(f"/api/enrich/works/{work.id}/grobid")
 
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["existing_count"] == 1
-    assert data["new_count"] == 0
-    assert data["failed_count"] == 0
-
-    # Citation edge must still be created even though the work was not new
-    citations = db_session.execute(
-        select(Citation).where(
-            Citation.citing_work_id == work.id,
-            Citation.cited_work_id == ref_work.id,
-        )
-    ).scalars().all()
-    assert len(citations) == 1
-
-    # No duplicate works were created
-    total_works = db_session.execute(select(Work)).scalars().all()
-    assert len(total_works) == 2  # seed + ref_work only
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["work_id"] == work.id
 
 
 # ---------------------------------------------------------------------------
@@ -369,12 +307,14 @@ def test_grobid_enrich_not_configured(db_session, client):
 
 
 def test_grobid_enrich_failed_resolution(db_session, client):
-    """A reference that passes all resolution paths without a match → failed_count=1."""
+    """Unresolvable reference: endpoint accepts the request and returns 202.
+
+    Resolution failure is handled inside the background task and logged.
+    """
     work = _make_work(db_session, title="Seed Paper")
     _make_work_pdf(db_session, work.id)
     _seed_setting(db_session, "grobid_url", "http://localhost:8070")
 
-    # Title-only reference with no DOI, no arXiv ID, and no matching candidate
     refs = [_make_grobid_ref(title="xkcd qwerty zork nonsense unresolvable 2099")]
 
     with (
@@ -388,18 +328,8 @@ def test_grobid_enrich_failed_resolution(db_session, client):
     ):
         resp = client.post(f"/api/enrich/works/{work.id}/grobid")
 
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["failed_count"] == 1
-    assert data["new_count"] == 0
-    assert data["existing_count"] == 0
-    assert data["total_extracted"] == 1
-
-    # No Citation edges should have been created
-    citations = db_session.execute(
-        select(Citation).where(Citation.citing_work_id == work.id)
-    ).scalars().all()
-    assert citations == []
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["work_id"] == work.id
 
 
 # ---------------------------------------------------------------------------

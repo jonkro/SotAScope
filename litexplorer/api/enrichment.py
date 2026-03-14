@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from litexplorer.api.deps import get_db
@@ -32,11 +33,16 @@ from litexplorer.schemas.enrichment import (
 )
 from litexplorer.schemas.works import WorkOut
 from litexplorer.services.enrichment import EnrichmentService
+from litexplorer.services.work_lock import work_lock
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/enrich", tags=["enrichment"])
 
+
+# ---------------------------------------------------------------------------
+# Client / settings helpers
+# ---------------------------------------------------------------------------
 
 def _get_contact_email(db: Session) -> str | None:
     """Read API contact email: DB setting first, then env var fallback."""
@@ -107,6 +113,137 @@ def _get_client(db: Session) -> OpenAlexClient:
         verify=ssl_verify,
     )
 
+
+def _get_grobid_url_setting(db: Session) -> str:
+    """Read grobid_url setting from DB. Returns empty string if not configured."""
+    from litexplorer.api.settings import get_setting_value
+
+    return get_setting_value(db, "grobid_url") or ""
+
+
+# ---------------------------------------------------------------------------
+# Background task functions (each owns its own DB session + releases lock)
+# ---------------------------------------------------------------------------
+
+def _fetch_backward_citations_bg(work_id: int) -> None:
+    """Background: fetch backward citations (OpenAlex) and release work lock."""
+    from litexplorer.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        client = _get_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=client)
+            svc.fetch_backward_citations(work_id)
+        except ValueError:
+            logger.warning("Work %d not found during background backward citation fetch", work_id)
+        except Exception:
+            logger.exception("Error fetching backward citations for work %d", work_id)
+        finally:
+            client.close()
+    finally:
+        work_lock.release(work_id)
+        db.close()
+
+
+def _fetch_forward_citations_bg(work_id: int, force_refresh: bool) -> None:
+    """Background: fetch forward citations (OpenAlex) and release work lock."""
+    from litexplorer.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        client = _get_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=client)
+            svc.fetch_forward_citations(work_id, force_refresh=force_refresh)
+        except ValueError:
+            logger.warning("Work %d not found during background forward citation fetch", work_id)
+        except Exception:
+            logger.exception("Error fetching forward citations for work %d", work_id)
+        finally:
+            client.close()
+    finally:
+        work_lock.release(work_id)
+        db.close()
+
+
+def _enrich_crossref_bg(work_id: int) -> None:
+    """Background: enrich venue from Crossref and release work lock."""
+    from litexplorer.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        cr_client = _get_crossref_client(db)
+        oa_client = _get_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+            svc.enrich_from_crossref(work_id)
+        except ValueError:
+            logger.warning("Crossref enrichment failed for work %d (validation error)", work_id)
+        except RuntimeError:
+            logger.warning("Crossref service error during enrichment for work %d", work_id)
+        except Exception:
+            logger.exception("Unexpected error in background Crossref enrichment for work %d", work_id)
+        finally:
+            cr_client.close()
+            oa_client.close()
+    finally:
+        work_lock.release(work_id)
+        db.close()
+
+
+def _enrich_semantic_scholar_bg(work_id: int, direction: str) -> None:
+    """Background: fetch refs/cites from Semantic Scholar and release work lock."""
+    from litexplorer.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        ss_client = _get_ss_client(db)
+        oa_client = _get_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=oa_client)
+            svc.enrich_from_semantic_scholar(work_id, ss_client, direction=direction)
+        except (ValueError, RuntimeError):
+            logger.warning("Semantic Scholar enrichment failed for work %d", work_id)
+        except Exception:
+            logger.exception("Unexpected error in background S2 enrichment for work %d", work_id)
+        finally:
+            ss_client.close()
+            oa_client.close()
+    finally:
+        work_lock.release(work_id)
+        db.close()
+
+
+def _enrich_grobid_bg(work_id: int) -> None:
+    """Background: extract references via GROBID and release work lock."""
+    from litexplorer.database import SessionLocal
+    from litexplorer.external.grobid import GrobidError
+
+    db = SessionLocal()
+    try:
+        oa_client = _get_client(db)
+        cr_client = _get_crossref_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+            svc.enrich_from_grobid(work_id)
+        except ValueError as e:
+            logger.warning("GROBID enrichment validation error for work %d: %s", work_id, e)
+        except GrobidError as e:
+            logger.warning("GROBID service error for work %d: %s", work_id, e)
+        except Exception:
+            logger.exception("Unexpected error in background GROBID enrichment for work %d", work_id)
+        finally:
+            oa_client.close()
+            cr_client.close()
+    finally:
+        work_lock.release(work_id)
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @router.post("/doi", response_model=EnrichDOIResult)
 def enrich_by_doi(body: EnrichDOIRequest, db: Session = Depends(get_db)):
@@ -210,76 +347,87 @@ def doi_info(doi: str = Query(...), db: Session = Depends(get_db)):
     return DOIInfoResult(doi=doi, found=False)
 
 
-@router.post("/works/{work_id}/citations/backward", response_model=CitationResult)
-def fetch_backward_citations(work_id: int, db: Session = Depends(get_db)):
-    """Fetch and persist backward citations (references) for a work."""
-    client = _get_client(db)
-    try:
-        svc = EnrichmentService(db=db, client=client)
-        try:
-            works, raw_count = svc.fetch_backward_citations(work_id)
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-    finally:
-        client.close()
+@router.post("/works/{work_id}/citations/backward")
+def fetch_backward_citations(
+    work_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Schedule background fetch of backward citations (references) for a work."""
+    from litexplorer.models.library import Work as WorkModel
 
-    return CitationResult(
-        works=[WorkOut.model_validate(w) for w in works],
-        count=len(works),
-        raw_count=raw_count,
+    work = db.get(WorkModel, work_id)
+    if not work:
+        raise HTTPException(status_code=404, detail=f"Work {work_id} not found")
+
+    if not work_lock.acquire(work_id, "Fetching backward citations (OpenAlex)"):
+        status = work_lock.get_status(work_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Work {work_id} is currently being processed: {status['task']}",
+        )
+
+    background_tasks.add_task(_fetch_backward_citations_bg, work_id)
+    return JSONResponse(
+        status_code=202,
+        content={"message": "Fetching backward citations in background", "work_id": work_id},
     )
 
 
-@router.post("/works/{work_id}/citations/forward", response_model=CitationResult)
+@router.post("/works/{work_id}/citations/forward")
 def fetch_forward_citations(
     work_id: int,
+    background_tasks: BackgroundTasks,
     force_refresh: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    """Fetch and persist forward citations (papers citing this work)."""
-    client = _get_client(db)
-    try:
-        svc = EnrichmentService(db=db, client=client)
-        try:
-            works = svc.fetch_forward_citations(work_id, force_refresh=force_refresh)
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-    finally:
-        client.close()
+    """Schedule background fetch of forward citations (papers citing this work)."""
+    from litexplorer.models.library import Work as WorkModel
 
-    return CitationResult(
-        works=[WorkOut.model_validate(w) for w in works],
-        count=len(works),
+    work = db.get(WorkModel, work_id)
+    if not work:
+        raise HTTPException(status_code=404, detail=f"Work {work_id} not found")
+
+    if not work_lock.acquire(work_id, "Fetching forward citations (OpenAlex)"):
+        status = work_lock.get_status(work_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Work {work_id} is currently being processed: {status['task']}",
+        )
+
+    background_tasks.add_task(_fetch_forward_citations_bg, work_id, force_refresh)
+    return JSONResponse(
+        status_code=202,
+        content={"message": "Fetching forward citations in background", "work_id": work_id},
     )
 
 
-@router.post("/works/{work_id}/crossref", response_model=CrossrefEnrichResult)
-def enrich_from_crossref(work_id: int, db: Session = Depends(get_db)):
-    """Enrich a work's venue metadata (ISSN, publisher) from Crossref."""
-    cr_client = _get_crossref_client(db)
-    oa_client = _get_client(db)
-    try:
-        svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
-        try:
-            work = svc.enrich_from_crossref(work_id)
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        except RuntimeError as e:
-            raise HTTPException(status_code=503, detail=str(e))
-    finally:
-        cr_client.close()
-        oa_client.close()
+@router.post("/works/{work_id}/crossref")
+def enrich_from_crossref(
+    work_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Schedule background enrichment of venue metadata from Crossref."""
+    from litexplorer.models.library import Work as WorkModel
 
-    venue_issn = None
-    venue_publisher = None
-    if work.venue:
-        venue_issn = work.venue.issn
-        venue_publisher = work.venue.publisher
+    work = db.get(WorkModel, work_id)
+    if not work:
+        raise HTTPException(status_code=404, detail=f"Work {work_id} not found")
+    if not work.doi:
+        raise HTTPException(status_code=404, detail="Work has no DOI; cannot enrich from Crossref")
 
-    return CrossrefEnrichResult(
-        work=WorkOut.model_validate(work),
-        venue_issn=venue_issn,
-        venue_publisher=venue_publisher,
+    if not work_lock.acquire(work_id, "Enriching venue from Crossref"):
+        status = work_lock.get_status(work_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Work {work_id} is currently being processed: {status['task']}",
+        )
+
+    background_tasks.add_task(_enrich_crossref_bg, work_id)
+    return JSONResponse(
+        status_code=202,
+        content={"message": "Enriching from Crossref in background", "work_id": work_id},
     )
 
 
@@ -350,82 +498,83 @@ def resolve_doi_batch(body: BatchResolveDOIRequest, db: Session = Depends(get_db
     return results
 
 
-@router.post("/works/{work_id}/semantic-scholar", response_model=SemanticScholarEnrichResult)
+@router.post("/works/{work_id}/semantic-scholar")
 def enrich_from_semantic_scholar(
     work_id: int,
+    background_tasks: BackgroundTasks,
     direction: str = Query("both"),
     db: Session = Depends(get_db),
 ):
-    """Fetch backward and forward citations from Semantic Scholar.
-
-    Looks up the work by DOI (preferred) or stored semantic_scholar_id.
-    Upserts returned papers into the library and merges citation edges,
-    skipping duplicates.  Returns counts of new vs. already-existing edges.
-    """
-    ss_client = _get_ss_client(db)
-    oa_client = _get_client(db)
-    try:
-        svc = EnrichmentService(db=db, client=oa_client)
-        if direction not in ("both", "backward", "forward"):
-            raise HTTPException(status_code=400, detail="direction must be 'both', 'backward', or 'forward'")
-        try:
-            summary = svc.enrich_from_semantic_scholar(work_id, ss_client, direction=direction)
-        except ValueError as e:
-            raise HTTPException(status_code=404 if "not found" in str(e).lower() else 400, detail=str(e))
-        except RuntimeError as e:
-            raise HTTPException(status_code=503, detail=str(e))
-    finally:
-        ss_client.close()
-        oa_client.close()
-
+    """Schedule background enrichment of refs/cites from Semantic Scholar."""
     from litexplorer.models.library import Work as WorkModel
+
+    if direction not in ("both", "backward", "forward"):
+        raise HTTPException(
+            status_code=400, detail="direction must be 'both', 'backward', or 'forward'"
+        )
+
     work = db.get(WorkModel, work_id)
-    return SemanticScholarEnrichResult(
-        work=WorkOut.model_validate(work),
-        **summary,
+    if not work:
+        raise HTTPException(status_code=404, detail=f"Work {work_id} not found")
+
+    if not work.doi and not work.semantic_scholar_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Work has no DOI or Semantic Scholar ID; cannot enrich from Semantic Scholar",
+        )
+
+    if not work_lock.acquire(work_id, f"Fetching citations from Semantic Scholar ({direction})"):
+        status = work_lock.get_status(work_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Work {work_id} is currently being processed: {status['task']}",
+        )
+
+    background_tasks.add_task(_enrich_semantic_scholar_bg, work_id, direction)
+    return JSONResponse(
+        status_code=202,
+        content={"message": "Fetching Semantic Scholar citations in background", "work_id": work_id},
     )
 
 
-@router.post("/works/{work_id}/grobid", response_model=GrobidEnrichResult)
-def enrich_from_grobid(work_id: int, db: Session = Depends(get_db)):
-    """Extract and resolve references from a work's primary PDF via GROBID.
+@router.post("/works/{work_id}/grobid")
+def enrich_from_grobid(
+    work_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Schedule background reference extraction from a work's primary PDF via GROBID."""
+    from sqlalchemy import select as sa_select
+    from litexplorer.models.library import Work as WorkModel, WorkPDF as WorkPDFModel
 
-    Sends the PDF to the configured GROBID instance, parses the returned
-    reference list, and resolves each reference through DOI → arXiv ID →
-    title-search fallback paths.  The raw GROBID extraction is cached
-    permanently so re-runs skip the GROBID network call and re-attempt only
-    resolution for previously unresolved references.
-    """
-    from litexplorer.external.grobid import GrobidError
+    work = db.get(WorkModel, work_id)
+    if not work:
+        raise HTTPException(status_code=404, detail=f"Work {work_id} not found")
 
-    oa_client = _get_client(db)
-    cr_client = _get_crossref_client(db)
-    try:
-        svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
-        try:
-            result = svc.enrich_from_grobid(work_id)
-        except ValueError as e:
-            msg = str(e)
-            if "no pdf" in msg.lower():
-                raise HTTPException(status_code=404, detail="No PDF available for this work")
-            if "not configured" in msg.lower():
-                raise HTTPException(status_code=400, detail="GROBID is not configured")
-            raise HTTPException(status_code=404, detail=msg)
-        except GrobidError as e:
-            logger.warning("GROBID service error for work %d: %s", work_id, e)
-            raise HTTPException(status_code=503, detail="GROBID service is not available")
-        except Exception as e:
-            logger.exception("Unexpected error during GROBID enrichment for work %d", work_id)
-            raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        oa_client.close()
-        cr_client.close()
+    primary_pdf = db.execute(
+        sa_select(WorkPDFModel).where(
+            WorkPDFModel.work_id == work_id,
+            WorkPDFModel.is_primary == True,  # noqa: E712
+        )
+    ).scalar_one_or_none()
+    if not primary_pdf:
+        raise HTTPException(status_code=404, detail="No PDF available for this work")
 
-    return GrobidEnrichResult(
-        new_count=result.new_count,
-        existing_count=result.existing_count,
-        failed_count=result.failed_count,
-        total_extracted=result.total_extracted,
+    grobid_url = _get_grobid_url_setting(db)
+    if not grobid_url:
+        raise HTTPException(status_code=400, detail="GROBID is not configured")
+
+    if not work_lock.acquire(work_id, "Extracting references via GROBID"):
+        status = work_lock.get_status(work_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Work {work_id} is currently being processed: {status['task']}",
+        )
+
+    background_tasks.add_task(_enrich_grobid_bg, work_id)
+    return JSONResponse(
+        status_code=202,
+        content={"message": "Extracting GROBID references in background", "work_id": work_id},
     )
 
 

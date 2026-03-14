@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
 from litexplorer.config import settings
+from litexplorer.services.work_lock import work_lock
 from litexplorer.models.library import (
     Author,
     Citation,
@@ -115,6 +116,21 @@ def _work_detail(work: Work) -> WorkDetail:
             key=lambda x: x["position"],
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Lock status
+# ---------------------------------------------------------------------------
+
+@router.get("/lock-status")
+def get_lock_status():
+    """Return all work IDs currently being processed in the background.
+
+    The frontend can poll this to show progress indicators.
+    Returns {"locks": {"<work_id>": "<task_description>", ...}}.
+    """
+    all_locked = work_lock.get_all_locked()
+    return {"locks": {str(k): v for k, v in all_locked.items()}}
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +411,12 @@ def update_work(work_id: int, body: WorkUpdate, db: Session = Depends(get_db)):
 @router.delete("/{work_id}", status_code=204)
 def delete_work(work_id: int, db: Session = Depends(get_db)):
     work = _get_work(db, work_id)
+    if work_lock.is_locked(work_id):
+        status = work_lock.get_status(work_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Work {work_id} is currently being processed: {status['task']}",
+        )
     # Move PDF files to orphaned directory before cascade-deleting DB rows
     pdf_root = _get_pdf_root(db)
     work_pdf_dir = pdf_root / str(work_id)
@@ -846,6 +868,14 @@ def merge_works(target_id: int, source_id: int, db: Session = Depends(get_db)):
 
     target = _get_work(db, target_id)
     source = _get_work(db, source_id)
+
+    for wid in (target_id, source_id):
+        if work_lock.is_locked(wid):
+            status = work_lock.get_status(wid)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Work {wid} is currently being processed: {status['task']}",
+            )
 
     pdf_root = _get_pdf_root(db)
 

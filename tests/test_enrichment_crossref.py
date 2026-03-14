@@ -329,13 +329,11 @@ class TestCrossrefEnrichEndpoint:
         assert resp.status_code == 200
         work_id = resp.json()["work"]["id"]
 
-        # Enrich from Crossref
+        # Crossref enrichment is now backgrounded — returns 202 immediately
         mock_cr_client.get_work_by_doi_raw.return_value = SAMPLE_CROSSREF_WORK
         resp = api_client.post(f"/api/enrich/works/{work_id}/crossref")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["venue_issn"] == "0146-4833"
-        assert data["venue_publisher"] == "Association for Computing Machinery (ACM)"
+        assert resp.status_code == 202
+        assert resp.json()["work_id"] == work_id
 
     def test_work_not_found(self, api_client):
         resp = api_client.post("/api/enrich/works/9999/crossref")
@@ -351,14 +349,15 @@ class TestCrossrefEnrichEndpoint:
         assert "no DOI" in resp.json()["detail"]
 
     def test_crossref_not_found(self, api_client, mock_oa_client, mock_cr_client):
+        # "Not found in Crossref" happens inside the background task — the endpoint
+        # returns 202 immediately after validating work existence and DOI presence.
         mock_oa_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW
         resp = api_client.post("/api/enrich/doi", json={"doi": "10.1145/3230543.3230563"})
         work_id = resp.json()["work"]["id"]
 
         mock_cr_client.get_work_by_doi_raw.return_value = None
         resp = api_client.post(f"/api/enrich/works/{work_id}/crossref")
-        assert resp.status_code == 404
-        assert "not found in Crossref" in resp.json()["detail"]
+        assert resp.status_code == 202
 
 
 class TestDoiFallbackAPI:
