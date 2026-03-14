@@ -46,21 +46,36 @@ def grobid_status(db: Session = Depends(get_db)):
 
 @router.post("/start", response_model=GrobidStartResponse)
 def grobid_start():
-    """Attempt to start a stopped Docker container named 'grobid'."""
+    """Start GROBID: try 'docker start grobid' first; fall back to 'docker run' if the container doesn't exist."""
     try:
-        result = subprocess.run(
+        start_result = subprocess.run(
             ["docker", "start", "grobid"],
             capture_output=True,
             text=True,
             timeout=10,
         )
-        if result.returncode == 0:
+        if start_result.returncode == 0:
             return GrobidStartResponse(success=True, message="Container 'grobid' started.")
-        stderr = result.stderr.strip()
-        return GrobidStartResponse(success=False, message=stderr or "docker start failed.")
+
+        # docker start failed — container may not exist yet; try docker run
+        run_result = subprocess.run(
+            [
+                "docker", "run", "-d",
+                "--name", "grobid",
+                "-p", "8070:8070",
+                "grobid/grobid:0.8.2-crf",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if run_result.returncode == 0:
+            return GrobidStartResponse(success=True, message="Container 'grobid' created and started.")
+        stderr = run_result.stderr.strip()
+        return GrobidStartResponse(success=False, message=stderr or "docker run failed.")
     except FileNotFoundError:
         return GrobidStartResponse(success=False, message="Docker is not installed or not on PATH.")
     except subprocess.TimeoutExpired:
-        return GrobidStartResponse(success=False, message="docker start timed out after 10 seconds.")
+        return GrobidStartResponse(success=False, message="docker start/run timed out.")
     except Exception as exc:
         return GrobidStartResponse(success=False, message=str(exc))

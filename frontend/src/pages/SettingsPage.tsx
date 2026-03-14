@@ -305,13 +305,21 @@ function GrobidConfigSection({ saveSetting }: { saveSetting: (key: string, value
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
 
-  const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  // ok: true = green, false = red, 'pending' = blue (starting up)
+  const [testStatus, setTestStatus] = useState<{ ok: boolean | 'pending'; message: string } | null>(null);
   // Track last known availability to decide whether to show the Start button.
   const [lastAvailable, setLastAvailable] = useState<boolean | null>(null);
   const [starting, setStarting] = useState(false);
 
+  // Guard against state updates after the component unmounts (user navigated away).
+  const mountedRef = useRef(true);
   useEffect(() => {
-    if (testStatus?.ok) {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (testStatus?.ok === true) {
       const t = setTimeout(() => setTestStatus(null), 3000);
       return () => clearTimeout(t);
     }
@@ -345,19 +353,34 @@ function GrobidConfigSection({ saveSetting }: { saveSetting: (key: string, value
 
   const handleStart = async () => {
     setStarting(true);
-    setTestStatus(null);
+    setTestStatus({ ok: 'pending', message: 'Starting GROBID…' });
     try {
       const result = await startGrobid();
       if (!result.success) {
-        setTestStatus({ ok: false, message: result.message });
-        setStarting(false);
+        if (mountedRef.current) {
+          setTestStatus({ ok: false, message: result.message });
+        }
         return;
       }
-      // Wait 5 s for GROBID to initialise, then auto-test.
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-      await runTestConnection();
+      // Poll every 3 s, up to 10 attempts (30 s total).
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        if (!mountedRef.current) return; // user navigated away — GROBID still starts on the server
+        const statusResult = await refetchStatus();
+        if (!mountedRef.current) return;
+        if (statusResult.data?.available) {
+          setLastAvailable(true);
+          setTestStatus({ ok: true, message: 'Connected' });
+          return;
+        }
+      }
+      // Still not up after 30 s — leave the Start button visible.
+      if (mountedRef.current) {
+        setLastAvailable(false);
+        setTestStatus({ ok: false, message: 'Not responding yet — try "Test connection" again shortly.' });
+      }
     } finally {
-      setStarting(false);
+      if (mountedRef.current) setStarting(false);
     }
   };
 
@@ -412,7 +435,15 @@ function GrobidConfigSection({ saveSetting }: { saveSetting: (key: string, value
           </button>
         )}
         {testStatus && (
-          <span className={`text-sm ${testStatus.ok ? 'text-green-600' : 'text-red-600'}`}>
+          <span
+            className={`text-sm ${
+              testStatus.ok === true
+                ? 'text-green-600'
+                : testStatus.ok === 'pending'
+                ? 'text-blue-600'
+                : 'text-red-600'
+            }`}
+          >
             {testStatus.message}
           </span>
         )}
