@@ -512,8 +512,8 @@ export default function ProjectDetailPage() {
       : null;
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <div className="flex-1 flex flex-col min-w-0">
+    <div className="flex h-screen">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <PageHeader title={project.name}>
           <button
             onClick={() => navigate('/projects')}
