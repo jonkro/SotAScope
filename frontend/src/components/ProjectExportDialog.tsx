@@ -25,13 +25,20 @@ export default function ProjectExportDialog({
   const defaultFilename = toSafeFilename(projectName, 'zip');
   const [filename, setFilename] = useState(defaultFilename);
 
-  const handleExport = () => {
+  const handleExport = async () => {
+    const res = await fetch(`/api/projects/${projectId}/export`);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    // Use a blob URL so the browser has no Content-Disposition header to
+    // override the user-chosen filename set on the anchor's download attribute.
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = `/api/projects/${projectId}/export`;
+    a.href = url;
     a.download = filename.trim() || defaultFilename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    URL.revokeObjectURL(url);
     onClose();
   };
 

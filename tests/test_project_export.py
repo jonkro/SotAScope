@@ -121,14 +121,14 @@ class TestExportProject:
         db_session.commit()
         buf = export_project(project.id, db_session)
         manifest = json.loads(_unzip(buf)["manifest.json"])
-        assert manifest["format_version"] == 1
+        assert manifest["format_version"] == 2
         assert "exported_at" in manifest
         assert manifest["project"]["name"] == "Test Project"
         assert manifest["project"]["description"] == "A test project"
         assert manifest["works"] == []
         assert manifest["topic_lists"] == []
         assert manifest["extraction_schemas"] == []
-        assert manifest["venue_tier_overrides"] == []
+        assert manifest["venue_tiers"] == []
         assert manifest["citations"] == []
         assert manifest["chat_sessions"] == []
         assert manifest["work_notes"] == []
@@ -253,23 +253,35 @@ class TestExportProject:
         results = manifest["extraction_schemas"][0]["results"]
         assert results == []
 
-    def test_venue_tier_overrides(self, db_session):
+    def test_venue_tiers(self, db_session):
+        """Venue tier snapshot includes project-local override with correct fields."""
         project = _make_project(db_session)
+        tl = _make_topic_list(db_session, project.id)
 
         venue = Venue(name="ICML", openalex_id="V123", issn="1234-5678", venue_type="conference")
         db_session.add(venue)
         db_session.flush()
         db_session.add(VenueAlias(venue_id=venue.id, alias="ICML", sort_order=0))
+        db_session.add(VenueAlias(venue_id=venue.id, alias="Int. Conf. on Machine Learning",
+                                  sort_order=1))
+        # Seed work so the venue is in scope
+        w = _make_work(db_session, doi="10.1/icml")
+        w.venue_id = venue.id
+        db_session.flush()
+        _add_seed(db_session, tl, w)
         db_session.add(ProjectVenueTier(project_id=project.id, venue_id=venue.id, tier=1))
         db_session.commit()
 
         manifest = json.loads(_unzip(export_project(project.id, db_session))["manifest.json"])
-        overrides = manifest["venue_tier_overrides"]
-        assert len(overrides) == 1
-        assert overrides[0]["venue_openalex_id"] == "V123"
-        assert overrides[0]["venue_issn"] == "1234-5678"
-        assert overrides[0]["venue_name"] == "ICML"
-        assert overrides[0]["tier"] == 1
+        tiers = manifest["venue_tiers"]
+        assert len(tiers) == 1
+        assert tiers[0]["venue_openalex_id"] == "V123"
+        assert tiers[0]["venue_issn"] == "1234-5678"
+        assert tiers[0]["venue_name"] == "ICML"
+        assert tiers[0]["tier"] == 1
+        # Preferred alias "ICML" excluded; secondary alias present
+        assert "ICML" not in tiers[0]["aliases"]
+        assert "Int. Conf. on Machine Learning" in tiers[0]["aliases"]
 
     def test_citations_between_seeds_only(self, db_session):
         project = _make_project(db_session)
