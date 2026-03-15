@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import ConfirmDialog from './ConfirmDialog';
+import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from './WorkDetailPanel';
 import type { WorkPDFOut } from '../types';
 import {
   useExtractionResults,
@@ -344,6 +345,10 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
     });
   }, [seeds.length]); // re-run only when seed count changes
 
+  // Paper detail side panel
+  const [panelWorkId, setPanelWorkId] = useState<number | null>(null);
+  const [panelFoldState, setPanelFoldState] = useState<PanelFoldState>(DEFAULT_FOLD_STATE);
+
   // Work selection state
   const [searchQ, setSearchQ] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -606,7 +611,8 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
     !isExtracting && extractProgress !== null && extractProgress.done === extractProgress.total;
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="flex-1 flex min-h-0 overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
       {/* Read-only mode: show export bar with edit link */}
       {readOnlyPaperSelection ? (
         <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-2 flex items-center gap-3">
@@ -891,7 +897,12 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
                         />
                       ))}
                     <div className="px-3 py-2 min-w-0 flex-1 flex items-start justify-between gap-2">
-                      <p className="text-xs font-medium text-gray-900 line-clamp-2">{seed.title}</p>
+                      <button
+                        onClick={() => setPanelWorkId(prev => prev === seed.id ? null : seed.id)}
+                        className="text-xs font-medium text-left text-gray-900 line-clamp-2 hover:text-blue-600 cursor-pointer"
+                      >
+                        {seed.title}
+                      </button>
                       {noText && (
                         <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-400 rounded shrink-0 leading-none mt-0.5">
                           No text
@@ -991,6 +1002,22 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
           onCancel={() => setShowConfirm(false)}
         />
       )}
+
+    </div>
+
+    {/* Paper detail side panel — flex sibling, same layout as timeline view.
+        The panel takes space from the right; the table shrinks visually but
+        keeps its full natural width and stays horizontally scrollable. */}
+    {panelWorkId !== null && (
+      <WorkDetailPanel
+        workId={panelWorkId}
+        onClose={() => setPanelWorkId(null)}
+        projectId={projectId ?? undefined}
+        topicLists={topicLists}
+        foldState={panelFoldState}
+        onFoldChange={setPanelFoldState}
+      />
+    )}
     </div>
   );
 }
