@@ -38,6 +38,7 @@ import type {
   LockStatusResponse,
   ImportResult,
   ImportResolveRequest,
+  AliasDecision,
   BulkJobAccepted,
   BulkJobStatus,
 } from './types';
@@ -830,6 +831,16 @@ export function resolveImportCollision(
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+export function resolveImportAliases(
+  projectId: number,
+  decisions: AliasDecision[],
+): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(
+    `/api/projects/import/${projectId}/resolve-aliases`,
+    { method: 'POST', body: JSON.stringify({ decisions }) },
+  );
 }
 
 // ---- Bulk enrichment jobs ----

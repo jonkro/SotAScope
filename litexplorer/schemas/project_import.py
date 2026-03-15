@@ -27,6 +27,33 @@ class AmbiguousMatch(BaseModel):
     candidates: list[AmbiguousMatchWork]
 
 
+class PendingVenueAlias(BaseModel):
+    """An alias that exists in the export archive but not in the importer's library.
+
+    Returned by POST /api/projects/import (format_version=2) when new aliases
+    are found.  The user confirms or rejects each one before they are written
+    to the global VenueAlias table.
+    """
+
+    venue_id: int   # local DB ID of the matched/created venue
+    venue_name: str  # preferred display name, for grouping in the UI
+    alias: str       # the alias string awaiting the user's decision
+
+
+class AliasDecision(BaseModel):
+    """User decision for a single pending venue alias."""
+
+    venue_id: int
+    alias: str
+    accepted: bool
+
+
+class ResolveAliasesRequest(BaseModel):
+    """Body for POST /api/projects/import/{project_id}/resolve-aliases."""
+
+    decisions: list[AliasDecision]
+
+
 class ImportResult(BaseModel):
     """Result returned by POST /api/projects/import."""
 
@@ -54,6 +81,14 @@ class ImportResult(BaseModel):
 
     # Pre-computed merge preview (available immediately if needs_project_decision)
     merge_preview: MergePreview | None = None
+
+    # Aliases present in the archive that don't yet exist in this instance's
+    # global VenueAlias table.  Only populated for format_version=2 imports.
+    pending_venue_aliases: list[PendingVenueAlias] = []
+
+    # True when pending_venue_aliases is non-empty and the user must confirm
+    # which aliases to write to the global library before import is complete.
+    needs_alias_decision: bool = False
 
 
 class ImportResolveRequest(BaseModel):

@@ -247,6 +247,18 @@ export interface AmbiguousMatch {
   candidates: AmbiguousMatchWork[];
 }
 
+export interface PendingVenueAlias {
+  venue_id: number;
+  venue_name: string;
+  alias: string;
+}
+
+export interface AliasDecision {
+  venue_id: number;
+  alias: string;
+  accepted: boolean;
+}
+
 export interface ImportResult {
   project_id: number | null;
   temp_project_id: number | null;
@@ -257,6 +269,8 @@ export interface ImportResult {
   needs_project_decision: boolean;
   existing_project_id: number | null;
   merge_preview: MergePreview | null;
+  pending_venue_aliases: PendingVenueAlias[];
+  needs_alias_decision: boolean;
 }
 
 export interface ImportResolveRequest {

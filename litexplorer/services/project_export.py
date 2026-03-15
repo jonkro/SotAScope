@@ -243,26 +243,74 @@ def export_project(project_id: int, db: Session) -> io.BytesIO:
         )
 
     # ------------------------------------------------------------------
-    # 5. Venue tier overrides
+    # 5. Venue tier snapshot (format_version=2)
+    #
+    # Collect every venue visible in the project — seeds AND citation
+    # neighbours (backward + forward) — and export the *effective* tier
+    # (project-local override if one exists, otherwise the global Venue.tier).
+    # Works with venue_id IS NULL are silently skipped.
     # ------------------------------------------------------------------
-    overrides_stmt = (
-        select(ProjectVenueTier)
-        .where(ProjectVenueTier.project_id == project_id)
-        .options(
-            selectinload(ProjectVenueTier.venue).selectinload(Venue.aliases)
-        )
-    )
-    overrides: list[ProjectVenueTier] = list(db.scalars(overrides_stmt).all())
 
-    venue_tiers_manifest: list[dict[str, Any]] = [
-        {
-            "venue_openalex_id": o.venue.openalex_id,
-            "venue_issn": o.venue.issn,
-            "venue_name": _venue_preferred_name(o.venue),
-            "tier": o.tier,
-        }
-        for o in overrides
-    ]
+    # All work IDs visible in the project: seeds + citation neighbours
+    if seed_ids:
+        neighbour_ids_stmt = (
+            select(Citation.citing_work_id)
+            .where(Citation.cited_work_id.in_(seed_ids))
+            .union(
+                select(Citation.cited_work_id)
+                .where(Citation.citing_work_id.in_(seed_ids))
+            )
+        )
+        neighbour_ids: set[int] = set(db.scalars(neighbour_ids_stmt).all())
+        all_work_ids: set[int] = set(seed_ids) | neighbour_ids
+    else:
+        all_work_ids = set()
+
+    # Distinct venue IDs from those works, excluding NULL
+    venue_ids_in_scope: set[int] = set()
+    if all_work_ids:
+        vids_stmt = (
+            select(Work.venue_id)
+            .where(Work.id.in_(all_work_ids), Work.venue_id.is_not(None))
+            .distinct()
+        )
+        venue_ids_in_scope = set(db.scalars(vids_stmt).all())
+
+    # Project-local tier overrides (fast lookup)
+    project_tier_map: dict[int, int] = {}
+    if venue_ids_in_scope:
+        for override in db.scalars(
+            select(ProjectVenueTier).where(
+                ProjectVenueTier.project_id == project_id,
+                ProjectVenueTier.venue_id.in_(venue_ids_in_scope),
+            )
+        ).all():
+            project_tier_map[override.venue_id] = override.tier
+
+    # Build the manifest entries
+    venue_tiers_manifest: list[dict[str, Any]] = []
+    if venue_ids_in_scope:
+        for venue in db.scalars(
+            select(Venue)
+            .where(Venue.id.in_(venue_ids_in_scope))
+            .options(selectinload(Venue.aliases))
+        ).all():
+            effective_tier = project_tier_map.get(venue.id, venue.tier)
+            preferred_name = _venue_preferred_name(venue)
+            # Exclude the preferred alias from the aliases list to avoid
+            # duplication (venue_name already carries it for identification).
+            other_aliases = [
+                a.alias for a in venue.aliases if a.alias != preferred_name
+            ]
+            venue_tiers_manifest.append(
+                {
+                    "venue_openalex_id": venue.openalex_id,
+                    "venue_issn": venue.issn,
+                    "venue_name": preferred_name,
+                    "aliases": other_aliases,
+                    "tier": effective_tier,
+                }
+            )
 
     # ------------------------------------------------------------------
     # 6. Citation edges between seed works
@@ -354,7 +402,7 @@ def export_project(project_id: int, db: Session) -> io.BytesIO:
     # 9. Assemble manifest
     # ------------------------------------------------------------------
     manifest: dict[str, Any] = {
-        "format_version": 1,
+        "format_version": 2,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "project": {
             "name": project.name,
@@ -363,7 +411,7 @@ def export_project(project_id: int, db: Session) -> io.BytesIO:
         "works": works_manifest,
         "topic_lists": topic_lists_manifest,
         "extraction_schemas": schemas_manifest,
-        "venue_tier_overrides": venue_tiers_manifest,
+        "venue_tiers": venue_tiers_manifest,
         "citations": citation_manifest,
         "chat_sessions": chat_sessions_manifest,
         "work_notes": work_notes_manifest,

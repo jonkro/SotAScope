@@ -2,6 +2,7 @@
 
 Covers:
   - Round-trip: export → import (project structure matches)
+  - format_version=2 venue_tiers export and import (effective tiers, aliases)
   - Works are reused when DOI / arXiv ID already in library
   - Project name collision → temp project created, needs_project_decision=True
   - Resolve: rename → project renamed correctly
@@ -28,7 +29,7 @@ import pytest
 
 from litexplorer.models.chat import ChatMessage, ChatSession
 from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Venue, VenueAlias, Work, WorkNote
+from litexplorer.models.library import Citation, Venue, VenueAlias, Work, WorkNote
 from litexplorer.models.project import (
     Project,
     ProjectVenueTier,
@@ -694,3 +695,336 @@ class TestImportAPI:
         # ImportedList should now be in the existing project
         tl_names = [tl["name"] for tl in proj["topic_lists"]]
         assert "ImportedList" in tl_names
+
+
+# ---------------------------------------------------------------------------
+# format_version=2: venue tier snapshot and alias handling
+# ---------------------------------------------------------------------------
+
+
+def _make_venue(db, name, tier=2, openalex_id=None, issn=None, aliases=()) -> Venue:
+    v = Venue(name=name, tier=tier, openalex_id=openalex_id, issn=issn)
+    db.add(v)
+    db.flush()
+    for i, alias in enumerate(aliases):
+        db.add(VenueAlias(venue_id=v.id, alias=alias, sort_order=i))
+    db.flush()
+    return v
+
+
+def _v2_manifest(*, project_name="V2Project", works=None, topic_lists=None,
+                 venue_tiers=None) -> dict:
+    return {
+        "format_version": 2,
+        "project": {"name": project_name},
+        "works": works or [],
+        "topic_lists": topic_lists or [],
+        "extraction_schemas": [],
+        "venue_tiers": venue_tiers or [],
+        "citations": [],
+        "chat_sessions": [],
+        "work_notes": [],
+    }
+
+
+class TestVenueExportImport:
+    def _setup_project_with_venue(self, db_session, *, venue_tier=2, project_tier=None,
+                                   aliases=()):
+        """Return (project_id, venue_id, seed_work_id)."""
+        venue = _make_venue(db_session, "Test Conference", tier=venue_tier, aliases=aliases)
+        work = _make_work(db_session, title="Seed", doi="10.1/seed", year=2020)
+        work.venue_id = venue.id
+        db_session.flush()
+        project = _make_project(db_session, name="VenueProject")
+        tl = _make_topic_list(db_session, project.id)
+        _add_seed(db_session, tl, work)
+        if project_tier is not None:
+            db_session.add(ProjectVenueTier(
+                project_id=project.id, venue_id=venue.id, tier=project_tier,
+            ))
+        db_session.commit()
+        return project.id, venue.id, work.id
+
+    # ------------------------------------------------------------------ export
+
+    def test_export_v2_format_version(self, db_session):
+        """Exported archives carry format_version=2."""
+        project_id, _, _ = self._setup_project_with_venue(db_session)
+        buf = export_project(project_id, db_session)
+        import zipfile, json
+        with zipfile.ZipFile(buf) as zf:
+            manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["format_version"] == 2
+        assert "venue_tiers" in manifest
+        assert "venue_tier_overrides" not in manifest
+
+    def test_export_v2_effective_tier_uses_project_override(self, db_session):
+        """Project-local tier wins over global in the export snapshot."""
+        project_id, venue_id, _ = self._setup_project_with_venue(
+            db_session, venue_tier=2, project_tier=1
+        )
+        buf = export_project(project_id, db_session)
+        import zipfile, json
+        with zipfile.ZipFile(buf) as zf:
+            manifest = json.loads(zf.read("manifest.json"))
+        entries = manifest["venue_tiers"]
+        assert len(entries) == 1
+        assert entries[0]["tier"] == 1  # project override, not global tier 2
+
+    def test_export_v2_effective_tier_falls_back_to_global(self, db_session):
+        """Global tier used when no project-local override exists."""
+        project_id, venue_id, _ = self._setup_project_with_venue(
+            db_session, venue_tier=1, project_tier=None
+        )
+        buf = export_project(project_id, db_session)
+        import zipfile, json
+        with zipfile.ZipFile(buf) as zf:
+            manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["venue_tiers"][0]["tier"] == 1
+
+    def test_export_v2_aliases_included_preferred_excluded(self, db_session):
+        """All aliases appear in the export; the preferred alias (venue_name) is excluded."""
+        venue = _make_venue(db_session, "ICML", tier=1,
+                            aliases=["ICML", "International Conference on ML"])
+        # preferred alias = aliases[0] = "ICML"
+        work = _make_work(db_session, title="Paper", doi="10.1/p", year=2021)
+        work.venue_id = venue.id
+        db_session.flush()
+        project = _make_project(db_session, name="AliasProject")
+        tl = _make_topic_list(db_session, project.id)
+        _add_seed(db_session, tl, work)
+        db_session.commit()
+
+        buf = export_project(project.id, db_session)
+        import zipfile, json
+        with zipfile.ZipFile(buf) as zf:
+            manifest = json.loads(zf.read("manifest.json"))
+        entry = manifest["venue_tiers"][0]
+        assert entry["venue_name"] == "ICML"
+        # "ICML" is the preferred alias so it must NOT be in the aliases list
+        assert "ICML" not in entry["aliases"]
+        assert "International Conference on ML" in entry["aliases"]
+
+    def test_export_v2_venue_tiers_includes_candidates(self, db_session):
+        """Venues of citation neighbours (candidates) appear in the snapshot."""
+        venue_seed = _make_venue(db_session, "Venue A", tier=1)
+        venue_cand = _make_venue(db_session, "Venue B", tier=2)
+
+        seed = _make_work(db_session, title="Seed", doi="10.1/s", year=2020)
+        seed.venue_id = venue_seed.id
+        cand = _make_work(db_session, title="Cand", doi="10.1/c", year=2019)
+        cand.venue_id = venue_cand.id
+        db_session.flush()
+
+        # Citation edge: seed cites cand
+        db_session.add(Citation(citing_work_id=seed.id, cited_work_id=cand.id,
+                                source="openalex"))
+        db_session.flush()
+
+        project = _make_project(db_session, name="CandProject")
+        tl = _make_topic_list(db_session, project.id)
+        _add_seed(db_session, tl, seed)
+        db_session.commit()
+
+        buf = export_project(project.id, db_session)
+        import zipfile, json
+        with zipfile.ZipFile(buf) as zf:
+            manifest = json.loads(zf.read("manifest.json"))
+        exported_names = {e["venue_name"] for e in manifest["venue_tiers"]}
+        assert "Venue A" in exported_names
+        assert "Venue B" in exported_names
+
+    def test_export_v2_skips_null_venue_works(self, db_session):
+        """Works with venue_id=NULL don't cause errors and are skipped silently."""
+        work = _make_work(db_session, title="No venue", doi="10.1/nv", year=2021)
+        # venue_id is None by default
+        project = _make_project(db_session, name="NullVenueProject")
+        tl = _make_topic_list(db_session, project.id)
+        _add_seed(db_session, tl, work)
+        db_session.commit()
+
+        buf = export_project(project.id, db_session)
+        import zipfile, json
+        with zipfile.ZipFile(buf) as zf:
+            manifest = json.loads(zf.read("manifest.json"))
+        # Must succeed and produce an empty venue_tiers list
+        assert manifest["format_version"] == 2
+        assert manifest["venue_tiers"] == []
+
+    # ------------------------------------------------------------------ import
+
+    def test_import_v2_tiers_become_project_local(self, db_session):
+        """Every tier in the venue_tiers section creates a ProjectVenueTier row."""
+        venue = _make_venue(db_session, "NEURIPS", openalex_id="V123", tier=2)
+        db_session.commit()
+
+        manifest = _v2_manifest(
+            venue_tiers=[{
+                "venue_openalex_id": "V123",
+                "venue_issn": None,
+                "venue_name": "NEURIPS",
+                "aliases": [],
+                "tier": 1,
+            }]
+        )
+        result, _ = import_project(_make_zip(manifest), db_session)
+
+        assert result.project_id is not None
+        override = db_session.query(ProjectVenueTier).filter_by(
+            project_id=result.project_id
+        ).first()
+        assert override is not None
+        assert override.venue_id == venue.id
+        assert override.tier == 1
+        # Global tier must be unchanged
+        db_session.refresh(venue)
+        assert venue.tier == 2
+
+    def test_import_v2_pending_aliases_for_new_entries(self, db_session):
+        """Aliases not in VenueAlias table are returned as pending."""
+        venue = _make_venue(db_session, "ICLR", openalex_id="V999", tier=1)
+        db_session.commit()
+
+        manifest = _v2_manifest(
+            venue_tiers=[{
+                "venue_openalex_id": "V999",
+                "venue_issn": None,
+                "venue_name": "ICLR",
+                "aliases": ["International Conference on Learning Representations"],
+                "tier": 1,
+            }]
+        )
+        result, _ = import_project(_make_zip(manifest), db_session)
+
+        assert result.needs_alias_decision is True
+        assert len(result.pending_venue_aliases) == 1
+        pa = result.pending_venue_aliases[0]
+        assert pa.alias == "International Conference on Learning Representations"
+        assert pa.venue_id == venue.id
+
+    def test_import_v2_no_pending_aliases_when_all_known(self, db_session):
+        """Aliases already in VenueAlias are NOT returned as pending."""
+        venue = _make_venue(db_session, "ICLR", openalex_id="V888", tier=1,
+                            aliases=["International Conference on Learning Representations"])
+        db_session.commit()
+
+        manifest = _v2_manifest(
+            venue_tiers=[{
+                "venue_openalex_id": "V888",
+                "venue_issn": None,
+                "venue_name": "ICLR",
+                "aliases": ["International Conference on Learning Representations"],
+                "tier": 1,
+            }]
+        )
+        result, _ = import_project(_make_zip(manifest), db_session)
+
+        assert result.needs_alias_decision is False
+        assert result.pending_venue_aliases == []
+
+    def test_import_v2_skips_alias_matching_canonical_name(self, db_session):
+        """An alias equal to the venue's canonical name on the importer side is skipped."""
+        # The exporter excluded preferred alias from aliases[], but the canonical
+        # name might still show up if the importer's DB uses a different preferred alias.
+        venue = _make_venue(db_session, "NeurIPS", openalex_id="V777", tier=2)
+        db_session.commit()
+
+        manifest = _v2_manifest(
+            venue_tiers=[{
+                "venue_openalex_id": "V777",
+                "venue_issn": None,
+                "venue_name": "NeurIPS",
+                # This alias matches venue.name on the importer side — skip it
+                "aliases": ["NeurIPS", "Neural Information Processing Systems"],
+                "tier": 1,
+            }]
+        )
+        result, _ = import_project(_make_zip(manifest), db_session)
+
+        # "NeurIPS" must not appear in pending (it IS the canonical name)
+        pending_aliases = [p.alias for p in result.pending_venue_aliases]
+        assert "NeurIPS" not in pending_aliases
+        assert "Neural Information Processing Systems" in pending_aliases
+
+    def test_import_v1_fallback_uses_tier_overrides(self, db_session):
+        """format_version=1 manifests still go through the old venue_tier_overrides path."""
+        venue = _make_venue(db_session, "Old Conf", openalex_id="V456", tier=2)
+        db_session.commit()
+
+        manifest = {
+            "format_version": 1,
+            "project": {"name": "V1Project"},
+            "works": [],
+            "topic_lists": [],
+            "extraction_schemas": [],
+            "venue_tier_overrides": [{
+                "venue_openalex_id": "V456",
+                "venue_issn": None,
+                "venue_name": "Old Conf",
+                "tier": 1,
+            }],
+            "citations": [],
+            "chat_sessions": [],
+            "work_notes": [],
+        }
+        result, _ = import_project(_make_zip(manifest), db_session)
+
+        assert result.needs_alias_decision is False
+        assert result.pending_venue_aliases == []
+        override = db_session.query(ProjectVenueTier).filter_by(
+            project_id=result.project_id
+        ).first()
+        assert override is not None
+        assert override.tier == 1
+
+    # ----------------------------------------------------------------- API
+
+    def test_resolve_aliases_writes_accepted(self, client, db_session):
+        """POST resolve-aliases writes accepted aliases, ignores rejected ones."""
+        venue = _make_venue(db_session, "CVPR", openalex_id="VCVPR", tier=1)
+        project = _make_project(db_session, name="AliasResolveProject")
+        db_session.commit()
+
+        response = client.post(
+            f"/api/projects/import/{project.id}/resolve-aliases",
+            json={
+                "decisions": [
+                    {"venue_id": venue.id, "alias": "Computer Vision and Pattern Recognition",
+                     "accepted": True},
+                    {"venue_id": venue.id, "alias": "CVPR Workshop", "accepted": False},
+                ]
+            },
+        )
+        assert response.status_code == 200
+
+        accepted = db_session.query(VenueAlias).filter_by(
+            venue_id=venue.id, alias="Computer Vision and Pattern Recognition"
+        ).first()
+        assert accepted is not None
+
+        rejected = db_session.query(VenueAlias).filter_by(
+            venue_id=venue.id, alias="CVPR Workshop"
+        ).first()
+        assert rejected is None
+
+    def test_resolve_aliases_idempotent(self, client, db_session):
+        """Submitting the same accepted alias twice does not raise an error."""
+        venue = _make_venue(db_session, "ECCV", openalex_id="VECCV", tier=2)
+        project = _make_project(db_session, name="IdempotentAliasProject")
+        db_session.commit()
+
+        payload = {
+            "decisions": [
+                {"venue_id": venue.id, "alias": "European Conference on Computer Vision",
+                 "accepted": True},
+            ]
+        }
+        r1 = client.post(f"/api/projects/import/{project.id}/resolve-aliases", json=payload)
+        assert r1.status_code == 200
+        r2 = client.post(f"/api/projects/import/{project.id}/resolve-aliases", json=payload)
+        assert r2.status_code == 200
+
+        rows = db_session.query(VenueAlias).filter_by(
+            venue_id=venue.id, alias="European Conference on Computer Vision"
+        ).all()
+        assert len(rows) == 1  # not duplicated

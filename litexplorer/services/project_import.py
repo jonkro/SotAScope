@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from litexplorer.models.chat import ChatMessage, ChatSession
 from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Venue, Work, WorkNote
+from litexplorer.models.library import Venue, VenueAlias, Work, WorkNote
 from litexplorer.models.project import (
     Project,
     ProjectVenueTier,
@@ -37,6 +37,7 @@ from litexplorer.schemas.project_import import (
     AmbiguousMatch,
     AmbiguousMatchWork,
     ImportResult,
+    PendingVenueAlias,
 )
 from litexplorer.services.enrichment import (
     _extract_first_author_from_bibtex,
@@ -145,6 +146,8 @@ class _ImportState:
     ambiguous_matches: list[AmbiguousMatch] = field(default_factory=list)
     # IDs of works newly added to the library (candidates for auto-enrichment)
     new_work_ids: list[int] = field(default_factory=list)
+    # Aliases from a v2 archive that don't exist in this instance's VenueAlias table
+    pending_venue_aliases: list[PendingVenueAlias] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +342,77 @@ def _import_works(
 
 
 # ---------------------------------------------------------------------------
+# v2: venue tier snapshot import
+# ---------------------------------------------------------------------------
+
+
+def _import_venue_tiers_v2(
+    project_id: int,
+    venue_tiers_data: list[dict],
+    state: _ImportState,
+    db: Session,
+) -> None:
+    """Process the ``venue_tiers`` section from a format_version=2 archive.
+
+    For each entry:
+    - Locate or create the Venue (via the existing _find_or_create_venue helper).
+    - Create a ProjectVenueTier row with the exported effective tier, making
+      the tier project-local so the importer's global tiers are not touched.
+    - Collect aliases that don't yet exist in this instance's VenueAlias table
+      as ``PendingVenueAlias`` entries in *state*, so the caller can present
+      them to the user for confirmation.
+    """
+    for entry in venue_tiers_data:
+        venue = _find_or_create_venue(
+            openalex_id=entry.get("venue_openalex_id"),
+            issn=entry.get("venue_issn"),
+            venue_name=entry.get("venue_name"),
+            db=db,
+        )
+        if venue is None:
+            continue
+
+        # Create project-local tier override if one doesn't exist yet
+        existing_override = db.scalars(
+            select(ProjectVenueTier).where(
+                ProjectVenueTier.project_id == project_id,
+                ProjectVenueTier.venue_id == venue.id,
+            )
+        ).one_or_none()
+        if existing_override is None:
+            db.add(
+                ProjectVenueTier(
+                    project_id=project_id,
+                    venue_id=venue.id,
+                    tier=entry.get("tier", 2),
+                )
+            )
+
+        # Collect aliases that are new to this instance
+        preferred_name = entry.get("venue_name", "")
+        for alias_str in entry.get("aliases", []):
+            # Skip if it already is the venue's canonical name on this instance
+            if alias_str == venue.name:
+                continue
+            existing_alias = db.scalars(
+                select(VenueAlias).where(
+                    VenueAlias.venue_id == venue.id,
+                    VenueAlias.alias == alias_str,
+                )
+            ).one_or_none()
+            if existing_alias is None:
+                state.pending_venue_aliases.append(
+                    PendingVenueAlias(
+                        venue_id=venue.id,
+                        venue_name=preferred_name,
+                        alias=alias_str,
+                    )
+                )
+
+    db.flush()
+
+
+# ---------------------------------------------------------------------------
 # Project content creation
 # ---------------------------------------------------------------------------
 
@@ -348,6 +422,7 @@ def _create_project_content(
     manifest: dict[str, Any],
     state: _ImportState,
     db: Session,
+    format_version: int = 1,
 ) -> None:
     """Populate topic lists, schemas, venue tiers, chat sessions, and notes."""
 
@@ -445,31 +520,41 @@ def _create_project_content(
                 )
         db.flush()
 
-    # ---- h. Venue tier overrides ----
-    for override_data in manifest.get("venue_tier_overrides", []):
-        venue = _find_or_create_venue(
-            openalex_id=override_data.get("venue_openalex_id"),
-            issn=override_data.get("venue_issn"),
-            venue_name=override_data.get("venue_name"),
-            db=db,
+    # ---- h. Venue tiers ----
+    if format_version >= 2:
+        # v2: full effective-tier snapshot with alias collection
+        _import_venue_tiers_v2(
+            project_id,
+            manifest.get("venue_tiers", []),
+            state,
+            db,
         )
-        if venue is None:
-            continue
-        existing_override = db.scalars(
-            select(ProjectVenueTier).where(
-                ProjectVenueTier.project_id == project_id,
-                ProjectVenueTier.venue_id == venue.id,
+    else:
+        # v1: project-local overrides only (legacy format)
+        for override_data in manifest.get("venue_tier_overrides", []):
+            venue = _find_or_create_venue(
+                openalex_id=override_data.get("venue_openalex_id"),
+                issn=override_data.get("venue_issn"),
+                venue_name=override_data.get("venue_name"),
+                db=db,
             )
-        ).one_or_none()
-        if existing_override is None:
-            db.add(
-                ProjectVenueTier(
-                    project_id=project_id,
-                    venue_id=venue.id,
-                    tier=override_data.get("tier", 2),
+            if venue is None:
+                continue
+            existing_override = db.scalars(
+                select(ProjectVenueTier).where(
+                    ProjectVenueTier.project_id == project_id,
+                    ProjectVenueTier.venue_id == venue.id,
                 )
-            )
-    db.flush()
+            ).one_or_none()
+            if existing_override is None:
+                db.add(
+                    ProjectVenueTier(
+                        project_id=project_id,
+                        venue_id=venue.id,
+                        tier=override_data.get("tier", 2),
+                    )
+                )
+        db.flush()
 
     # ---- i. Chat sessions + messages ----
     # context_id is an original DB ID that is not portable across instances.
@@ -576,10 +661,10 @@ def import_project(
     fmt = manifest.get("format_version")
     if fmt is None:
         raise ValueError("manifest.json is missing 'format_version'")
-    if not isinstance(fmt, int) or fmt > 1:
+    if not isinstance(fmt, int) or fmt > 2:
         raise ValueError(
             f"Archive format version {fmt!r} is not supported "
-            "(max supported: 1). Please upgrade LitExplorer."
+            "(max supported: 2). Please upgrade LitExplorer."
         )
 
     project_info: dict = manifest.get("project", {})
@@ -609,7 +694,7 @@ def import_project(
         temp_project = Project(name=temp_name, description=project_description)
         db.add(temp_project)
         db.flush()
-        _create_project_content(temp_project.id, manifest, state, db)
+        _create_project_content(temp_project.id, manifest, state, db, fmt)
         db.commit()
 
         # Pre-compute merge preview so the frontend can show conflict controls
@@ -627,6 +712,8 @@ def import_project(
             needs_project_decision=True,
             existing_project_id=existing_project.id,
             merge_preview=preview,
+            pending_venue_aliases=state.pending_venue_aliases,
+            needs_alias_decision=len(state.pending_venue_aliases) > 0,
         )
         # No auto-enrichment until the user resolves the collision
         return result, []
@@ -635,7 +722,7 @@ def import_project(
     project = Project(name=project_name, description=project_description)
     db.add(project)
     db.flush()
-    _create_project_content(project.id, manifest, state, db)
+    _create_project_content(project.id, manifest, state, db, fmt)
     db.commit()
 
     seed_ids = _project_seed_ids(project.id, db)
@@ -650,6 +737,8 @@ def import_project(
         needs_project_decision=False,
         existing_project_id=None,
         merge_preview=None,
+        pending_venue_aliases=state.pending_venue_aliases,
+        needs_alias_decision=len(state.pending_venue_aliases) > 0,
     )
     return result, seed_ids
 

@@ -32,7 +32,7 @@ from litexplorer.schemas.projects import (
 )
 from litexplorer.schemas.works import WorkOut
 from litexplorer.schemas.project_merge import MergeDecisions, MergePreview
-from litexplorer.schemas.project_import import ImportResult, ImportResolveRequest
+from litexplorer.schemas.project_import import ImportResult, ImportResolveRequest, ResolveAliasesRequest
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -751,6 +751,38 @@ async def import_project_zip(
                 background_tasks.add_task(_auto_enrich_bg, work_id)
 
     return result
+
+
+@router.post("/import/{project_id}/resolve-aliases", status_code=200)
+def resolve_import_aliases(
+    project_id: int,
+    body: ResolveAliasesRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Write accepted venue aliases to the global VenueAlias table.
+
+    ``project_id`` anchors the request to a specific import flow (either a
+    real project or a temp staging project) but is not used for the alias
+    writes themselves — aliases belong to the global library, not to a project.
+
+    NOTE: This endpoint performs no ownership validation. That is intentional
+    for this local-first tool, but would require authentication checks in any
+    multi-user deployment.
+    """
+    for decision in body.decisions:
+        if not decision.accepted:
+            continue
+        # Guard against double-submit
+        existing = db.scalars(
+            select(VenueAlias).where(
+                VenueAlias.venue_id == decision.venue_id,
+                VenueAlias.alias == decision.alias,
+            )
+        ).one_or_none()
+        if existing is None:
+            db.add(VenueAlias(venue_id=decision.venue_id, alias=decision.alias))
+    db.commit()
+    return {"message": "Aliases resolved"}
 
 
 @router.post("/import/{temp_id}/resolve", response_model=ProjectDetail)
