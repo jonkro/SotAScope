@@ -4,7 +4,9 @@ import {
   fetchTopicList, createTopicList, updateTopicList, deleteTopicList,
   addWorkToTopicList, removeWorkFromTopicList,
   addIgnoredWork, removeIgnoredWork,
+  fetchMergePreview, mergeProject,
 } from '../api';
+import type { MergeDecisions } from '../types';
 
 export function useProjects(params?: { offset?: number; limit?: number; q?: string }) {
   return useQuery({
@@ -97,6 +99,25 @@ export function useRemoveWorkFromTopicList() {
   return useMutation({
     mutationFn: ({ projectId, topicListId, workId }: { projectId: number; topicListId: number; workId: number }) =>
       removeWorkFromTopicList(projectId, topicListId, workId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  });
+}
+
+// ---- Project Merge ----
+
+export function useMergePreview(targetId: number, sourceId: number | null) {
+  return useQuery({
+    queryKey: ['projects', targetId, 'merge-preview', sourceId],
+    queryFn: () => fetchMergePreview(targetId, sourceId!),
+    enabled: sourceId !== null,
+  });
+}
+
+export function useMergeProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ targetId, sourceId, decisions }: { targetId: number; sourceId: number; decisions: MergeDecisions }) =>
+      mergeProject(targetId, sourceId, decisions),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
   });
 }

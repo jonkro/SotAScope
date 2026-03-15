@@ -8,6 +8,7 @@ import TopicListFormDialog from '../components/TopicListFormDialog';
 import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from '../components/WorkDetailPanel';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ImportDialog from '../components/ImportDialog';
+import { MergeProjectDialog } from '../components/MergeProjectDialog';
 import CitationTimeline from '../components/CitationTimeline';
 import TimelineControls, { type CandidateFilter } from '../components/TimelineControls';
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
@@ -224,6 +225,7 @@ export default function ProjectDetailPage() {
   // Shared state
   const [showCreateList, setShowCreateList] = useState(false);
   const [showProjectImport, setShowProjectImport] = useState(false);
+  const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [editList, setEditList] = useState<{ id: number; name: string; color: string } | null>(null);
   const [deleteListId, setDeleteListId] = useState<number | null>(null);
   const [selectedWorkId, setSelectedWorkId] = useState<number | null>(() => {
@@ -533,6 +535,12 @@ export default function ProjectDetailPage() {
             className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
           >
             Extraction Tables
+          </button>
+          <button
+            onClick={() => setShowMergeDialog(true)}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-600"
+          >
+            Merge
           </button>
           <button
             onClick={() => setShowProjectImport(true)}
@@ -1092,6 +1100,14 @@ export default function ProjectDetailPage() {
           onClose={() => setShowProjectImport(false)}
           projectTopicLists={project.topic_lists}
           onAddToTopicList={handleAddWorkToList}
+        />
+      )}
+
+      {showMergeDialog && (
+        <MergeProjectDialog
+          targetProjectId={projectId}
+          targetProjectName={project.name}
+          onClose={() => setShowMergeDialog(false)}
         />
       )}
     </div>

@@ -190,6 +190,48 @@ export interface ProjectVenueTierOut {
   effective_tier: number;
 }
 
+// ---- Project Merge ----
+
+export interface TopicListMergeInfo {
+  source_topic_list_id: number;
+  source_topic_list_name: string;
+  action: 'merge' | 'copy';
+  target_topic_list_id: number | null;
+}
+
+export interface SchemaConflictInfo {
+  source_schema_id: number;
+  source_schema_name: string;
+  target_schema_id: number;
+  target_schema_name: string;
+}
+
+export interface VenueTierConflictInfo {
+  venue_id: number;
+  venue_name: string;
+  source_tier: number;
+  target_tier: number;
+}
+
+export interface MergePreview {
+  topic_list_merges: TopicListMergeInfo[];
+  schema_conflicts: SchemaConflictInfo[];
+  venue_tier_conflicts: VenueTierConflictInfo[];
+  ignored_work_overrides: number[];
+  source_chat_session_count: number;
+  source_note_count: number;
+}
+
+export interface SchemaDecision {
+  action: 'rename' | 'drop';
+  new_name?: string;
+}
+
+export interface MergeDecisions {
+  schema_decisions: Record<number, SchemaDecision>;
+  venue_tier_decisions: Record<number, number>;
+}
+
 // ---- Timeline ----
 
 export interface CitationsByYearEntry {

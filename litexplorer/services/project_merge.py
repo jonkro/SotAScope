@@ -1,16 +1,16 @@
 """Project merge service.
 
-Implements preview and absorptive merge: source project is absorbed into
-target project and then deleted.
+Implements preview and non-destructive merge: content from the source project
+is copied into the target project. The source project is left intact.
 
-FK checklist (all must be repointed to target before source is deleted):
-  TopicList          project_id → target
-  TopicListWork      topic_list_id → target list  (for same-name merges)
-  ProjectIgnoredWork project_id → target  (or deleted when seed wins)
-  ProjectVenueTier   project_id → target  (or deleted when conflict resolved)
-  WorkNote           project_id → target
-  ChatSession        project_id → target
-  ExtractionSchema   project_id → target  (or deleted on "drop" decision)
+Copy checklist:
+  TopicList (unique name)  → new TopicList row in target + copy TopicListWork rows
+  TopicList (same name)    → copy missing TopicListWork rows into target list
+  ProjectIgnoredWork       → copy rows (skip duplicates; seed wins over ignored)
+  ProjectVenueTier         → copy source-only overrides; resolve conflicts on target row
+  WorkNote (project-scoped)→ copy rows with project_id=target
+  ChatSession              → NOT copied (context_ids are stale after schema copies)
+  ExtractionSchema         → deep copy (+ ExtractionColumn rows); apply rename/drop decision
 """
 
 from __future__ import annotations
@@ -19,11 +19,10 @@ import logging
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
-from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session, selectinload
 
-from litexplorer.models.chat import ChatSession
-from litexplorer.models.extraction import ExtractionSchema
+from litexplorer.models.chat import ChatSession  # noqa: F401 (kept for table-existence in tests)
+from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
 from litexplorer.models.library import Venue, WorkNote
 from litexplorer.models.project import (
     Project,
@@ -81,7 +80,7 @@ def merge_preview(target_id: int, source_id: int, db: Session) -> MergePreview:
             topic_list_merges.append(TopicListMergeInfo(
                 source_topic_list_id=sl.id,
                 source_topic_list_name=sl.name,
-                action="move",
+                action="copy",
                 target_topic_list_id=None,
             ))
 
@@ -207,24 +206,45 @@ def merge_preview(target_id: int, source_id: int, db: Session) -> MergePreview:
 # ---------------------------------------------------------------------------
 
 
+def _copy_schema(
+    source_schema: ExtractionSchema,
+    new_title: str,
+    target_id: int,
+    db: Session,
+) -> None:
+    """Create a deep copy of an ExtractionSchema (with all columns) in target project."""
+    new_schema = ExtractionSchema(
+        project_id=target_id,
+        title=new_title,
+        description=source_schema.description,
+    )
+    db.add(new_schema)
+    db.flush()
+    for col in source_schema.columns:
+        db.add(ExtractionColumn(
+            schema_id=new_schema.id,
+            name=col.name,
+            prompt=col.prompt,
+            description=col.description,
+            allowed_values=col.allowed_values,
+            sort_order=col.sort_order,
+        ))
+
+
 def execute_merge(
     target_id: int,
     source_id: int,
     decisions: MergeDecisions,
     db: Session,
 ) -> Project:
-    """Absorb source project into target and delete source.
-
-    Execution order mirrors the FK checklist so all repoints happen before
-    the final CASCADE delete of the source project.
-    """
+    """Copy content from source project into target. Source is NOT modified or deleted."""
 
     # ------------------------------------------------------------------ a.
     # Topic lists
     # ------------------------------------------------------------------ a.
 
-    # Capture source seed IDs before step a moves topic lists to target
-    pre_merge_source_seed_ids: set[int] = set(
+    # Capture source seed IDs before any writes (used later for seed-wins logic)
+    source_seed_ids: set[int] = set(
         db.scalars(
             select(TopicListWork.work_id)
             .join(TopicList, TopicListWork.topic_list_id == TopicList.id)
@@ -241,8 +261,11 @@ def execute_merge(
     target_list_by_name = {tl.name: tl for tl in target_lists}
 
     for sl in source_lists:
+        source_works = db.scalars(
+            select(TopicListWork).where(TopicListWork.topic_list_id == sl.id)
+        ).all()
         if sl.name in target_list_by_name:
-            # Same-name list: merge memberships into target list
+            # Same-name list: add missing works to target list (no changes to source)
             target_tl = target_list_by_name[sl.name]
             existing_in_target: set[int] = set(
                 db.scalars(
@@ -251,26 +274,36 @@ def execute_merge(
                     )
                 ).all()
             )
-            source_works = db.scalars(
-                select(TopicListWork).where(TopicListWork.topic_list_id == sl.id)
-            ).all()
             for tlw in source_works:
                 if tlw.work_id not in existing_in_target:
-                    tlw.topic_list_id = target_tl.id
-                else:
-                    db.delete(tlw)
-            # sl itself (now empty) will be deleted by CASCADE when source is removed
+                    db.add(TopicListWork(topic_list_id=target_tl.id, work_id=tlw.work_id))
         else:
-            # Unique name: move ownership to target
-            sl.project_id = target_id
+            # Unique name: create a new list in target and copy memberships
+            new_tl = TopicList(project_id=target_id, name=sl.name, color=sl.color)
+            db.add(new_tl)
+            db.flush()
+            for tlw in source_works:
+                db.add(TopicListWork(topic_list_id=new_tl.id, work_id=tlw.work_id))
 
     db.flush()
 
     # ------------------------------------------------------------------ b.
-    # Ignored works  (seed wins over ignored)
+    # Seed-wins: remove ignore entries from target for source seeds
     # ------------------------------------------------------------------ b.
+    if source_seed_ids:
+        db.execute(
+            sa_delete(ProjectIgnoredWork)
+            .where(
+                ProjectIgnoredWork.project_id == target_id,
+                ProjectIgnoredWork.work_id.in_(source_seed_ids),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        db.flush()
 
-    # Re-query target seeds after topic list repoints (step a may have moved source lists)
+    # ------------------------------------------------------------------ c.
+    # Ignored works: copy from source to target
+    # ------------------------------------------------------------------ c.
     target_seed_ids: set[int] = set(
         db.scalars(
             select(TopicListWork.work_id)
@@ -278,22 +311,7 @@ def execute_merge(
             .where(TopicList.project_id == target_id)
         ).all()
     )
-
-    # Seeds from source win: delete any conflicting ignore entries in target.
-    # Use pre-merge source seeds since unique-name lists were already moved to target in step a.
-    if pre_merge_source_seed_ids:
-        db.execute(
-            sa_delete(ProjectIgnoredWork)
-            .where(
-                ProjectIgnoredWork.project_id == target_id,
-                ProjectIgnoredWork.work_id.in_(pre_merge_source_seed_ids),
-            )
-            .execution_options(synchronize_session=False)
-        )
-        db.flush()
-
-    # Now move / prune source's ignored works
-    target_ignored_now: set[int] = set(
+    target_ignored_ids: set[int] = set(
         db.scalars(
             select(ProjectIgnoredWork.work_id).where(
                 ProjectIgnoredWork.project_id == target_id
@@ -304,26 +322,21 @@ def execute_merge(
         select(ProjectIgnoredWork).where(ProjectIgnoredWork.project_id == source_id)
     ).all()
     for piw in source_ignored:
-        if piw.work_id in target_seed_ids:
-            # Seed in target wins: drop source's ignore entry
-            db.delete(piw)
-        elif piw.work_id in target_ignored_now:
-            # Already ignored in target: drop duplicate
-            db.delete(piw)
-        else:
-            # Move to target
-            piw.project_id = target_id
+        if piw.work_id not in target_seed_ids and piw.work_id not in target_ignored_ids:
+            db.add(ProjectIgnoredWork(project_id=target_id, work_id=piw.work_id))
 
     db.flush()
 
-    # ------------------------------------------------------------------ c.
-    # Extraction schemas
-    # ------------------------------------------------------------------ c.
+    # ------------------------------------------------------------------ d.
+    # Extraction schemas: deep copy
+    # ------------------------------------------------------------------ d.
     target_schemas = db.scalars(
         select(ExtractionSchema).where(ExtractionSchema.project_id == target_id)
     ).all()
     source_schemas = db.scalars(
-        select(ExtractionSchema).where(ExtractionSchema.project_id == source_id)
+        select(ExtractionSchema)
+        .where(ExtractionSchema.project_id == source_id)
+        .options(selectinload(ExtractionSchema.columns))
     ).all()
     target_schema_titles: set[str] = {s.title for s in target_schemas}
 
@@ -332,20 +345,17 @@ def execute_merge(
             # Conflicting title: apply user decision (default: drop)
             decision = decisions.schema_decisions.get(ss.id)
             if decision is not None and decision.action == "rename":
-                ss.title = decision.new_name or f"{ss.title} (merged)"
-                ss.project_id = target_id
-            else:
-                # drop: CASCADE deletes ExtractionColumns; WorkNotes are unaffected
-                db.delete(ss)
+                _copy_schema(ss, decision.new_name or f"{ss.title} (merged)", target_id, db)
+            # else drop: don't copy
         else:
-            # No conflict: move to target
-            ss.project_id = target_id
+            # No conflict: copy to target
+            _copy_schema(ss, ss.title, target_id, db)
 
     db.flush()
 
-    # ------------------------------------------------------------------ d.
+    # ------------------------------------------------------------------ e.
     # Project venue tiers
-    # ------------------------------------------------------------------ d.
+    # ------------------------------------------------------------------ e.
     target_overrides: dict[int, ProjectVenueTier] = {
         row.venue_id: row
         for row in db.scalars(
@@ -358,47 +368,40 @@ def execute_merge(
 
     for pvt in source_overrides_list:
         if pvt.venue_id in target_overrides:
-            # Conflict (or same tier): apply chosen tier to target, delete source row
+            # Conflict: apply chosen tier to target row (source row stays in source)
             target_pvt = target_overrides[pvt.venue_id]
             chosen_tier = decisions.venue_tier_decisions.get(pvt.venue_id)
             if chosen_tier is not None:
                 target_pvt.tier = chosen_tier
-            # Always delete source's duplicate row
-            db.delete(pvt)
+            # else: keep target's existing tier (no action)
         else:
-            # Only source has this override: move row to target
-            pvt.project_id = target_id
+            # Only source has this override: copy to target
+            db.add(ProjectVenueTier(project_id=target_id, venue_id=pvt.venue_id, tier=pvt.tier))
 
     db.flush()
 
-    # ------------------------------------------------------------------ e.
-    # Work notes (project-scoped)
-    # ------------------------------------------------------------------ e.
-    db.execute(
-        sa_update(WorkNote)
-        .where(WorkNote.project_id == source_id)
-        .values(project_id=target_id)
-        .execution_options(synchronize_session=False)
-    )
-
     # ------------------------------------------------------------------ f.
-    # Chat sessions
+    # Work notes (project-scoped): copy to target
     # ------------------------------------------------------------------ f.
-    db.execute(
-        sa_update(ChatSession)
-        .where(ChatSession.project_id == source_id)
-        .values(project_id=target_id)
-        .execution_options(synchronize_session=False)
-    )
-
-    db.flush()
+    source_notes = db.scalars(
+        select(WorkNote).where(WorkNote.project_id == source_id)
+    ).all()
+    for note in source_notes:
+        db.add(WorkNote(
+            work_id=note.work_id,
+            project_id=target_id,
+            content=note.content,
+            note_type=note.note_type,
+            provenance=note.provenance,
+            model_id=note.model_id,
+            is_outdated=note.is_outdated,
+        ))
 
     # ------------------------------------------------------------------ g.
-    # Delete source project (CASCADE cleans up any remaining owned rows)
+    # Chat sessions: NOT copied
+    # context_id (schema ID) would be stale after schema deep-copy (new IDs).
+    # Sessions remain in the source project.
     # ------------------------------------------------------------------ g.
-    source = db.get(Project, source_id)
-    if source:
-        db.delete(source)
 
     db.commit()
 

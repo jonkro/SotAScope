@@ -15,7 +15,7 @@ from pydantic import BaseModel
 class TopicListMergeInfo(BaseModel):
     source_topic_list_id: int
     source_topic_list_name: str
-    action: Literal["merge", "move"]
+    action: Literal["merge", "copy"]
     # set when action == "merge" (existing same-name list in target)
     target_topic_list_id: int | None = None
 

@@ -1,4 +1,4 @@
-"""Tests for project merge: preview and absorptive merge execution.
+"""Tests for project merge: preview and non-destructive merge execution.
 
 Bare-imports ensure all tables exist in the in-memory test DB even when
 this file is run in isolation (see CLAUDE.md "Table isolation pitfall").
@@ -17,7 +17,7 @@ from litexplorer.models.project import (
 )
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from litexplorer.services.project_merge import execute_merge, merge_preview
 from litexplorer.schemas.project_merge import MergeDecisions, SchemaDecision
@@ -117,7 +117,7 @@ class TestMergePreview:
         assert m.source_topic_list_name == "Reading List"
         assert m.target_topic_list_id is not None
 
-    def test_unique_topic_list_reported_as_move(self, db_session):
+    def test_unique_topic_list_reported_as_copy(self, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         _topic_list(db_session, source, "Only in Source")
@@ -125,7 +125,7 @@ class TestMergePreview:
 
         preview = merge_preview(target.id, source.id, db_session)
         assert len(preview.topic_list_merges) == 1
-        assert preview.topic_list_merges[0].action == "move"
+        assert preview.topic_list_merges[0].action == "copy"
         assert preview.topic_list_merges[0].target_topic_list_id is None
 
     def test_schema_conflict_detected(self, db_session):
@@ -209,7 +209,7 @@ class TestMergePreview:
 
 class TestExecuteMerge:
 
-    def test_source_deleted_after_merge(self, client, db_session):
+    def test_source_project_intact_after_merge(self, client, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         db_session.commit()
@@ -219,7 +219,8 @@ class TestExecuteMerge:
         )
         assert resp.status_code == 200
 
-        assert db_session.get(Project, source.id) is None
+        db_session.expire_all()
+        assert db_session.get(Project, source.id) is not None
 
     def test_returns_target_project(self, client, db_session):
         target = _project(db_session, "Target")
@@ -259,7 +260,7 @@ class TestExecuteMerge:
 
     # --- Topic lists ---
 
-    def test_unique_topic_list_moved_to_target(self, db_session):
+    def test_unique_topic_list_copied_to_target(self, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         work = _work(db_session)
@@ -270,9 +271,24 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
 
         db_session.expire_all()
-        tl = db_session.get(TopicList, tl_source.id)
-        assert tl is not None
-        assert tl.project_id == target.id
+        # Source list is unchanged
+        assert db_session.get(TopicList, tl_source.id).project_id == source.id
+        # A new copy exists in target with the same name
+        target_tl = db_session.scalars(
+            select(TopicList).where(
+                TopicList.project_id == target.id,
+                TopicList.name == "Unique List",
+            )
+        ).one_or_none()
+        assert target_tl is not None
+        # And the work is seeded in the new copy
+        tlw = db_session.scalars(
+            select(TopicListWork).where(
+                TopicListWork.topic_list_id == target_tl.id,
+                TopicListWork.work_id == work.id,
+            )
+        ).one_or_none()
+        assert tlw is not None
 
     def test_same_name_list_memberships_merged_no_duplicates(self, db_session):
         target = _project(db_session, "Target")
@@ -301,7 +317,7 @@ class TestExecuteMerge:
         assert work_source_only.id in works_in_target
         assert len(works_in_target) == 2  # no duplicates
 
-    def test_source_topic_list_deleted_after_merge(self, db_session):
+    def test_source_topic_list_intact_after_merge(self, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         tl_target = _topic_list(db_session, target, "Main")
@@ -311,9 +327,8 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
 
         db_session.expire_all()
-        # source tl was same-name: should have been deleted with source project
-        assert db_session.get(TopicList, tl_source.id) is None
-        # target tl still exists
+        # Both lists still exist; source list is unchanged
+        assert db_session.get(TopicList, tl_source.id) is not None
         assert db_session.get(TopicList, tl_target.id) is not None
 
     # --- Ignored works ---
@@ -400,7 +415,7 @@ class TestExecuteMerge:
 
     # --- Extraction schemas ---
 
-    def test_non_conflicting_schema_moved_to_target(self, db_session):
+    def test_non_conflicting_schema_copied_to_target(self, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         s = _schema(db_session, source, "Unique Schema")
@@ -409,9 +424,16 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
 
         db_session.expire_all()
-        reloaded = db_session.get(ExtractionSchema, s.id)
-        assert reloaded is not None
-        assert reloaded.project_id == target.id
+        # Source schema stays in source
+        assert db_session.get(ExtractionSchema, s.id).project_id == source.id
+        # A copy exists in target with the same title
+        copy = db_session.scalars(
+            select(ExtractionSchema).where(
+                ExtractionSchema.project_id == target.id,
+                ExtractionSchema.title == "Unique Schema",
+            )
+        ).one_or_none()
+        assert copy is not None
 
     def test_schema_conflict_drop_decision(self, db_session):
         target = _project(db_session, "Target")
@@ -426,9 +448,16 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, decisions, db_session)
 
         db_session.expire_all()
-        # Source schema deleted; target schema untouched
-        assert db_session.get(ExtractionSchema, s_source.id) is None
+        # Source schema stays in source (not deleted)
+        assert db_session.get(ExtractionSchema, s_source.id).project_id == source.id
+        # Target schema untouched; no extra copy created
         assert db_session.get(ExtractionSchema, s_target.id) is not None
+        count = db_session.scalar(
+            select(func.count(ExtractionSchema.id)).where(
+                ExtractionSchema.project_id == target.id
+            )
+        )
+        assert count == 1
 
     def test_schema_conflict_rename_decision(self, db_session):
         target = _project(db_session, "Target")
@@ -445,13 +474,19 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, decisions, db_session)
 
         db_session.expire_all()
-        renamed = db_session.get(ExtractionSchema, s_source.id)
-        assert renamed is not None
-        assert renamed.project_id == target.id
-        assert renamed.title == "Table 1 (source)"
+        # Source schema stays in source with original title
+        assert db_session.get(ExtractionSchema, s_source.id).title == "Table 1"
+        # A renamed copy exists in target
+        copy = db_session.scalars(
+            select(ExtractionSchema).where(
+                ExtractionSchema.project_id == target.id,
+                ExtractionSchema.title == "Table 1 (source)",
+            )
+        ).one_or_none()
+        assert copy is not None
 
     def test_schema_conflict_defaults_to_drop(self, db_session):
-        """No decision provided for a conflict → drop (safe default)."""
+        """No decision provided for a conflict → drop (don't copy the incoming schema)."""
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         _schema(db_session, target, "Table 1")
@@ -462,7 +497,15 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
 
         db_session.expire_all()
-        assert db_session.get(ExtractionSchema, s_source.id) is None
+        # Source schema stays in source (not deleted)
+        assert db_session.get(ExtractionSchema, s_source.id).project_id == source.id
+        # No extra copy created in target
+        count = db_session.scalar(
+            select(func.count(ExtractionSchema.id)).where(
+                ExtractionSchema.project_id == target.id
+            )
+        )
+        assert count == 1
 
     # --- Venue tiers ---
 
@@ -497,20 +540,25 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, decisions, db_session)
 
         db_session.expire_all()
-        pvt = db_session.scalars(
+        # Target gets the chosen tier
+        target_pvt = db_session.scalars(
             select(ProjectVenueTier).where(
                 ProjectVenueTier.project_id == target.id,
                 ProjectVenueTier.venue_id == venue.id,
             )
         ).one_or_none()
-        assert pvt is not None
-        assert pvt.tier == 1  # chosen tier applied
+        assert target_pvt is not None
+        assert target_pvt.tier == 1  # chosen tier applied
 
-        # No duplicate row for source
-        all_pvt = db_session.scalars(
-            select(ProjectVenueTier).where(ProjectVenueTier.venue_id == venue.id)
-        ).all()
-        assert len(all_pvt) == 1
+        # Source row still exists (non-destructive)
+        source_pvt = db_session.scalars(
+            select(ProjectVenueTier).where(
+                ProjectVenueTier.project_id == source.id,
+                ProjectVenueTier.venue_id == venue.id,
+            )
+        ).one_or_none()
+        assert source_pvt is not None
+        assert source_pvt.tier == 3  # source unchanged
 
     def test_venue_tier_conflict_no_decision_keeps_target_tier(self, db_session):
         target = _project(db_session, "Target")
@@ -535,7 +583,7 @@ class TestExecuteMerge:
 
     # --- Work notes ---
 
-    def test_project_scoped_notes_repointed_to_target(self, db_session):
+    def test_project_scoped_notes_copied_to_target(self, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         work = _work(db_session)
@@ -545,13 +593,21 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
 
         db_session.expire_all()
-        reloaded = db_session.get(WorkNote, note.id)
-        assert reloaded is not None
-        assert reloaded.project_id == target.id
+        # Original note still belongs to source
+        assert db_session.get(WorkNote, note.id).project_id == source.id
+        # A copy exists in target with the same content
+        copy = db_session.scalars(
+            select(WorkNote).where(
+                WorkNote.project_id == target.id,
+                WorkNote.work_id == work.id,
+                WorkNote.content == "Some observation",
+            )
+        ).one_or_none()
+        assert copy is not None
 
     # --- Chat sessions ---
 
-    def test_chat_sessions_repointed_to_target(self, db_session):
+    def test_chat_sessions_remain_in_source(self, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         session = _chat_session(db_session, source)
@@ -560,14 +616,15 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
 
         db_session.expire_all()
+        # Session stays in source (not moved or copied)
         reloaded = db_session.get(ChatSession, session.id)
         assert reloaded is not None
-        assert reloaded.project_id == target.id
+        assert reloaded.project_id == source.id
 
     # --- Full FK verification ---
 
-    def test_all_fks_point_to_target_after_merge(self, db_session):
-        """Integration test: every FK category is repointed correctly."""
+    def test_all_categories_copied_to_target(self, db_session):
+        """Integration test: every category is copied into target; source stays intact."""
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
 
@@ -581,7 +638,7 @@ class TestExecuteMerge:
         _ignored(db_session, source, ignored_work)
 
         # Schema
-        schema = _schema(db_session, source, "My Schema")
+        _schema(db_session, source, "My Schema")
 
         # Venue tier
         venue = _venue(db_session, "CVPR")
@@ -598,13 +655,18 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
         db_session.expire_all()
 
-        # Source deleted
-        assert db_session.get(Project, source.id) is None
+        # Source project still exists
+        assert db_session.get(Project, source.id) is not None
 
-        # Topic list moved
-        assert db_session.get(TopicList, tl.id).project_id == target.id
+        # Topic list: source unchanged, copy exists in target
+        assert db_session.get(TopicList, tl.id).project_id == source.id
+        assert db_session.scalars(
+            select(TopicList).where(
+                TopicList.project_id == target.id, TopicList.name == "My List"
+            )
+        ).one_or_none() is not None
 
-        # Ignored work moved
+        # Ignored work copied to target
         piw = db_session.scalars(
             select(ProjectIgnoredWork).where(
                 ProjectIgnoredWork.project_id == target.id,
@@ -613,10 +675,15 @@ class TestExecuteMerge:
         ).one_or_none()
         assert piw is not None
 
-        # Schema moved
-        assert db_session.get(ExtractionSchema, schema.id).project_id == target.id
+        # Schema copy exists in target
+        assert db_session.scalars(
+            select(ExtractionSchema).where(
+                ExtractionSchema.project_id == target.id,
+                ExtractionSchema.title == "My Schema",
+            )
+        ).one_or_none() is not None
 
-        # Venue tier moved
+        # Venue tier copied to target
         pvt = db_session.scalars(
             select(ProjectVenueTier).where(
                 ProjectVenueTier.project_id == target.id,
@@ -625,11 +692,16 @@ class TestExecuteMerge:
         ).one_or_none()
         assert pvt is not None
 
-        # Note repointed
-        assert db_session.get(WorkNote, note.id).project_id == target.id
+        # Note copy exists in target; original stays in source
+        assert db_session.get(WorkNote, note.id).project_id == source.id
+        assert db_session.scalars(
+            select(WorkNote).where(
+                WorkNote.project_id == target.id, WorkNote.work_id == work.id
+            )
+        ).one_or_none() is not None
 
-        # Chat session repointed
-        assert db_session.get(ChatSession, session.id).project_id == target.id
+        # Chat session stays in source (not copied)
+        assert db_session.get(ChatSession, session.id).project_id == source.id
 
 
 # ---------------------------------------------------------------------------

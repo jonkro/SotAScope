@@ -261,7 +261,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **409 on destructive operations**: `DELETE /api/works/{id}` and `POST /api/works/{target_id}/merge/{source_id}` both check `work_lock.is_locked()` before proceeding and return 409 if a background task is in progress for any involved work ID.
 - **Auto-enrichment on topic list addition**: `add_work_to_topic_list` in `api/projects.py` schedules `_auto_enrich_bg` (backward citations + forward citations + Crossref) as a BackgroundTask when a work is added to a topic list. If the work is already locked, enrichment is silently skipped (the addition still succeeds). `GET /api/works/lock-status` returns `{"locks": {"<work_id>": "<task>", …}}` for frontend polling.
 - **Project venue tier resolution**: always use the helper function `resolve_venue_tier(project_id, venue_id, db)` rather than reading `Venue.tier` directly when in a project context. This ensures local overrides are respected.
-- **Merge is absorptive**: merging A into B deletes A. All foreign keys pointing to A must be repointed to B before deletion. Check: TopicList, TopicListWork, ProjectIgnoredWork, ProjectVenueTier, WorkNote (project_id), ChatSession (project_id), ExtractionSchema (project_id).
+- **Merge is non-destructive**: merging A into B copies content from A into B; A is left intact. Topic lists (unique name) → new TopicList row in B + copied TopicListWork rows. Topic lists (same name) → missing works copied into B's existing list. ProjectIgnoredWork, ProjectVenueTier, WorkNote (project_id) → new rows created in B. ExtractionSchema → deep copy (+ ExtractionColumn rows), apply rename/drop decision for conflicts. ChatSession → NOT copied (context_ids would be stale after schema deep-copy).
 - **Export uses stable IDs**: the export manifest references works by DOI or arXiv ID, venues by OpenAlex ID or ISSN, never by SQLite row IDs. This makes archives portable across LitExplorer instances.
 
 ---
@@ -292,20 +292,20 @@ Authentication and per-user access control are explicitly deferred to a future p
 ### 2. Project merging (merge A into B, A is deleted)
 
 **Rules:**
-- Topic lists: same name → merge memberships. Different names → move as-is.
-- Ignored works: if a work is a seed in one project and ignored in the other, seeds win (auto-resolved, no user prompt).
-- Extraction schemas: same name → user chooses "rename incoming" or "drop incoming". No column-level merge.
-- Extraction results (WorkNotes): kept for schemas that survive the merge. Dropped schemas' notes remain in the DB (they are general work notes) but lose their schema association.
-- Per-project venue tiers: if both projects have a local override for the same venue, present a conflict dialog. Options per venue: keep A's tier, keep B's tier. Bulk option: "always keep higher (lower number) tier".
-- Chat sessions: all sessions from A are repointed to B.
-- Project-scoped work notes (project_id = A) → repointed to B.
-- localStorage: not migrated — timeline settings and promoted schemas for A are lost. Acceptable.
-- Deep links: old project A URLs will 404. No redirect mapping (acceptable).
+- Topic lists: same name → copy memberships into B's existing list (no duplicates). Different names → new list created in B with all memberships copied.
+- Ignored works: if a work is a seed in one project and ignored in the other, seeds win (auto-resolved, no user prompt). Otherwise, ignored entries are copied to B.
+- Extraction schemas: same name → user chooses "rename incoming" or "drop incoming". Rename → deep copy (schema + columns) with new title. Drop → skip (don't copy). No column-level merge.
+- Extraction results (WorkNotes): not affected (they are per-work, not per-project-schema).
+- Per-project venue tiers: if both projects have a local override for the same venue, present a conflict dialog. Options per venue: keep A's tier, keep B's tier. Bulk option: "always keep higher (lower number) tier". B's row is updated in-place; A's row is left unchanged.
+- Chat sessions: NOT copied. Sessions remain in A. (context_id references schema IDs which change after deep-copy.)
+- Project-scoped work notes (project_id = A) → copied to B (new rows); originals stay in A.
+- localStorage: A's timeline settings and promoted schemas are unaffected. B gains no new localStorage entries from the merge.
+- Source project A is NOT deleted; both projects remain fully usable after merge.
 
 **Backend:**
 - New endpoint: `POST /api/projects/{target_id}/merge/{source_id}`
   Body: `{ schema_decisions: {schema_id: "rename"/"drop", new_name?: string}, venue_tier_decisions: {venue_id: tier} }`
-  Returns the merged project.
+  Returns the updated target project. Source project is NOT deleted.
 - A pre-merge preview endpoint:
   `GET /api/projects/{target_id}/merge-preview/{source_id}`
   Returns: `{ topic_list_merges: [...], schema_conflicts: [{source_schema, target_schema}], venue_tier_conflicts: [{venue_id, venue_name, source_tier, target_tier}], ignored_work_overrides: [work_ids where seed wins over ignored] }`

@@ -404,6 +404,19 @@ export function resetProjectVenueTier(projectId: number, venueId: number) {
   });
 }
 
+// ---- Project Merge ----
+
+export function fetchMergePreview(targetId: number, sourceId: number) {
+  return apiFetch<import('./types').MergePreview>(`/api/projects/${targetId}/merge-preview/${sourceId}`);
+}
+
+export function mergeProject(targetId: number, sourceId: number, decisions: import('./types').MergeDecisions) {
+  return apiFetch<ProjectDetail>(`/api/projects/${targetId}/merge/${sourceId}`, {
+    method: 'POST',
+    body: JSON.stringify(decisions),
+  });
+}
+
 // ---- Timeline ----
 
 export function fetchTimeline(projectId: number) {
