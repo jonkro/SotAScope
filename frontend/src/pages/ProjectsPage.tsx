@@ -5,11 +5,13 @@ import SearchInput from '../components/SearchInput';
 import EmptyState from '../components/EmptyState';
 import ProjectFormDialog from '../components/ProjectFormDialog';
 import ConfirmDialog from '../components/ConfirmDialog';
+import { ProjectImportDialog } from '../components/ProjectImportDialog';
 import { useProjects, useCreateProject, useDeleteProject } from '../hooks/useProjects';
 
 export default function ProjectsPage() {
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const navigate = useNavigate();
 
@@ -23,6 +25,12 @@ export default function ProjectsPage() {
     <div className="flex flex-col h-screen">
       <PageHeader title="Projects">
         <SearchInput value={search} onChange={handleSearch} placeholder="Search projects..." />
+        <button
+          onClick={() => setShowImport(true)}
+          className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+        >
+          Import
+        </button>
         <button
           onClick={() => setShowCreate(true)}
           className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
@@ -77,6 +85,10 @@ export default function ProjectsPage() {
             createMut.mutate(data, { onSuccess: () => setShowCreate(false) });
           }}
         />
+      )}
+
+      {showImport && (
+        <ProjectImportDialog onClose={() => setShowImport(false)} />
       )}
 
       {deleteId !== null && (

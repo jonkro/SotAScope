@@ -36,6 +36,8 @@ import type {
   ExtractionJobAccepted,
   ExtractionJobStatus,
   LockStatusResponse,
+  ImportResult,
+  ImportResolveRequest,
 } from './types';
 
 class ApiError extends Error {
@@ -801,4 +803,29 @@ export function startGrobid(): Promise<{ success: boolean; message: string }> {
 
 export function enrichFromGrobid(workId: number): Promise<BackgroundAccepted> {
   return apiFetch<BackgroundAccepted>(`/api/enrich/works/${workId}/grobid`, { method: 'POST' });
+}
+
+export async function importProjectZip(file: File): Promise<ImportResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch('/api/projects/import', {
+    method: 'POST',
+    body: formData,
+    // Do NOT set Content-Type — let browser add multipart boundary automatically
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(res.status, body);
+  }
+  return res.json();
+}
+
+export function resolveImportCollision(
+  tempId: number,
+  body: ImportResolveRequest,
+): Promise<ProjectDetail> {
+  return apiFetch<ProjectDetail>(`/api/projects/import/${tempId}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }

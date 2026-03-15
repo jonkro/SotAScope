@@ -5,8 +5,9 @@ import {
   addWorkToTopicList, removeWorkFromTopicList,
   addIgnoredWork, removeIgnoredWork,
   fetchMergePreview, mergeProject,
+  importProjectZip, resolveImportCollision,
 } from '../api';
-import type { MergeDecisions } from '../types';
+import type { MergeDecisions, ImportResolveRequest } from '../types';
 
 export function useProjects(params?: { offset?: number; limit?: number; q?: string }) {
   return useQuery({
@@ -145,5 +146,22 @@ export function useRemoveIgnoredWork() {
       qc.invalidateQueries({ queryKey: ['projects', projectId] });
       qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
     },
+  });
+}
+
+// ---- Project Import ----
+
+export function useImportProject() {
+  return useMutation({
+    mutationFn: (file: File) => importProjectZip(file),
+  });
+}
+
+export function useResolveImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tempId, body }: { tempId: number; body: ImportResolveRequest }) =>
+      resolveImportCollision(tempId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
   });
 }

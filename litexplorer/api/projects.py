@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -32,6 +32,7 @@ from litexplorer.schemas.projects import (
 )
 from litexplorer.schemas.works import WorkOut
 from litexplorer.schemas.project_merge import MergeDecisions, MergePreview
+from litexplorer.schemas.project_import import ImportResult, ImportResolveRequest
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -699,3 +700,91 @@ def export_project_zip(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Project ZIP import
+# ---------------------------------------------------------------------------
+
+
+def _load_project_detail(project_id: int, db: Session) -> ProjectDetail:
+    """Reload project with eager joins and return ProjectDetail."""
+    project = db.scalars(
+        select(Project)
+        .where(Project.id == project_id)
+        .options(
+            joinedload(Project.topic_lists),
+            joinedload(Project.ignored_work_associations).joinedload(
+                ProjectIgnoredWork.work
+            ),
+        )
+    ).unique().one()
+    return _project_detail(project)
+
+
+@router.post("/import", response_model=ImportResult, status_code=201)
+async def import_project_zip(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ImportResult:
+    """Import a project from a .zip archive produced by the export endpoint.
+
+    Returns an :class:`ImportResult`.  If ``needs_project_decision`` is True
+    a temp project was created; follow up with
+    ``POST /api/projects/import/{temp_id}/resolve`` to merge or rename it.
+    Otherwise the project was created directly and auto-enrichment has been
+    scheduled for all seed works.
+    """
+    from litexplorer.services.project_import import import_project as _import
+
+    content = await file.read()
+    try:
+        result, seed_ids = _import(content, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Schedule auto-enrichment for new seed works (only when no collision)
+    if not result.needs_project_decision:
+        for work_id in seed_ids:
+            if work_lock.acquire(work_id, "Auto-enrichment (imported seed)"):
+                background_tasks.add_task(_auto_enrich_bg, work_id)
+
+    return result
+
+
+@router.post("/import/{temp_id}/resolve", response_model=ProjectDetail)
+def resolve_import_collision(
+    temp_id: int,
+    body: ImportResolveRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ProjectDetail:
+    """Resolve a project name collision that was detected during import.
+
+    ``action="merge"`` merges the temp project into the existing project
+    specified by ``target_project_id``, then deletes the temp project.
+
+    ``action="rename"`` renames the temp project to ``new_name``.
+
+    After resolution, auto-enrichment is scheduled for seed works.
+    """
+    from litexplorer.services.project_import import resolve_import as _resolve
+
+    try:
+        final_project, seed_ids = _resolve(
+            temp_id,
+            body.action,
+            body.target_project_id,
+            body.new_name,
+            body.merge_decisions,
+            db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    for work_id in seed_ids:
+        if work_lock.acquire(work_id, "Auto-enrichment (imported seed)"):
+            background_tasks.add_task(_auto_enrich_bg, work_id)
+
+    return _load_project_detail(final_project.id, db)

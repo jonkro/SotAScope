@@ -232,6 +232,40 @@ export interface MergeDecisions {
   venue_tier_decisions: Record<number, number>;
 }
 
+// ---- Project Import ----
+
+export interface AmbiguousMatchWork {
+  title: string;
+  year: number | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  bibtex_key: string | null;
+}
+
+export interface AmbiguousMatch {
+  incoming: AmbiguousMatchWork;
+  candidates: AmbiguousMatchWork[];
+}
+
+export interface ImportResult {
+  project_id: number | null;
+  temp_project_id: number | null;
+  project_name: string;
+  works_created: number;
+  works_matched: number;
+  ambiguous_matches: AmbiguousMatch[];
+  needs_project_decision: boolean;
+  existing_project_id: number | null;
+  merge_preview: MergePreview | null;
+}
+
+export interface ImportResolveRequest {
+  action: 'merge' | 'rename';
+  target_project_id?: number | null;
+  new_name?: string | null;
+  merge_decisions?: MergeDecisions;
+}
+
 // ---- Timeline ----
 
 export interface CitationsByYearEntry {
