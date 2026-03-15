@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import SearchInput from '../components/SearchInput';
 import EmptyState from '../components/EmptyState';
@@ -88,7 +88,7 @@ function PromotedSchemaTabContent({
 }
 
 // ---------------------------------------------------------------------------
-// Share button
+// Share button (icon-only)
 // ---------------------------------------------------------------------------
 
 function ShareButton({ href }: { href?: string }) {
@@ -102,11 +102,60 @@ function ShareButton({ href }: { href?: string }) {
   return (
     <button
       onClick={handleShare}
-      className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-      title="Copy link to clipboard"
+      className="h-8 w-8 flex items-center justify-center border border-gray-300 rounded hover:bg-gray-50 text-gray-500"
+      title={copied ? 'Link copied!' : 'Copy link'}
     >
-      {copied ? 'Link copied!' : 'Share'}
+      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+      </svg>
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dropdown menu
+// ---------------------------------------------------------------------------
+
+function DropdownMenu({ label, items }: {
+  label: string;
+  items: { label: string; onClick: () => void }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 flex items-center gap-1 text-gray-700"
+      >
+        {label}
+        <span className="text-[10px] text-gray-400 leading-none">▾</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-200 rounded shadow-lg z-50 py-1">
+          {items.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => { item.onClick(); setOpen(false); }}
+              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -521,54 +570,46 @@ export default function ProjectDetailPage() {
   return (
     <div className="flex h-screen">
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <PageHeader title={project.name}>
-          <button
-            onClick={() => navigate('/projects')}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-          >
-            To project overview
-          </button>
-          <button
-            onClick={() => navigate(`/projects/${projectId}/discuss`)}
-            className="px-3 py-1.5 text-sm font-medium text-indigo-700 border border-indigo-300 rounded hover:bg-indigo-50"
-          >
-            Discuss
-          </button>
-          <button
-            onClick={() => navigate(`/projects/${projectId}/extraction`)}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-          >
-            Extraction Tables
-          </button>
-          <button
-            onClick={() => setShowMergeDialog(true)}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-600"
-          >
-            Merge
-          </button>
-          <button
-            onClick={() => setShowProjectExport(true)}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
-          >
-            Export Project
-          </button>
-          <button
-            onClick={() => setShowBibTeXExport(true)}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
-          >
-            Export BibTeX
-          </button>
+        <PageHeader
+          leftContent={
+            <nav className="flex items-center gap-2">
+              <Link
+                to="/projects"
+                className="text-sm text-gray-400 hover:text-gray-600"
+              >
+                ← Projects
+              </Link>
+              <span className="text-sm text-gray-300">/</span>
+              <h1 className="text-xl font-semibold text-gray-900">{project.name}</h1>
+            </nav>
+          }
+        >
+          <DropdownMenu
+            label="Project"
+            items={[
+              { label: 'New topic list', onClick: () => setShowCreateList(true) },
+              { label: 'Merge', onClick: () => setShowMergeDialog(true) },
+            ]}
+          />
+          <DropdownMenu
+            label="Analyze"
+            items={[
+              { label: 'Discuss', onClick: () => navigate(`/projects/${projectId}/discuss`) },
+              { label: 'Extraction tables', onClick: () => navigate(`/projects/${projectId}/extraction`) },
+            ]}
+          />
+          <DropdownMenu
+            label="Export"
+            items={[
+              { label: 'Export project (.zip)', onClick: () => setShowProjectExport(true) },
+              { label: 'Export BibTeX', onClick: () => setShowBibTeXExport(true) },
+            ]}
+          />
           <button
             onClick={() => setShowProjectImport(true)}
-            className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded hover:bg-green-700"
-          >
-            Import Paper
-          </button>
-          <button
-            onClick={() => setShowCreateList(true)}
             className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
           >
-            New Topic List
+            Import paper
           </button>
           <ShareButton
             href={activeSchemaId !== null

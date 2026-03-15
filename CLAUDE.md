@@ -90,6 +90,18 @@ The main project view is a D3 scatter plot (x = publication year, y = log-scaled
 
 ---
 
+## UI design system
+
+Rules that apply to all page headers:
+
+1. **One blue filled primary button per page** — the most common "add/create" action, always rightmost (before the share icon if present). All other buttons use outline style (transparent background, `border border-gray-300`).
+2. **Red text only** for destructive actions (e.g., Delete on project cards). Never in the top menu bar.
+3. **Dropdowns** styled identically to outline buttons with a small `▾` indicator. Built as the local `DropdownMenu` component in `ProjectDetailPage.tsx`; close on outside `mousedown`.
+4. **Button sizing**: `py-1.5 px-3 text-sm` (≈ 32 px tall). The share icon button is `h-8 w-8` (square, same height).
+5. **`ProjectDetailPage` header**: breadcrumb (`← Projects / {name}`) on the left using `PageHeader leftContent`; three action dropdowns (Project, Analyze, Export) + "Import paper" primary + link icon on the right.
+
+---
+
 ## Stack
 
 - **Backend**: Python 3.11+ / FastAPI
@@ -208,6 +220,8 @@ frontend/src/
     │                           #   auto-detects input type (10. prefix = DOI, else arXiv ID);
     │                           #   optional post-import topic list assignment via projectTopicLists prop
     ├── ColumnProposalCard.tsx  # LLM column proposal states; UserCancelledError exported for silent cancel
+    ├── PageHeader.tsx          # Shared page header; accepts title (string) OR leftContent (ReactNode)
+    │                           #   for custom left side (e.g. breadcrumbs). Children render on the right.
     └── ...
 
 tests/
