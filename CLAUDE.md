@@ -176,6 +176,8 @@ litexplorer/
 │                         #   projects.py: CRUD + topic lists + venue tiers + merge + export + import
 │                         #   POST /api/projects/import (multipart .zip upload) → ImportResult (201)
 │                         #   POST /api/projects/import/{temp_id}/resolve → ProjectDetail (200)
+│                         #   POST /api/projects/import/{id}/resolve-aliases → {message} (200)
+│                         #     writes accepted VenueAlias rows to global table (format_version=2 only)
 ├── services/
 │   ├── enrichment.py     # EnrichmentService — import, citations, venue normalization, DOI resolution;
 │   │                     #   fetch_backward_citations() → tuple[list[Work], int] where int=raw_count
@@ -326,22 +328,27 @@ Authentication and per-user access control are explicitly deferred to a future p
 ### Export (implemented)
 - `GET /api/projects/{id}/export` → `.zip` (manifest.json + seeds.bib)
 - `GET /api/projects/{id}/export/bibtex?work_ids=...` → BibTeX text
-- Manifest format_version: 1. Works referenced by stable IDs (DOI → arXiv → OpenAlex — never SQLite row IDs). Only seeds exported; candidates re-discovered via auto-enrichment on import.
+- Manifest format_version: **2**. Works referenced by stable IDs (DOI → arXiv → OpenAlex — never SQLite row IDs). Only seeds exported; candidates re-discovered via auto-enrichment on import.
+- `venue_tiers` section: effective tier (project-local override if present, else global `Venue.tier`) for every venue associated with any seed or citation-neighbour work in the project. Works with `venue_id=NULL` are skipped silently. Each entry also carries all `VenueAlias` strings for that venue (excluding the preferred alias, which is already stored in `venue_name`).
 - Service: `litexplorer/services/project_export.py` — `export_project(project_id, db) → io.BytesIO`
 
 ### Import (implemented)
 - `POST /api/projects/import` (multipart `file` upload) → `ImportResult` (201)
-  - Parses ZIP, validates format_version (errors on version > 1).
+  - Parses ZIP, validates format_version (errors on version > 2).
   - Matches works by DOI → arXiv → OpenAlex → title+year+first-author.  100% matches (title+year+same first author) → auto-match silently. Title+year without clear author agreement → ambiguous (flagged in `ImportResult.ambiguous_matches`, new work still created; user reviews via Library Sanitize later).
   - If project name collision: creates temp `"$name - incoming"` project, returns `needs_project_decision=True` + pre-computed `merge_preview`.
   - Otherwise: creates project directly, schedules auto-enrichment for all seed works.
+  - **format_version=2**: processes `venue_tiers` via `_import_venue_tiers_v2()` — creates a `ProjectVenueTier` for every entry (importer's global tiers are never modified). Aliases not yet in the importer's `VenueAlias` table are collected as `PendingVenueAlias` and returned in `ImportResult.pending_venue_aliases` with `needs_alias_decision=True`. Auto-enrichment is NOT blocked by a pending alias decision.
+  - **format_version=1**: falls back to old `venue_tier_overrides` handling; `needs_alias_decision` is always False.
 - `POST /api/projects/import/{temp_id}/resolve` → `ProjectDetail` (200)
   - `action="merge"` + `target_project_id`: merges temp into existing, deletes temp, schedules enrichment.
   - `action="rename"` + `new_name`: renames temp project to new name, schedules enrichment.
-- Service: `litexplorer/services/project_import.py` — `import_project()`, `resolve_import()`
-- Schemas: `litexplorer/schemas/project_import.py` — `ImportResult`, `ImportResolveRequest`, `AmbiguousMatch`
-- Frontend: `ProjectImportDialog.tsx` — file upload → results → collision UI (merge/rename with conflict controls) → done
-- Tests: `tests/test_project_import.py` (23 tests)
+- `POST /api/projects/import/{project_id}/resolve-aliases` → `{message}` (200)
+  - Writes accepted `VenueAlias` rows to the global table; rejected decisions are ignored. Idempotent. No ownership validation (local-first tool assumption).
+- Service: `litexplorer/services/project_import.py` — `import_project()`, `resolve_import()`, `_import_venue_tiers_v2()`
+- Schemas: `litexplorer/schemas/project_import.py` — `ImportResult`, `ImportResolveRequest`, `AmbiguousMatch`, `PendingVenueAlias`, `AliasDecision`, `ResolveAliasesRequest`
+- Frontend: `ProjectImportDialog.tsx` — file upload → results → (optional) collision UI → (optional) alias confirmation UI → done. Alias step shown only for format_version=2 imports with new aliases; skippable.
+- Tests: `tests/test_project_import.py` (36 tests)
 
 ### Project merge (implemented)
 - Non-destructive: content from source copied into target; source remains intact.
