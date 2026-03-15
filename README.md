@@ -47,13 +47,16 @@ pip install -e .
 
 # 3. Run
 # Local-only (laptop/desktop — not accessible from other machines):
-uvicorn litexplorer.app:app --host 127.0.0.1 --port 8000
+litexplorer
 
 # Shared server (accessible on the network):
-uvicorn litexplorer.app:app --host 0.0.0.0 --port 8000
+litexplorer --host 0.0.0.0
+
+# Custom data directory:
+litexplorer --datadir /path/to/data
 ```
 
-Open `http://localhost:8000` in your browser. The SQLite database and PDFs are created under `~/.litexplorer/` by default. Set `LITEXPLORER_DATA_DIR` to use a different location.
+Open `http://localhost:8000` in your browser. The SQLite database and PDFs are created under `~/.litexplorer/` by default. Override with `--datadir /path/to/data` (or set the `LITEXPLORER_DATA_DIR` environment variable).
 
 No root or sudo rights are required.
 
@@ -66,7 +69,7 @@ Same install steps as above. For the server to keep running after you disconnect
 ```bash
 tmux new -s litexplorer
 conda activate litexplorer
-uvicorn litexplorer.app:app --host 0.0.0.0 --port 8000
+litexplorer --host 0.0.0.0
 # Detach with Ctrl-b d
 ```
 
@@ -78,7 +81,7 @@ If you want the process to start automatically on boot and restart on failure, a
 
 ```bash
 cp env.example env
-# Edit env — set UVICORN_BIN to the output of: conda run -n litexplorer which uvicorn
+# Edit env — set LITEXPLORER_BIN to the output of: conda run -n litexplorer which litexplorer
 # Set any other options you need (data directory, proxy, contact email)
 
 sudo cp litexplorer.service /etc/systemd/system/
@@ -99,7 +102,7 @@ journalctl -u litexplorer -f
 git pull
 conda run -n litexplorer pip install -e .
 # Restart however you started it:
-#   tmux: kill and relaunch uvicorn
+#   tmux: kill and relaunch litexplorer
 #   systemd: sudo systemctl restart litexplorer
 ```
 

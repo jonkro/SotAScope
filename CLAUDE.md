@@ -28,7 +28,7 @@ Two distinct layers:
 - A project contains one or more **topic lists**. Each topic list is a named, color-coded set of "selected" papers (seeds).
 - The project stores which papers belong to which topic list, and **ignored works** (excluded from timeline).
 - Multiple projects can coexist and share the same library.
-- **Extraction table tabs**: Schemas can be promoted to their own top-level tabs in the project view. Promotion state is stored in `localStorage` per project (`litexplorer:project:{id}:promotedSchemas`), not in the database — it is a per-browser preference. Promoted tabs are read-only with respect to paper selection.
+- **Extraction table tabs**: Schemas can be promoted to their own top-level tabs in the project view. Promotion state is stored in `localStorage` per project (`litexplorer:project:{id}:promotedSchemas`), not in the database — it is a per-browser preference. Pin/unpin toggles are on each schema card in `ExtractionSchemasPage`; `ProjectDetailPage` reads the same key but only reads it (no toggle UI there). Promoted tabs are read-only with respect to paper selection.
 
 ---
 
@@ -223,7 +223,7 @@ frontend/src/
 │                         #   useTimeline, useEnrichment, useFields, useWorkNotes, useWorkPDFs,
 │                         #   useSettings, useChatSessions, useExtraction, useLockStatus)
 ├── pages/
-│   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes + Tables tabs
+│   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes + Venue Tiers tabs + pinned schema tabs
 │   ├── ExtractionSchemasPage.tsx # Schema editor + ExtractionRunView; ?schema= URL param
 │   ├── DiscussionPage.tsx       # LLM chat; context_type drives schema-design vs. paper mode;
 │   │                            #   proposal parser produces ColumnProposalCards

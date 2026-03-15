@@ -591,7 +591,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
             to={`/projects/${projectId}/extraction?schema=${schema.id}`}
             className="text-blue-600 hover:underline"
           >
-            Edit in full view →
+            Edit →
           </Link>
         ) : (
           <>Go to the <strong>Schema</strong> tab to add columns first.</>
@@ -641,7 +641,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
             to={`/projects/${projectId}/extraction?schema=${schema.id}`}
             className="text-xs text-blue-600 hover:underline font-medium"
           >
-            Edit in full view →
+            Edit →
           </Link>
         </div>
       ) : (

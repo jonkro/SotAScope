@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ExtractionRunView from '../components/ExtractionRunView';
@@ -198,7 +198,7 @@ function ColumnFormModal({ schemaId, initial, nextSortOrder, onClose }: ColumnFo
 }
 
 // ---------------------------------------------------------------------------
-// Share button
+// Share button (icon-only, matches ProjectDetailPage)
 // ---------------------------------------------------------------------------
 
 function ShareButton() {
@@ -212,10 +212,13 @@ function ShareButton() {
   return (
     <button
       onClick={handleShare}
-      className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-      title="Copy link to clipboard"
+      className="h-8 w-8 flex items-center justify-center border border-gray-300 rounded hover:bg-gray-50 text-gray-500"
+      title={copied ? 'Link copied!' : 'Copy link'}
     >
-      {copied ? 'Link copied!' : 'Share'}
+      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+      </svg>
     </button>
   );
 }
@@ -296,13 +299,27 @@ function SchemaEditor({ schemaId, projectId, onBack, initialTab }: SchemaEditorP
 
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0">
-      <PageHeader title="Edit Extraction Schema">
-        <button
-          onClick={onBack}
-          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-        >
-          ← Back to schemas
-        </button>
+      <PageHeader
+        leftContent={
+          <nav className="flex items-center gap-2">
+            <Link
+              to={`/projects/${projectId}`}
+              className="text-sm text-gray-400 hover:text-gray-600"
+            >
+              ← Project
+            </Link>
+            <span className="text-sm text-gray-300">/</span>
+            <button
+              onClick={onBack}
+              className="text-sm text-gray-400 hover:text-gray-600"
+            >
+              Schemas
+            </button>
+            <span className="text-sm text-gray-300">/</span>
+            <h1 className="text-sm font-semibold text-gray-900">{schema.title}</h1>
+          </nav>
+        }
+      >
         <button
           onClick={() => navigate(`/projects/${projectId}/discuss?focus=schema&schemaId=${schemaId}`)}
           className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50"
@@ -600,9 +617,11 @@ interface SchemaCardProps {
   schema: ExtractionSchema;
   onEdit: () => void;
   onDelete: () => void;
+  isPinned: boolean;
+  onTogglePin: () => void;
 }
 
-function SchemaCard({ schema, onEdit, onDelete }: SchemaCardProps) {
+function SchemaCard({ schema, onEdit, onDelete, isPinned, onTogglePin }: SchemaCardProps) {
   const created = new Date(schema.created_at).toLocaleDateString(undefined, {
     year: 'numeric',
     month: 'short',
@@ -641,6 +660,12 @@ function SchemaCard({ schema, onEdit, onDelete }: SchemaCardProps) {
         </div>
         <div className="flex gap-2 shrink-0">
           <button
+            onClick={onTogglePin}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+          >
+            {isPinned ? 'Unpin' : 'Pin to tabs'}
+          </button>
+          <button
             onClick={onEdit}
             className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
           >
@@ -664,10 +689,18 @@ function SchemaCard({ schema, onEdit, onDelete }: SchemaCardProps) {
 
 type View = { kind: 'list' } | { kind: 'new' } | { kind: 'editor'; schemaId: number };
 
+function loadPromotedSchemaIds(projectId: number): number[] {
+  try {
+    const raw = localStorage.getItem(`litexplorer:project:${projectId}:promotedSchemas`);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function ExtractionSchemasPage() {
   const { projectId: pid } = useParams<{ projectId: string }>();
   const projectId = Number(pid);
-  const navigate = useNavigate();
 
   // Support ?schema={id} URL param to auto-open a specific schema editor
   const [searchParams, setSearchParams] = useSearchParams();
@@ -681,6 +714,23 @@ export default function ExtractionSchemasPage() {
     return { kind: 'list' };
   });
   const [deleteSchemaId, setDeleteSchemaId] = useState<number | null>(null);
+
+  // Promoted schema IDs — shared localStorage with ProjectDetailPage
+  const [promotedSchemaIds, setPromotedSchemaIds] = useState<number[]>(
+    () => loadPromotedSchemaIds(projectId),
+  );
+  const togglePromoted = (schemaId: number) => {
+    setPromotedSchemaIds((prev) => {
+      const next = prev.includes(schemaId)
+        ? prev.filter((id) => id !== schemaId)
+        : [...prev, schemaId];
+      localStorage.setItem(
+        `litexplorer:project:${projectId}:promotedSchemas`,
+        JSON.stringify(next),
+      );
+      return next;
+    });
+  };
 
   // Sync view to URL params (replace, not push)
   useEffect(() => {
@@ -719,13 +769,20 @@ export default function ExtractionSchemasPage() {
   // List view
   return (
     <div className="flex-1">
-      <PageHeader title="Extraction Schemas">
-        <button
-          onClick={() => navigate(`/projects/${projectId}`)}
-          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-        >
-          ← Back to project
-        </button>
+      <PageHeader
+        leftContent={
+          <nav className="flex items-center gap-2">
+            <Link
+              to={`/projects/${projectId}`}
+              className="text-sm text-gray-400 hover:text-gray-600"
+            >
+              ← Project
+            </Link>
+            <span className="text-sm text-gray-300">/</span>
+            <h1 className="text-xl font-semibold text-gray-900">Extraction Schemas</h1>
+          </nav>
+        }
+      >
         <button
           onClick={() => setView({ kind: 'new' })}
           className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
@@ -760,6 +817,8 @@ export default function ExtractionSchemasPage() {
             schema={schema}
             onEdit={() => setView({ kind: 'editor', schemaId: schema.id })}
             onDelete={() => setDeleteSchemaId(schema.id)}
+            isPinned={promotedSchemaIds.includes(schema.id)}
+            onTogglePin={() => togglePromoted(schema.id)}
           />
         ))}
       </div>
