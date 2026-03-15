@@ -607,7 +607,7 @@ class TestExecuteMerge:
 
     # --- Chat sessions ---
 
-    def test_chat_sessions_remain_in_source(self, db_session):
+    def test_chat_sessions_copied_to_target(self, db_session):
         target = _project(db_session, "Target")
         source = _project(db_session, "Source")
         session = _chat_session(db_session, source)
@@ -616,10 +616,57 @@ class TestExecuteMerge:
         execute_merge(target.id, source.id, MergeDecisions(), db_session)
 
         db_session.expire_all()
-        # Session stays in source (not moved or copied)
-        reloaded = db_session.get(ChatSession, session.id)
-        assert reloaded is not None
-        assert reloaded.project_id == source.id
+        # Original session stays in source
+        assert db_session.get(ChatSession, session.id).project_id == source.id
+        # A copy exists in target
+        copy = db_session.scalars(
+            select(ChatSession).where(ChatSession.project_id == target.id)
+        ).one_or_none()
+        assert copy is not None
+
+    def test_chat_session_schema_context_remapped(self, db_session):
+        target = _project(db_session, "Target")
+        source = _project(db_session, "Source")
+        schema = _schema(db_session, source, "My Schema")
+        session = ChatSession(project_id=source.id, context_type="extraction_schema", context_id=schema.id)
+        db_session.add(session)
+        db_session.flush()
+        db_session.commit()
+
+        execute_merge(target.id, source.id, MergeDecisions(), db_session)
+
+        db_session.expire_all()
+        copy = db_session.scalars(
+            select(ChatSession).where(ChatSession.project_id == target.id)
+        ).one_or_none()
+        assert copy is not None
+        assert copy.context_type == "extraction_schema"
+        # context_id must point to the new schema copy in target, not the original
+        assert copy.context_id != schema.id
+        new_schema = db_session.get(ExtractionSchema, copy.context_id)
+        assert new_schema is not None
+        assert new_schema.project_id == target.id
+
+    def test_chat_session_dropped_schema_reset_to_papers(self, db_session):
+        target = _project(db_session, "Target")
+        source = _project(db_session, "Source")
+        # Same-name schema in both → conflict; default decision is drop
+        _schema(db_session, target, "Table 1")
+        schema = _schema(db_session, source, "Table 1")
+        session = ChatSession(project_id=source.id, context_type="extraction_schema", context_id=schema.id)
+        db_session.add(session)
+        db_session.flush()
+        db_session.commit()
+
+        execute_merge(target.id, source.id, MergeDecisions(), db_session)
+
+        db_session.expire_all()
+        copy = db_session.scalars(
+            select(ChatSession).where(ChatSession.project_id == target.id)
+        ).one_or_none()
+        assert copy is not None
+        assert copy.context_type == "papers"
+        assert copy.context_id is None
 
     # --- Full FK verification ---
 
@@ -700,8 +747,11 @@ class TestExecuteMerge:
             )
         ).one_or_none() is not None
 
-        # Chat session stays in source (not copied)
+        # Chat session original stays in source; a copy exists in target
         assert db_session.get(ChatSession, session.id).project_id == source.id
+        assert db_session.scalars(
+            select(ChatSession).where(ChatSession.project_id == target.id)
+        ).one_or_none() is not None
 
 
 # ---------------------------------------------------------------------------

@@ -338,7 +338,7 @@ export function MergeProjectDialog({ targetProjectId, targetProjectName, onClose
                         <p>{preview.data.source_note_count} project-scoped note{preview.data.source_note_count !== 1 ? 's' : ''} will be copied to this project.</p>
                       )}
                       {preview.data.source_chat_session_count > 0 && (
-                        <p>{preview.data.source_chat_session_count} chat session{preview.data.source_chat_session_count !== 1 ? 's' : ''} will remain in the source project (not copied).</p>
+                        <p>{preview.data.source_chat_session_count} chat session{preview.data.source_chat_session_count !== 1 ? 's' : ''} will be copied (schema references remapped where possible).</p>
                       )}
                     </section>
                   )}
@@ -368,7 +368,7 @@ export function MergeProjectDialog({ targetProjectId, targetProjectName, onClose
               preview.error !== null ||
               merge.isPending
             }
-            className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-4 py-2 text-sm font-medium text-white bg-orange-500 rounded hover:bg-orange-600 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {merge.isPending ? 'Merging…' : 'Merge projects'}
           </button>

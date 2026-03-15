@@ -9,8 +9,10 @@ Copy checklist:
   ProjectIgnoredWork       → copy rows (skip duplicates; seed wins over ignored)
   ProjectVenueTier         → copy source-only overrides; resolve conflicts on target row
   WorkNote (project-scoped)→ copy rows with project_id=target
-  ChatSession              → NOT copied (context_ids are stale after schema copies)
-  ExtractionSchema         → deep copy (+ ExtractionColumn rows); apply rename/drop decision
+  ExtractionSchema         → deep copy (+ ExtractionColumn rows); apply rename/drop decision;
+                             returns source_id→new_id mapping used for ChatSession remapping
+  ChatSession              → deep copy (+ ChatMessage rows); context_id remapped via schema map;
+                             sessions whose schema was dropped get context_type reset to "papers"
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from litexplorer.models.chat import ChatSession  # noqa: F401 (kept for table-existence in tests)
+from litexplorer.models.chat import ChatMessage, ChatSession
 from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
 from litexplorer.models.library import Venue, WorkNote
 from litexplorer.models.project import (
@@ -211,8 +213,11 @@ def _copy_schema(
     new_title: str,
     target_id: int,
     db: Session,
-) -> None:
-    """Create a deep copy of an ExtractionSchema (with all columns) in target project."""
+) -> int:
+    """Create a deep copy of an ExtractionSchema (with all columns) in target project.
+
+    Returns the new schema's ID so callers can remap context_id references.
+    """
     new_schema = ExtractionSchema(
         project_id=target_id,
         title=new_title,
@@ -229,6 +234,7 @@ def _copy_schema(
             allowed_values=col.allowed_values,
             sort_order=col.sort_order,
         ))
+    return new_schema.id
 
 
 def execute_merge(
@@ -340,16 +346,22 @@ def execute_merge(
     ).all()
     target_schema_titles: set[str] = {s.title for s in target_schemas}
 
+    # Maps source schema ID → new target schema ID (for ChatSession context remapping).
+    # Source schemas that are dropped are absent from this map.
+    schema_id_map: dict[int, int] = {}
+
     for ss in source_schemas:
         if ss.title in target_schema_titles:
             # Conflicting title: apply user decision (default: drop)
             decision = decisions.schema_decisions.get(ss.id)
             if decision is not None and decision.action == "rename":
-                _copy_schema(ss, decision.new_name or f"{ss.title} (merged)", target_id, db)
-            # else drop: don't copy
+                new_id = _copy_schema(ss, decision.new_name or f"{ss.title} (merged)", target_id, db)
+                schema_id_map[ss.id] = new_id
+            # else drop: don't copy (schema_id_map has no entry for ss.id)
         else:
             # No conflict: copy to target
-            _copy_schema(ss, ss.title, target_id, db)
+            new_id = _copy_schema(ss, ss.title, target_id, db)
+            schema_id_map[ss.id] = new_id
 
     db.flush()
 
@@ -398,10 +410,40 @@ def execute_merge(
         ))
 
     # ------------------------------------------------------------------ g.
-    # Chat sessions: NOT copied
-    # context_id (schema ID) would be stale after schema deep-copy (new IDs).
-    # Sessions remain in the source project.
+    # Chat sessions: deep copy with context_id remapping
     # ------------------------------------------------------------------ g.
+    source_sessions = db.scalars(
+        select(ChatSession)
+        .where(ChatSession.project_id == source_id)
+        .options(selectinload(ChatSession.messages))
+    ).all()
+    for session in source_sessions:
+        ctx_type = session.context_type
+        ctx_id = session.context_id
+        if ctx_type == "extraction_schema" and ctx_id is not None:
+            if ctx_id in schema_id_map:
+                # Remap to the new copy of the schema in target
+                ctx_id = schema_id_map[ctx_id]
+            else:
+                # Schema was dropped: reset to generic papers mode
+                ctx_type = "papers"
+                ctx_id = None
+        new_session = ChatSession(
+            project_id=target_id,
+            work_id=session.work_id,
+            context_type=ctx_type,
+            context_id=ctx_id,
+            title=session.title,
+            is_auto=session.is_auto,
+        )
+        db.add(new_session)
+        db.flush()
+        for msg in session.messages:
+            db.add(ChatMessage(
+                session_id=new_session.id,
+                role=msg.role,
+                content=msg.content,
+            ))
 
     db.commit()
 
