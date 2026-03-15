@@ -139,7 +139,21 @@ litexplorer/
 ├── schemas/              # Pydantic v2 request/response models (all have from_attributes=True)
 │   ├── enrichment.py     # CitationResult (raw_count: int — 0 means OA has no reference list),
 │   │                     #   SearchImportRequest/Candidate/CandidatesResult, DOIInfoResult
-│   ├── timeline.py       # TimelineSeedWork (+ backward_citations_no_oa_data: bool, has_pdfs: bool),
+│   ├── timeline.py       # TimelineSeedWork (+ backward_citations_no_oa_data, oa_forward_no_data,
+│   │                     #   s2_refs_fetched, s2_refs_no_data, s2_citing_fetched, s2_citing_no_data,
+│   │                     #   grobid_fetched, has_pdfs booleans),
+│   │                     # Three-state per-source enrichment model:
+│   │                     #   (1) not fetched — no attempt made
+│   │                     #   (2) fetched, has data — source returned references/citations
+│   │                     #   (3) fetched, no data — source was queried but returned nothing
+│   │                     # OA tracking: api_cache "backward_citations:{oa_id}" (permanent);
+│   │                     #   "[]" = fetched empty. Forward: "forward_citations:{oa_id}" (timestamped).
+│   │                     # S2 tracking: api_cache source="semantic_scholar",
+│   │                     #   key="s2_enrich_refs:{work_id}" / "s2_enrich_citing:{work_id}" (permanent).
+│   │                     #   Written by enrich_from_semantic_scholar() after each direction completes.
+│   │                     # GROBID tracking: api_cache source="grobid",
+│   │                     #   key="grobid_references:{work_id}" exists = extraction was run (set by
+│   │                     #   enrich_from_grobid() when raw extraction completes, regardless of resolve).
 │   │                     #   TimelineNeighborWork (citations_by_year: list[dict] | None)
 │   ├── notes.py          # provenance values: "user" | "ai" | "ai_reviewed" | "ai_proposal"
 │   ├── extraction.py     # ExtractionBatchRequest (re_evaluate_edited: bool = False),
@@ -172,6 +186,13 @@ litexplorer/
 │   │                     #   re_evaluate_edited=True → writes "ai_proposal" instead of overwriting
 │   ├── extraction_jobs.py # In-memory job tracker (lost on restart): _ExtractionJobRegistry singleton;
 │   │                     #   auto-prunes jobs older than 1 hour; thread-safe (threading.Lock)
+│   ├── bulk_enrich_jobs.py # In-memory tracker for bulk S2/GROBID enrichment jobs (BulkEnrichJob);
+│   │                     #   same pattern as extraction_jobs; status: running/completed/cancelled/rate_limited;
+│   │                     #   cancel_job() sets cancel_requested flag (checked between each seed);
+│   │                     #   endpoints: POST /api/enrich/bulk/semantic-scholar|grobid → 202 {job_id},
+│   │                     #     GET /api/enrich/jobs/bulk/{job_id}, DELETE /api/enrich/jobs/bulk/{job_id}
+│   │                     #   NOTE: paths use /bulk/ prefix (not /works/bulk/) to avoid routing conflict
+│   │                     #   with /api/enrich/works/{work_id}/semantic-scholar
 │   ├── extraction_export.py  # export_as_csv(), export_as_latex() — booktabs LaTeX
 │   ├── schema_discussion.py  # build_schema_discussion_prompt() — includes two few-shot column-proposal
 │   │                         #   examples for format compliance; parse_column_proposals() — 5-strategy parser
@@ -183,7 +204,7 @@ litexplorer/
     ├── base.py           # ExternalWork, ExternalVenue, ExternalAuthor, ExternalLocation
     ├── openalex.py       # OpenAlexClient — parse_work() extracts counts_by_year
     ├── crossref.py       # CrossrefClient — DOI lookup, fuzzy search
-    ├── semantic_scholar.py # SemanticScholarClient — throttled to 1 req/s (_MIN_INTERVAL = 1.0)
+    ├── semantic_scholar.py # SemanticScholarClient — throttled to 1.1 req/s (_MIN_INTERVAL = 1.1)
     ├── llm_client.py     # AnthropicLLMClient, OpenAILLMClient, make_llm_client();
     │                     #   _normalize_base_url() appends /v1 to bare Ollama URLs;
     │                     #   PDF vision (base64 document block) is Anthropic-only
@@ -213,8 +234,18 @@ frontend/src/
     ├── CitationTimeline.tsx    # D3 scatter plot
     ├── WorkDetailPanel.tsx     # Side panel
     ├── TimelineControls.tsx    # Filter bar
-    ├── TimelineEnrichBar.tsx   # Enrichment progress; reads GROBID status from query cache
-    │                           #   (no new fetch); accepts onSelectWork prop
+    ├── TimelineEnrichBar.tsx   # Collapsible enrichment info bar (Timeline tab only).
+    │                           #   Collapsed: single summary line (✓ / ⚠) + "▾ Details" toggle.
+    │                           #   Expanded: per-source rows for OpenAlex, Semantic Scholar, GROBID.
+    │                           #   OA row: "Fetch all" uses existing sequential per-work 202 pattern.
+    │                           #   S2 row: "Fetch all (~Ts)" starts a server-side bulk job via
+    │                           #     POST /api/enrich/bulk/semantic-scholar → {job_id};
+    │                           #     polls GET /api/enrich/jobs/bulk/{job_id} every 2s; shows
+    │                           #     progress + Cancel button; on rate-limit shows warning (no retry).
+    │                           #   GROBID row: shown only when grobidStatus.available (from QC cache);
+    │                           #     "Extract all (~Ts)" uses POST /api/enrich/works/bulk/grobid.
+    │                           #   Collapse state persisted in localStorage per project:
+    │                           #     litexplorer:project:{id}:enrichmentBarExpanded (default false)
     ├── ExtractionRunView.tsx   # Standalone; readOnlyPaperSelection prop for promoted tabs
     ├── ImportDialog.tsx        # 3-tab import (DOI / arXiv, BibTeX, Search by title); first tab
     │                           #   auto-detects input type (10. prefix = DOI, else arXiv ID);
@@ -329,7 +360,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 
 ## Known issues / future work
 
-- **Semantic Scholar rate limits**: S2 enforces 1 req/s regardless of whether an API key is used. Without a key the quota is shared globally across all users from the same IP, so on shared/university networks 429 errors are common. An API key (`s2_api_key` setting) authenticates requests (your own dedicated quota at 1 req/s) — apply at https://www.semanticscholar.org/product/api. The client throttles to 1 req/s in both cases (`_MIN_INTERVAL = 1.0`). The search-by-title endpoint returns HTTP 429 with a user-readable message when S2 rate-limits us.
+- **Semantic Scholar rate limits**: S2 enforces 1 req/s regardless of whether an API key is used. Without a key the quota is shared globally across all users from the same IP, so on shared/university networks 429 errors are common. An API key (`s2_api_key` setting) authenticates requests (your own dedicated quota at 1 req/s) — apply at https://www.semanticscholar.org/product/api. The client throttles to 1.1 req/s in both cases (`_MIN_INTERVAL = 1.1`, set slightly above 1.0 to avoid boundary 429s). The rate limiter is **process-global** and **shared** — bulk S2 fetches and single-paper fetches both go through the same `_throttle()` function and are serialised correctly. The search-by-title endpoint returns HTTP 429 with a user-readable message when S2 rate-limits us.
 - **S2 missing reference lists**: S2 can return forward citations (papers citing a given work) even when it has no reference list for that work. This happens when S2 doesn't have full-text access to the paper. The "Fetch references (S2)" button shows "S2 has no reference list for this paper" in this case instead of a misleading "0 references" count.
 - **S2 rate-limit backoff**: When a 429 occurs, S2 imposes a backoff of up to 1+ hour from the same IP. The only reliable mitigation is an API key.
 - **Topic list legend**: The legend is rendered as an HTML flex-wrap div above the SVG, sourced from the full topic list array (not from visible data). It remains visible when all lists are toggled off. Inactive items dim to 40% opacity. This replaced an earlier D3-rendered legend that disappeared when all traces were deactivated.

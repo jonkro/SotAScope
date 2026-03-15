@@ -23,7 +23,15 @@ class TimelineSeedWork(BaseModel):
     has_forward_citations: bool
     forward_citations_fetched_at: datetime | None
     backward_citations_no_oa_data: bool = False  # True when OA returned empty reference list
+    oa_forward_no_data: bool = False             # True when OA forward fetch returned empty list
     has_pdfs: bool = False
+    # Semantic Scholar enrichment status (tracked via api_cache entries)
+    s2_refs_fetched: bool = False    # S2 refs fetch was attempted for this seed
+    s2_refs_no_data: bool = False    # S2 refs fetched but returned 0 results
+    s2_citing_fetched: bool = False  # S2 citing fetch was attempted for this seed
+    s2_citing_no_data: bool = False  # S2 citing fetched but returned 0 results
+    # GROBID extraction status (tracked via grobid_references:{work_id} cache key)
+    grobid_fetched: bool = False     # GROBID extraction was run for this seed
 
 
 class TimelineNeighborWork(BaseModel):

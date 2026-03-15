@@ -35,8 +35,9 @@ _CITATION_FIELDS = "paperId,corpusId,externalIds,title,year,citationCount"
 _RATE_LOCK = threading.Lock()
 _LAST_CALL_TIME: float = 0.0
 
-# 1 request per second — applies both with and without an API key.
-_MIN_INTERVAL: float = 1.0
+# 1.1 requests per second — a small margin above S2's enforced 1 req/s limit
+# to avoid triggering 429s right at the boundary.
+_MIN_INTERVAL: float = 1.1
 
 
 def _throttle(min_interval: float) -> None:

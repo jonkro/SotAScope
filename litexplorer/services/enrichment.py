@@ -1090,6 +1090,13 @@ class EnrichmentService:
                     new_refs += 1
                 else:
                     existing_refs += 1
+            # Cache enrichment result for timeline status tracking
+            self._set_cache(
+                "semantic_scholar",
+                f"s2_enrich_refs:{work_id}",
+                json.dumps({"raw_count": raw_refs}),
+                "permanent",
+            )
             self.db.commit()
 
         # Fetch forward citations (papers citing this work)
@@ -1121,6 +1128,13 @@ class EnrichmentService:
                     existing_citing += 1
             # Floor citation_count at the number of Citation records we actually stored
             self._ensure_citation_count_floor(work)
+            # Cache enrichment result for timeline status tracking
+            self._set_cache(
+                "semantic_scholar",
+                f"s2_enrich_citing:{work_id}",
+                json.dumps({"raw_count": raw_citing}),
+                "permanent",
+            )
             self.db.commit()
 
         logger.info(

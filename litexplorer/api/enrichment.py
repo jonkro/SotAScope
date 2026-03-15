@@ -244,6 +244,198 @@ def _enrich_grobid_bg(work_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bulk enrichment background functions (S2 and GROBID)
+# ---------------------------------------------------------------------------
+
+def _bulk_s2_bg(job_id: str, work_ids: list[int], direction: str) -> None:
+    """Background: fetch S2 refs/cites for a list of works, updating job status."""
+    from litexplorer.database import SessionLocal
+    from litexplorer.models.cache import ApiCache
+    from litexplorer.services.bulk_enrich_jobs import get_job
+    from sqlalchemy import select as sa_select
+
+    job = get_job(job_id)
+    if job is None:
+        return
+
+    db = SessionLocal()
+    try:
+        ss_client = _get_ss_client(db)
+        oa_client = _get_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=oa_client)
+
+            # Pre-query which works already have S2 enrichment cached
+            all_ref_keys = [f"s2_enrich_refs:{wid}" for wid in work_ids]
+            all_cite_keys = [f"s2_enrich_citing:{wid}" for wid in work_ids]
+            refs_done: set[int] = set()
+            citing_done: set[int] = set()
+            for qk in db.execute(
+                sa_select(ApiCache.query_key).where(
+                    ApiCache.source == "semantic_scholar",
+                    ApiCache.query_key.in_(all_ref_keys),
+                )
+            ).scalars().all():
+                try:
+                    refs_done.add(int(qk.split(":")[-1]))
+                except ValueError:
+                    pass
+            for qk in db.execute(
+                sa_select(ApiCache.query_key).where(
+                    ApiCache.source == "semantic_scholar",
+                    ApiCache.query_key.in_(all_cite_keys),
+                )
+            ).scalars().all():
+                try:
+                    citing_done.add(int(qk.split(":")[-1]))
+                except ValueError:
+                    pass
+
+            for i, work_id in enumerate(work_ids):
+                if job.cancel_requested:
+                    job.status = "cancelled"
+                    break
+
+                # Determine effective direction, skipping already-fetched
+                rd = work_id in refs_done
+                cd = work_id in citing_done
+                if direction == "both" and rd and cd:
+                    job.done = i + 1
+                    continue
+                elif direction == "backward" and rd:
+                    job.done = i + 1
+                    continue
+                elif direction == "forward" and cd:
+                    job.done = i + 1
+                    continue
+
+                eff_direction = direction
+                if direction == "both":
+                    if rd:
+                        eff_direction = "forward"
+                    elif cd:
+                        eff_direction = "backward"
+
+                rate_limited = False
+                locked = work_lock.acquire(work_id, "Bulk Semantic Scholar fetch")
+                try:
+                    if locked:
+                        svc.enrich_from_semantic_scholar(
+                            work_id, ss_client, direction=eff_direction
+                        )
+                        if eff_direction in ("both", "backward"):
+                            refs_done.add(work_id)
+                        if eff_direction in ("both", "forward"):
+                            citing_done.add(work_id)
+                    else:
+                        job.errors.append(f"work {work_id}: already locked, skipped")
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 429:
+                        rate_limited = True
+                    else:
+                        job.errors.append(
+                            f"work {work_id}: HTTP {exc.response.status_code}"
+                        )
+                except (ValueError, RuntimeError) as exc:
+                    logger.warning("Bulk S2: work %d skipped: %s", work_id, exc)
+                except Exception:
+                    logger.exception("Bulk S2: unexpected error for work %d", work_id)
+                    job.errors.append(f"work {work_id}: unexpected error")
+                finally:
+                    if locked:
+                        work_lock.release(work_id)
+
+                if rate_limited:
+                    job.status = "rate_limited"
+                    job.rate_limited_at = i  # seeds completed before rate limit
+                    break
+
+                job.done = i + 1
+            else:
+                if job.status == "running":
+                    job.status = "completed"
+        finally:
+            ss_client.close()
+            oa_client.close()
+    finally:
+        db.close()
+
+
+def _bulk_grobid_bg(job_id: str, work_ids: list[int]) -> None:
+    """Background: run GROBID reference extraction for a list of works."""
+    from litexplorer.database import SessionLocal
+    from litexplorer.models.cache import ApiCache
+    from litexplorer.external.grobid import GrobidError
+    from litexplorer.services.bulk_enrich_jobs import get_job
+    from sqlalchemy import select as sa_select
+
+    job = get_job(job_id)
+    if job is None:
+        return
+
+    db = SessionLocal()
+    try:
+        oa_client = _get_client(db)
+        cr_client = _get_crossref_client(db)
+        ss_client = _get_ss_client(db)
+        try:
+            svc = EnrichmentService(db=db, client=oa_client, crossref_client=cr_client)
+
+            # Pre-query which works have already been GROBID-processed
+            all_grobid_keys = [f"grobid_references:{wid}" for wid in work_ids]
+            grobid_done: set[int] = set()
+            for qk in db.execute(
+                sa_select(ApiCache.query_key).where(
+                    ApiCache.source == "grobid",
+                    ApiCache.query_key.in_(all_grobid_keys),
+                )
+            ).scalars().all():
+                try:
+                    grobid_done.add(int(qk.split(":")[-1]))
+                except ValueError:
+                    pass
+
+            for i, work_id in enumerate(work_ids):
+                if job.cancel_requested:
+                    job.status = "cancelled"
+                    break
+
+                if work_id in grobid_done:
+                    job.done = i + 1
+                    continue
+
+                locked = work_lock.acquire(work_id, "Bulk GROBID extraction")
+                try:
+                    if locked:
+                        svc.enrich_from_grobid(work_id, ss_client=ss_client)
+                        grobid_done.add(work_id)
+                    else:
+                        job.errors.append(f"work {work_id}: already locked, skipped")
+                except ValueError as exc:
+                    logger.warning("Bulk GROBID: work %d skipped: %s", work_id, exc)
+                except GrobidError as exc:
+                    logger.warning("Bulk GROBID: service error for work %d: %s", work_id, exc)
+                    job.errors.append(f"work {work_id}: GROBID error")
+                except Exception:
+                    logger.exception("Bulk GROBID: unexpected error for work %d", work_id)
+                    job.errors.append(f"work {work_id}: unexpected error")
+                finally:
+                    if locked:
+                        work_lock.release(work_id)
+
+                job.done = i + 1
+            else:
+                if job.status == "running":
+                    job.status = "completed"
+        finally:
+            oa_client.close()
+            cr_client.close()
+            ss_client.close()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -681,3 +873,107 @@ def search_import_confirm(body: SearchImportConfirmRequest, db: Session = Depend
             detail=f"Paper not found on Semantic Scholar: {body.semantic_scholar_id}",
         )
     return EnrichDOIResult(work=WorkOut.model_validate(work), source="semantic_scholar")
+
+
+# ---------------------------------------------------------------------------
+# Bulk enrichment endpoints
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel
+
+
+class _BulkS2Request(_BaseModel):
+    work_ids: list[int]
+    direction: str = "both"
+
+
+class _BulkGrobidRequest(_BaseModel):
+    work_ids: list[int]
+
+
+@router.post("/bulk/semantic-scholar")
+def bulk_enrich_semantic_scholar(
+    body: _BulkS2Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Schedule bulk Semantic Scholar enrichment for multiple works.
+
+    Returns a job_id that can be polled via GET /jobs/bulk/{job_id}.
+    Rate-limits at most 1 request per 1.1 s (shared process-level limiter).
+    If S2 returns HTTP 429, the job stops and records the number of seeds
+    completed before the rate limit hit.
+    """
+    from litexplorer.services.bulk_enrich_jobs import create_job
+
+    if body.direction not in ("both", "backward", "forward"):
+        raise HTTPException(
+            status_code=400, detail="direction must be 'both', 'backward', or 'forward'"
+        )
+    if not body.work_ids:
+        raise HTTPException(status_code=400, detail="work_ids must not be empty")
+
+    job = create_job("semantic_scholar", body.work_ids)
+    background_tasks.add_task(_bulk_s2_bg, job.job_id, body.work_ids, body.direction)
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": job.job_id,
+            "message": f"Bulk S2 fetch started for {len(body.work_ids)} seeds",
+        },
+    )
+
+
+@router.post("/bulk/grobid")
+def bulk_enrich_grobid(
+    body: _BulkGrobidRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Schedule bulk GROBID reference extraction for multiple works.
+
+    Only works with uploaded PDFs will be processed; others are skipped.
+    Returns a job_id for polling via GET /jobs/bulk/{job_id}.
+    """
+    from litexplorer.services.bulk_enrich_jobs import create_job
+
+    grobid_url = _get_grobid_url_setting(db)
+    if not grobid_url:
+        raise HTTPException(status_code=400, detail="GROBID is not configured")
+    if not body.work_ids:
+        raise HTTPException(status_code=400, detail="work_ids must not be empty")
+
+    job = create_job("grobid", body.work_ids)
+    background_tasks.add_task(_bulk_grobid_bg, job.job_id, body.work_ids)
+    return JSONResponse(
+        status_code=202,
+        content={
+            "job_id": job.job_id,
+            "message": f"Bulk GROBID extraction started for {len(body.work_ids)} seeds",
+        },
+    )
+
+
+@router.get("/jobs/bulk/{job_id}")
+def get_bulk_job_status(job_id: str):
+    """Poll status of a bulk enrichment job (S2 or GROBID)."""
+    from litexplorer.services.bulk_enrich_jobs import get_job
+
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+    return JSONResponse(content=job.to_dict())
+
+
+@router.delete("/jobs/bulk/{job_id}")
+def cancel_bulk_job(job_id: str):
+    """Request cancellation of a running bulk enrichment job."""
+    from litexplorer.services.bulk_enrich_jobs import cancel_job
+
+    ok = cancel_job(job_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job {job_id!r} not found or already finished",
+        )
+    return {"message": "Cancellation requested"}

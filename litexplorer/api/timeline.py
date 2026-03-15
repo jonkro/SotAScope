@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -123,6 +124,8 @@ def get_project_timeline(
     seeds_with_bwd: set[int] = set()
     seeds_bwd_no_oa_data: set[int] = set()  # fetched but OA returned empty reference list
     seeds_with_fwd: set[int] = set()
+    seeds_fwd_no_oa_data: set[int] = set()  # fetched but OA forward returned empty list
+    fwd_cache_timestamps: dict[int, str | None] = {}
     for sid in seed_ids:
         w = works_by_id.get(sid)
         if w and w.openalex_id:
@@ -140,29 +143,72 @@ def get_project_timeline(
                     seeds_bwd_no_oa_data.add(sid)
 
             fwd_key = f"forward_citations:{w.openalex_id}"
-            if db.execute(
-                select(ApiCache.id).where(
+            fwd_row = db.execute(
+                select(ApiCache.response_json, ApiCache.fetched_at).where(
                     ApiCache.source == "openalex",
                     ApiCache.query_key == fwd_key,
                 ).limit(1)
-            ).scalar_one_or_none() is not None:
+            ).first()
+            if fwd_row is not None:
                 seeds_with_fwd.add(sid)
-
-    # Forward citations fetched_at from ApiCache
-    fwd_cache_timestamps: dict[int, str | None] = {}
-    for sid in seed_ids:
-        w = works_by_id.get(sid)
-        if w and w.openalex_id:
-            cache_key = f"forward_citations:{w.openalex_id}"
-            cache_row = db.execute(
-                select(ApiCache.fetched_at).where(
-                    ApiCache.source == "openalex",
-                    ApiCache.query_key == cache_key,
-                )
-            ).scalar_one_or_none()
-            fwd_cache_timestamps[sid] = cache_row
+                if fwd_row[0] == "[]":
+                    seeds_fwd_no_oa_data.add(sid)
+                fwd_cache_timestamps[sid] = fwd_row[1]
+            else:
+                fwd_cache_timestamps[sid] = None
         else:
             fwd_cache_timestamps[sid] = None
+
+    # 5b. Semantic Scholar enrichment status — batch query by cache keys
+    seeds_s2_refs_fetched: set[int] = set()
+    seeds_s2_refs_no_data: set[int] = set()
+    seeds_s2_citing_fetched: set[int] = set()
+    seeds_s2_citing_no_data: set[int] = set()
+    seeds_grobid_fetched: set[int] = set()
+    if seed_ids:
+        s2_ref_keys = [f"s2_enrich_refs:{sid}" for sid in seed_ids]
+        for qkey, rjson in db.execute(
+            select(ApiCache.query_key, ApiCache.response_json).where(
+                ApiCache.source == "semantic_scholar",
+                ApiCache.query_key.in_(s2_ref_keys),
+            )
+        ).all():
+            try:
+                sid = int(qkey.split(":")[-1])
+                seeds_s2_refs_fetched.add(sid)
+                data = json.loads(rjson)
+                if data.get("raw_count", 0) == 0:
+                    seeds_s2_refs_no_data.add(sid)
+            except (ValueError, json.JSONDecodeError):
+                pass
+
+        s2_cite_keys = [f"s2_enrich_citing:{sid}" for sid in seed_ids]
+        for qkey, rjson in db.execute(
+            select(ApiCache.query_key, ApiCache.response_json).where(
+                ApiCache.source == "semantic_scholar",
+                ApiCache.query_key.in_(s2_cite_keys),
+            )
+        ).all():
+            try:
+                sid = int(qkey.split(":")[-1])
+                seeds_s2_citing_fetched.add(sid)
+                data = json.loads(rjson)
+                if data.get("raw_count", 0) == 0:
+                    seeds_s2_citing_no_data.add(sid)
+            except (ValueError, json.JSONDecodeError):
+                pass
+
+        grobid_keys = [f"grobid_references:{sid}" for sid in seed_ids]
+        for qkey in db.execute(
+            select(ApiCache.query_key).where(
+                ApiCache.source == "grobid",
+                ApiCache.query_key.in_(grobid_keys),
+            )
+        ).scalars().all():
+            try:
+                seeds_grobid_fetched.add(int(qkey.split(":")[-1]))
+            except ValueError:
+                pass
 
     # 6a. Seeds with at least one PDF
     seeds_with_pdfs: set[int] = set()
@@ -207,7 +253,13 @@ def get_project_timeline(
             has_forward_citations=wid in seeds_with_fwd,
             forward_citations_fetched_at=fwd_cache_timestamps.get(wid),
             backward_citations_no_oa_data=wid in seeds_bwd_no_oa_data,
+            oa_forward_no_data=wid in seeds_fwd_no_oa_data,
             has_pdfs=wid in seeds_with_pdfs,
+            s2_refs_fetched=wid in seeds_s2_refs_fetched,
+            s2_refs_no_data=wid in seeds_s2_refs_no_data,
+            s2_citing_fetched=wid in seeds_s2_citing_fetched,
+            s2_citing_no_data=wid in seeds_s2_citing_no_data,
+            grobid_fetched=wid in seeds_grobid_fetched,
         ))
 
     neighbors_out: list[TimelineNeighborWork] = []

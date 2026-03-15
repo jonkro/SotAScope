@@ -287,7 +287,30 @@ export interface TimelineSeedWork {
   has_forward_citations: boolean;
   forward_citations_fetched_at: string | null;
   backward_citations_no_oa_data: boolean;
+  oa_forward_no_data: boolean;
   has_pdfs: boolean;
+  // Semantic Scholar enrichment status
+  s2_refs_fetched: boolean;
+  s2_refs_no_data: boolean;
+  s2_citing_fetched: boolean;
+  s2_citing_no_data: boolean;
+  // GROBID extraction status
+  grobid_fetched: boolean;
+}
+
+export interface BulkJobAccepted {
+  job_id: string;
+  message: string;
+}
+
+export interface BulkJobStatus {
+  job_id: string;
+  source: string;
+  status: 'running' | 'completed' | 'cancelled' | 'rate_limited';
+  done: number;
+  total: number;
+  rate_limited_at: number | null;
+  errors: string[];
 }
 
 export interface TimelineNeighborWork {

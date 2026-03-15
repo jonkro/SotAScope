@@ -38,6 +38,8 @@ import type {
   LockStatusResponse,
   ImportResult,
   ImportResolveRequest,
+  BulkJobAccepted,
+  BulkJobStatus,
 } from './types';
 
 class ApiError extends Error {
@@ -827,5 +829,31 @@ export function resolveImportCollision(
   return apiFetch<ProjectDetail>(`/api/projects/import/${tempId}/resolve`, {
     method: 'POST',
     body: JSON.stringify(body),
+  });
+}
+
+// ---- Bulk enrichment jobs ----
+
+export function startBulkS2Fetch(workIds: number[], direction = 'both') {
+  return apiFetch<BulkJobAccepted>('/api/enrich/bulk/semantic-scholar', {
+    method: 'POST',
+    body: JSON.stringify({ work_ids: workIds, direction }),
+  });
+}
+
+export function startBulkGrobidExtract(workIds: number[]) {
+  return apiFetch<BulkJobAccepted>('/api/enrich/bulk/grobid', {
+    method: 'POST',
+    body: JSON.stringify({ work_ids: workIds }),
+  });
+}
+
+export function fetchBulkJobStatus(jobId: string) {
+  return apiFetch<BulkJobStatus>(`/api/enrich/jobs/bulk/${jobId}`);
+}
+
+export function cancelBulkJob(jobId: string) {
+  return apiFetch<{ message: string }>(`/api/enrich/jobs/bulk/${jobId}`, {
+    method: 'DELETE',
   });
 }
