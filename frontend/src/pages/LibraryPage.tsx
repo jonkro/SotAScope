@@ -50,6 +50,12 @@ export default function LibraryPage() {
         <PageHeader title="Library">
           <SearchInput value={search} onChange={handleSearch} placeholder="Search title, authors, or venue..." />
           <button
+            onClick={() => window.open('/api/works/export/bibtex', '_blank')}
+            className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+          >
+            Export BibTeX
+          </button>
+          <button
             onClick={() => setSanitizeOpen(true)}
             className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
           >

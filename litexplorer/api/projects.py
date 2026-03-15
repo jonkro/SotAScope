@@ -3,6 +3,7 @@
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -11,7 +12,7 @@ from litexplorer.services.work_lock import work_lock
 logger = logging.getLogger(__name__)
 
 from litexplorer.api.deps import get_db
-from litexplorer.models.library import Citation, Venue, Work
+from litexplorer.models.library import Citation, Venue, VenueAlias, Work, WorkAuthor, WorkLocation
 from litexplorer.models.project import Project, ProjectIgnoredWork, ProjectVenueTier, TopicList, TopicListWork
 from litexplorer.schemas.projects import (
     ProjectCreate,
@@ -591,3 +592,110 @@ def merge_project(
     from litexplorer.services.project_merge import execute_merge as _merge
     merged = _merge(target_id, source_id, body, db)
     return _project_detail(merged)
+
+
+# ---------------------------------------------------------------------------
+# BibTeX export (project-scoped)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id}/export/bibtex")
+def export_project_bibtex(
+    project_id: int,
+    work_ids: str = Query("", description="Comma-separated work IDs; empty = all project seeds"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Export project seed works as a BibTeX file.
+
+    If *work_ids* is provided (comma-separated integers), only those works are
+    exported.  Otherwise all seed works across all topic lists in the project
+    are exported.
+
+    Returns a ``text/plain`` response with ``Content-Disposition: attachment``.
+    """
+    from litexplorer.services.bibtex_export import works_to_bibtex
+
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if work_ids.strip():
+        try:
+            wids: list[int] = [int(x.strip()) for x in work_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="work_ids must be comma-separated integers")
+    else:
+        # Collect all unique seed IDs for this project
+        seed_stmt = (
+            select(TopicListWork.work_id)
+            .join(TopicList, TopicList.id == TopicListWork.topic_list_id)
+            .where(TopicList.project_id == project_id)
+            .distinct()
+        )
+        wids = list(db.scalars(seed_stmt).all())
+
+    if not wids:
+        return Response(
+            content="",
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="project.bib"'},
+        )
+
+    stmt = (
+        select(Work)
+        .where(Work.id.in_(wids))
+        .options(
+            selectinload(Work.authors).selectinload(WorkAuthor.author),
+            selectinload(Work.venue).selectinload(Venue.aliases),
+            selectinload(Work.locations),
+        )
+        .order_by(Work.publication_year, Work.title)
+    )
+    works = list(db.scalars(stmt).all())
+    content = works_to_bibtex(works)
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in project.name)
+    filename = f"{safe_name}.bib" if safe_name else "project.bib"
+
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Project ZIP export
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id}/export")
+def export_project_zip(
+    project_id: int,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Export the full project as a .zip archive.
+
+    The archive contains:
+    - ``manifest.json``: structured JSON with project data (works, topic lists,
+      extraction schemas + results, venue overrides, chat sessions, work notes,
+      citation edges between seeds).
+    - ``seeds.bib``: BibTeX for all seed works.
+
+    Returns an ``application/zip`` response with ``Content-Disposition: attachment``.
+    """
+    from litexplorer.services.project_export import export_project
+
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    buf = export_project(project_id, db)
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in project.name)
+    filename = f"{safe_name}.zip" if safe_name else "project.zip"
+
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

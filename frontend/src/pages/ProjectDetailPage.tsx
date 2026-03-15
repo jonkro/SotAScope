@@ -9,6 +9,8 @@ import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from '../com
 import ConfirmDialog from '../components/ConfirmDialog';
 import ImportDialog from '../components/ImportDialog';
 import { MergeProjectDialog } from '../components/MergeProjectDialog';
+import BibTeXExportDialog from '../components/BibTeXExportDialog';
+import ProjectExportDialog from '../components/ProjectExportDialog';
 import CitationTimeline from '../components/CitationTimeline';
 import TimelineControls, { type CandidateFilter } from '../components/TimelineControls';
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
@@ -226,6 +228,8 @@ export default function ProjectDetailPage() {
   const [showCreateList, setShowCreateList] = useState(false);
   const [showProjectImport, setShowProjectImport] = useState(false);
   const [showMergeDialog, setShowMergeDialog] = useState(false);
+  const [showBibTeXExport, setShowBibTeXExport] = useState(false);
+  const [showProjectExport, setShowProjectExport] = useState(false);
   const [editList, setEditList] = useState<{ id: number; name: string; color: string } | null>(null);
   const [deleteListId, setDeleteListId] = useState<number | null>(null);
   const [selectedWorkId, setSelectedWorkId] = useState<number | null>(() => {
@@ -541,6 +545,18 @@ export default function ProjectDetailPage() {
             className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-600"
           >
             Merge
+          </button>
+          <button
+            onClick={() => setShowProjectExport(true)}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
+          >
+            Export Project
+          </button>
+          <button
+            onClick={() => setShowBibTeXExport(true)}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
+          >
+            Export BibTeX
           </button>
           <button
             onClick={() => setShowProjectImport(true)}
@@ -1108,6 +1124,26 @@ export default function ProjectDetailPage() {
           targetProjectId={projectId}
           targetProjectName={project.name}
           onClose={() => setShowMergeDialog(false)}
+        />
+      )}
+
+      {showBibTeXExport && (
+        <BibTeXExportDialog
+          projectId={projectId}
+          projectName={project.name}
+          topicLists={project.topic_lists}
+          seeds={timeline?.seeds ?? []}
+          onClose={() => setShowBibTeXExport(false)}
+        />
+      )}
+
+      {showProjectExport && (
+        <ProjectExportDialog
+          projectId={projectId}
+          projectName={project.name}
+          seedCount={timeline?.seeds.length ?? 0}
+          schemas={schemas ?? []}
+          onClose={() => setShowProjectExport(false)}
         />
       )}
     </div>

@@ -9,7 +9,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete as sa_delete, exists, func, or_, select, update as sa_update
 from sqlalchemy.orm import Session, joinedload
 
@@ -568,6 +568,61 @@ def backward_citations(
         .limit(limit)
     )
     return db.scalars(stmt).all()
+
+
+# ---------------------------------------------------------------------------
+# BibTeX export
+# ---------------------------------------------------------------------------
+
+
+@router.get("/export/bibtex")
+def export_bibtex(
+    work_ids: str = Query("", description="Comma-separated work IDs; empty = all works"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Export works as a BibTeX file.
+
+    If *work_ids* is provided (comma-separated integers), only those works are
+    exported.  Otherwise all works in the library are exported.
+
+    Returns a ``text/plain`` response with ``Content-Disposition: attachment``.
+    """
+    from sqlalchemy.orm import selectinload
+    from litexplorer.services.bibtex_export import works_to_bibtex
+
+    if work_ids.strip():
+        try:
+            wids = [int(x.strip()) for x in work_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="work_ids must be comma-separated integers")
+        stmt = (
+            select(Work)
+            .where(Work.id.in_(wids))
+            .options(
+                selectinload(Work.authors).selectinload(WorkAuthor.author),
+                selectinload(Work.venue).selectinload(Venue.aliases),
+                selectinload(Work.locations),
+            )
+            .order_by(Work.publication_year, Work.title)
+        )
+    else:
+        stmt = (
+            select(Work)
+            .options(
+                selectinload(Work.authors).selectinload(WorkAuthor.author),
+                selectinload(Work.venue).selectinload(Venue.aliases),
+                selectinload(Work.locations),
+            )
+            .order_by(Work.publication_year, Work.title)
+        )
+
+    works = list(db.scalars(stmt).all())
+    content = works_to_bibtex(works)
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="library.bib"'},
+    )
 
 
 # ---------------------------------------------------------------------------
