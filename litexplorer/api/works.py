@@ -1,6 +1,7 @@
 """CRUD routes for works, locations, authors, citations, and BibTeX import."""
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -34,6 +35,7 @@ from litexplorer.schemas.works import (
     AuthorOut,
     BibtexImportRequest,
     BibtexImportResult,
+    CitationListResponse,
     CitationWorkBrief,
     DuplicateGroup,
     WorkAuthorAdd,
@@ -530,44 +532,98 @@ def create_author(body: AuthorCreate, db: Session = Depends(get_db)):
 # Citations (read-only — populated by external API integrations)
 # ---------------------------------------------------------------------------
 
-@router.get("/{work_id}/citations/forward", response_model=list[CitationWorkBrief])
+_CITATION_SORT_OPTIONS = frozenset({"relevance", "year_desc", "year_asc", "citations_desc"})
+
+
+def _relevance_score(citation_count: int | None, publication_year: int | None) -> float:
+    """Server-side relevance score: log-citation-count + recency bonus."""
+    c = citation_count or 0
+    y = publication_year or 0
+    return math.log1p(c) + max(0.0, (y - 2000) / 5.0)
+
+
+def _paginate_citations(
+    db: Session,
+    base_stmt,
+    offset: int,
+    limit: int,
+    sort: str,
+) -> CitationListResponse:
+    """Fetch, sort, and paginate a citation query. Returns CitationListResponse."""
+    if sort == "relevance":
+        # Fetch all matching works, sort in Python, then slice.
+        all_works = list(db.scalars(base_stmt).all())
+        all_works.sort(
+            key=lambda w: _relevance_score(w.citation_count, w.publication_year),
+            reverse=True,
+        )
+        total_count = len(all_works)
+        items = all_works[offset : offset + limit]
+    else:
+        # SQL-side sort with NULL years/counts last.
+        if sort == "year_asc":
+            order_col = Work.publication_year.asc().nulls_last()
+        elif sort == "citations_desc":
+            order_col = Work.citation_count.desc().nulls_last()
+        else:  # year_desc (default for non-relevance sorts)
+            order_col = Work.publication_year.desc().nulls_last()
+
+        total_count = db.scalar(
+            select(func.count()).select_from(base_stmt.subquery())
+        )
+        items = list(
+            db.scalars(base_stmt.order_by(order_col).offset(offset).limit(limit)).all()
+        )
+
+    return CitationListResponse(items=items, total_count=total_count or 0)
+
+
+@router.get("/{work_id}/citations/forward", response_model=CitationListResponse)
 def forward_citations(
     work_id: int,
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
+    sort: str = Query("relevance"),
     db: Session = Depends(get_db),
 ):
-    """Papers that cite this work (forward neighbors)."""
+    """Papers that cite this work (forward neighbors).
+
+    Returns a paginated, sorted list plus a ``total_count`` of all matching
+    Citation rows (useful for staleness detection on the frontend).
+    """
     _get_work(db, work_id)
-    stmt = (
+    if sort not in _CITATION_SORT_OPTIONS:
+        sort = "relevance"
+    base_stmt = (
         select(Work)
         .join(Citation, Citation.citing_work_id == Work.id)
         .where(Citation.cited_work_id == work_id)
-        .order_by(Work.publication_year.desc())
-        .offset(offset)
-        .limit(limit)
     )
-    return db.scalars(stmt).all()
+    return _paginate_citations(db, base_stmt, offset, limit, sort)
 
 
-@router.get("/{work_id}/citations/backward", response_model=list[CitationWorkBrief])
+@router.get("/{work_id}/citations/backward", response_model=CitationListResponse)
 def backward_citations(
     work_id: int,
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
+    sort: str = Query("relevance"),
     db: Session = Depends(get_db),
 ):
-    """Works cited by this work (backward neighbors / references)."""
+    """Works cited by this work (backward neighbors / references).
+
+    Returns a paginated, sorted list plus a ``total_count`` of all matching
+    Citation rows.
+    """
     _get_work(db, work_id)
-    stmt = (
+    if sort not in _CITATION_SORT_OPTIONS:
+        sort = "relevance"
+    base_stmt = (
         select(Work)
         .join(Citation, Citation.cited_work_id == Work.id)
         .where(Citation.citing_work_id == work_id)
-        .order_by(Work.publication_year.desc())
-        .offset(offset)
-        .limit(limit)
     )
-    return db.scalars(stmt).all()
+    return _paginate_citations(db, base_stmt, offset, limit, sort)
 
 
 # ---------------------------------------------------------------------------

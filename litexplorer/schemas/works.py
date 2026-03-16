@@ -70,8 +70,15 @@ class CitationWorkBrief(BaseModel):
     doi: str | None
     title: str
     publication_year: int | None
+    citation_count: int | None = None
 
     model_config = {"from_attributes": True}
+
+
+class CitationListResponse(BaseModel):
+    """Paginated citation list with total count."""
+    items: list[CitationWorkBrief]
+    total_count: int
 
 
 # ---------------------------------------------------------------------------

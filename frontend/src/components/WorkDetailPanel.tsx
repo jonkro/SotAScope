@@ -157,6 +157,10 @@ function CitationList({
   title,
   direction,
   items,
+  totalCount,
+  page,
+  pageSize,
+  onPageChange,
   isLoading,
   seedColorMap,
   renderedWorkIds,
@@ -169,6 +173,10 @@ function CitationList({
   title: string;
   direction: 'backward' | 'forward';
   items?: CitationWorkBrief[];
+  totalCount?: number;
+  page?: number;
+  pageSize?: number;
+  onPageChange?: (page: number) => void;
   isLoading: boolean;
   seedColorMap?: Map<number, string[]>;
   renderedWorkIds?: Set<number>;
@@ -189,6 +197,11 @@ function CitationList({
     }
   };
 
+  const total = totalCount ?? items?.length ?? 0;
+  const ps = pageSize ?? 50;
+  const currentPage = page ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / ps));
+
   return (
     <div>
       <button
@@ -198,7 +211,10 @@ function CitationList({
         <span className="text-[10px] text-gray-400">{isOpen ? '\u25BE' : '\u25B8'}</span>
         <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
           {title}
-          {items && <span className="text-gray-400 ml-1 normal-case">({items.length})</span>}
+          {totalCount !== undefined
+            ? <span className="text-gray-400 ml-1 normal-case">({totalCount})</span>
+            : items && <span className="text-gray-400 ml-1 normal-case">({items.length})</span>
+          }
         </h4>
       </button>
       {isOpen && (
@@ -207,49 +223,72 @@ function CitationList({
         ) : !items?.length ? (
           <p className="text-xs text-gray-400 mt-2">None fetched yet</p>
         ) : (
-          <ul className="space-y-1 mt-2">
-            {items.map((c) => {
-              const seedColors = seedColorMap?.get(c.id);
-              const isRendered = renderedWorkIds?.has(c.id);
-              const isIgnored = ignoredWorkIds?.has(c.id);
-              const clickable = onSelectWork && (renderedWorkIds === undefined || isRendered);
+          <>
+            {totalPages > 1 && onPageChange && (
+              <div className="flex items-center gap-2 mt-2 mb-1">
+                <button
+                  onClick={() => onPageChange(currentPage - 1)}
+                  disabled={currentPage === 0}
+                  className="px-1.5 py-0.5 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-40"
+                >
+                  ←
+                </button>
+                <span className="text-xs text-gray-500">
+                  Page {currentPage + 1} of {totalPages}
+                </span>
+                <button
+                  onClick={() => onPageChange(currentPage + 1)}
+                  disabled={currentPage >= totalPages - 1}
+                  className="px-1.5 py-0.5 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-40"
+                >
+                  →
+                </button>
+              </div>
+            )}
+            <ul className="space-y-1 mt-2">
+              {items.map((c) => {
+                const seedColors = seedColorMap?.get(c.id);
+                const isRendered = renderedWorkIds?.has(c.id);
+                const isIgnored = ignoredWorkIds?.has(c.id);
+                const clickable = onSelectWork && (renderedWorkIds === undefined || isRendered);
 
-              const label = (
-                <>
-                  {c.title}
-                  {c.publication_year && (
-                    <span className="text-gray-400"> ({c.publication_year})</span>
-                  )}
-                </>
-              );
+                const label = (
+                  <>
+                    {c.title}
+                    {c.publication_year && (
+                      <span className="text-gray-400"> ({c.publication_year})</span>
+                    )}
+                  </>
+                );
 
-              // Marker: seed square > direction-specific neighbor shape > empty spacer
-              let marker: React.ReactNode = <span className="inline-block w-2 shrink-0" />;
-              if (seedColors) {
-                marker = <SeedMarker colors={seedColors} />;
-              } else if (isRendered) {
-                marker = direction === 'backward' ? <BackwardMarker /> : <ForwardMarker />;
-              }
+                // Marker: seed square > direction-specific neighbor shape > empty spacer
+                let marker: React.ReactNode = <span className="inline-block w-2 shrink-0" />;
+                if (seedColors) {
+                  marker = <SeedMarker colors={seedColors} />;
+                } else if (isRendered) {
+                  marker = direction === 'backward' ? <BackwardMarker /> : <ForwardMarker />;
+                }
 
-              return (
-                <li key={c.id} className="flex items-start gap-1.5 text-xs leading-snug">
-                  {marker}
-                  {clickable ? (
-                    <button
-                      onClick={() => onSelectWork(c.id)}
-                      className={`text-left cursor-pointer hover:text-blue-600 hover:underline ${isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}`}
-                    >
-                      {label}
-                    </button>
-                  ) : (
-                    <span className={isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}>
-                      {label}
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                return (
+                  <li key={c.id} className="flex items-start gap-1.5 text-xs leading-snug">
+                    {marker}
+                    {clickable ? (
+                      <button
+                        onClick={() => onSelectWork(c.id)}
+                        className={`text-left cursor-pointer hover:text-blue-600 hover:underline ${isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}`}
+                      >
+                        {label}
+                      </button>
+                    ) : (
+                      <span className={isIgnored ? 'text-gray-400 line-through' : 'text-gray-700'}>
+                        {label}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )
       )}
     </div>
@@ -311,8 +350,21 @@ export default function WorkDetailPanel({
 }) {
   const qc = useQueryClient();
   const { data: work, isLoading } = useWork(workId);
-  const fwd = useForwardCitations(workId);
-  const bwd = useBackwardCitations(workId);
+  const [fwdPage, setFwdPage] = useState(0);
+  const [bwdPage, setBwdPage] = useState(0);
+  const PAGE_SIZE = 50;
+
+  // Reset pages when work changes
+  const prevWorkIdRef = useRef<number | null>(null);
+  if (prevWorkIdRef.current !== workId) {
+    prevWorkIdRef.current = workId;
+    // Use a layout-equivalent reset (won't trigger extra renders since it's synchronous)
+    if (fwdPage !== 0) setFwdPage(0);
+    if (bwdPage !== 0) setBwdPage(0);
+  }
+
+  const fwd = useForwardCitations(workId, { offset: fwdPage * PAGE_SIZE, limit: PAGE_SIZE });
+  const bwd = useBackwardCitations(workId, { offset: bwdPage * PAGE_SIZE, limit: PAGE_SIZE });
 
   const { isLocked, lockReason } = useLockStatus();
   const workLocked = isLocked(workId);
@@ -343,7 +395,7 @@ export default function WorkDetailPanel({
   // Show completion summary once backward citations data arrives after enrichment
   useEffect(() => {
     if (pendingCompletionRef.current === 'backward' && bwd.data && !bwd.isLoading) {
-      const n = bwd.data.length;
+      const n = bwd.data.total_count;
       setEnrichMsg({ kind: 'ok', text: `${n} reference${n !== 1 ? 's' : ''} now in library` });
       pendingCompletionRef.current = null;
     }
@@ -352,7 +404,7 @@ export default function WorkDetailPanel({
   // Show completion summary once forward citations data arrives after enrichment
   useEffect(() => {
     if (pendingCompletionRef.current === 'forward' && fwd.data && !fwd.isLoading) {
-      const n = fwd.data.length;
+      const n = fwd.data.total_count;
       setEnrichMsg({ kind: 'ok', text: `${n} citing paper${n !== 1 ? 's' : ''} now in library` });
       pendingCompletionRef.current = null;
     }
@@ -1478,7 +1530,11 @@ export default function WorkDetailPanel({
           sectionKey="references"
           title="References (backward)"
           direction="backward"
-          items={bwd.data}
+          items={bwd.data?.items}
+          totalCount={bwd.data?.total_count}
+          page={bwdPage}
+          pageSize={PAGE_SIZE}
+          onPageChange={setBwdPage}
           isLoading={bwd.isLoading}
           seedColorMap={seedColorMap}
           renderedWorkIds={renderedWorkIds}
@@ -1488,20 +1544,56 @@ export default function WorkDetailPanel({
           onFoldChange={onFoldChange}
         />
 
-        {/* Cited by (forward) — collapsible with markers */}
-        <CitationList
-          sectionKey="citedBy"
-          title="Cited by (forward)"
-          direction="forward"
-          items={fwd.data}
-          isLoading={fwd.isLoading}
-          seedColorMap={seedColorMap}
-          renderedWorkIds={renderedWorkIds}
-          ignoredWorkIds={ignoredWorkIds}
-          onSelectWork={onSelectWork}
-          foldState={foldState}
-          onFoldChange={onFoldChange}
-        />
+        {/* Cited by (forward) — collapsible with markers + staleness indicator */}
+        {(() => {
+          const citingStored = fwd.data?.total_count ?? 0;
+          const citingOA = work?.citation_count ?? 0;
+          const isStale = citingStored > 0 && citingOA > 0 && citingStored < citingOA * 0.8;
+          return (
+            <>
+              <CitationList
+                sectionKey="citedBy"
+                title="Cited by (forward)"
+                direction="forward"
+                items={fwd.data?.items}
+                totalCount={fwd.data?.total_count}
+                page={fwdPage}
+                pageSize={PAGE_SIZE}
+                onPageChange={setFwdPage}
+                isLoading={fwd.isLoading}
+                seedColorMap={seedColorMap}
+                renderedWorkIds={renderedWorkIds}
+                ignoredWorkIds={ignoredWorkIds}
+                onSelectWork={onSelectWork}
+                foldState={foldState}
+                onFoldChange={onFoldChange}
+              />
+              {isStale && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {citingStored.toLocaleString()} of ~{citingOA.toLocaleString()} citing papers loaded ·{' '}
+                  <button
+                    onClick={() => {
+                      lastEnrichTypeRef.current = 'forward';
+                      setEnrichMsg(null);
+                      fetchFwd.mutate({ workId, forceRefresh: true }, {
+                        onError: (err) => {
+                          lastEnrichTypeRef.current = null;
+                          const msg = err instanceof Error ? err.message : String(err);
+                          try { setEnrichMsg({ kind: 'err', text: JSON.parse(msg).detail ?? msg }); }
+                          catch { setEnrichMsg({ kind: 'err', text: msg }); }
+                        },
+                      });
+                    }}
+                    disabled={fetchFwd.isPending || workLocked}
+                    className="underline hover:text-blue-600 disabled:opacity-50"
+                  >
+                    Refresh
+                  </button>
+                </p>
+              )}
+            </>
+          );
+        })()}
 
         {/* Delete from library (library context only) */}
         {onDelete && (

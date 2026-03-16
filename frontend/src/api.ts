@@ -3,7 +3,6 @@ import type {
   WorkDetail,
   WorkPDFOut,
   BibtexImportResult,
-  CitationWorkBrief,
   VenueOut,
   VenueDetail,
   VenueAliasOut,
@@ -140,18 +139,20 @@ export function removeWorkAuthor(workId: number, authorId: number) {
   return apiFetch<void>(`/api/works/${workId}/authors/${authorId}`, { method: 'DELETE' });
 }
 
-export function fetchForwardCitations(workId: number, params?: { offset?: number; limit?: number }) {
+export function fetchForwardCitations(workId: number, params?: { offset?: number; limit?: number; sort?: string }) {
   const sp = new URLSearchParams();
   if (params?.offset) sp.set('offset', String(params.offset));
   if (params?.limit) sp.set('limit', String(params.limit));
-  return apiFetch<CitationWorkBrief[]>(`/api/works/${workId}/citations/forward?${sp}`);
+  if (params?.sort) sp.set('sort', params.sort);
+  return apiFetch<import('./types').CitationListResponse>(`/api/works/${workId}/citations/forward?${sp}`);
 }
 
-export function fetchBackwardCitations(workId: number, params?: { offset?: number; limit?: number }) {
+export function fetchBackwardCitations(workId: number, params?: { offset?: number; limit?: number; sort?: string }) {
   const sp = new URLSearchParams();
   if (params?.offset) sp.set('offset', String(params.offset));
   if (params?.limit) sp.set('limit', String(params.limit));
-  return apiFetch<CitationWorkBrief[]>(`/api/works/${workId}/citations/backward?${sp}`);
+  if (params?.sort) sp.set('sort', params.sort);
+  return apiFetch<import('./types').CitationListResponse>(`/api/works/${workId}/citations/backward?${sp}`);
 }
 
 export function importBibtex(bibtex: string) {

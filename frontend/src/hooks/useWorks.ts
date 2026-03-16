@@ -18,18 +18,24 @@ export function useWork(workId: number | null) {
   });
 }
 
-export function useForwardCitations(workId: number | null) {
+export function useForwardCitations(
+  workId: number | null,
+  params?: { offset?: number; limit?: number; sort?: string },
+) {
   return useQuery({
-    queryKey: ['works', workId, 'citations', 'forward'],
-    queryFn: () => fetchForwardCitations(workId!),
+    queryKey: ['works', workId, 'citations', 'forward', params],
+    queryFn: () => fetchForwardCitations(workId!, params),
     enabled: workId !== null,
   });
 }
 
-export function useBackwardCitations(workId: number | null) {
+export function useBackwardCitations(
+  workId: number | null,
+  params?: { offset?: number; limit?: number; sort?: string },
+) {
   return useQuery({
-    queryKey: ['works', workId, 'citations', 'backward'],
-    queryFn: () => fetchBackwardCitations(workId!),
+    queryKey: ['works', workId, 'citations', 'backward', params],
+    queryFn: () => fetchBackwardCitations(workId!, params),
     enabled: workId !== null,
   });
 }

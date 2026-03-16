@@ -76,6 +76,12 @@ export interface CitationWorkBrief {
   doi: string | null;
   title: string;
   publication_year: number | null;
+  citation_count: number | null;
+}
+
+export interface CitationListResponse {
+  items: CitationWorkBrief[];
+  total_count: number;
 }
 
 export interface BibtexImportResult {
