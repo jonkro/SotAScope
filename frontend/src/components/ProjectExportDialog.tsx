@@ -118,7 +118,7 @@ export default function ProjectExportDialog({
             </li>
           </ul>
 
-          {/* Paper content checkbox (disabled, coming soon) */}
+          {/* Paper content checkbox (disabled, coming soon) — hidden until implemented
           <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
             <label className="flex items-start gap-3 cursor-not-allowed opacity-50">
               <input
@@ -142,6 +142,7 @@ export default function ProjectExportDialog({
               </div>
             </label>
           </div>
+          */}
 
           <p className="text-xs text-gray-400">
             Candidates (non-seed neighbors) are not exported — the importer will

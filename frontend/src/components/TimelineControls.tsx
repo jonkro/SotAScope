@@ -52,6 +52,26 @@ export default function TimelineControls({
 }: TimelineControlsProps) {
   return (
     <div className="flex flex-wrap items-center gap-4 px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs">
+      {/* Start year */}
+      {minYear != null && maxYear != null && (
+        <label className="flex items-center gap-1.5">
+          <span className="text-gray-500">From</span>
+          <input
+            type="range"
+            min={minYear}
+            max={maxYear}
+            step={1}
+            value={startYear ?? minYear}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              onStartYearChange(v <= minYear ? null : v);
+            }}
+            className="w-24"
+          />
+          <span className="text-gray-700 w-10">{startYear ?? minYear}</span>
+        </label>
+      )}
+
       {/* Citations since slider */}
       <label className="flex items-center gap-1.5">
         <span className="text-gray-500">Count citations</span>
@@ -67,39 +87,6 @@ export default function TimelineControls({
         <span className="text-gray-700 w-20">
           {citationsSinceYears == null ? 'all' : `of last ${citationsSinceYears}y`}
         </span>
-      </label>
-
-      {/* Direction checkboxes */}
-      <label className="flex items-center gap-1">
-        <input
-          type="checkbox"
-          checked={showBackward}
-          onChange={(e) => onShowBackwardChange(e.target.checked)}
-        />
-        <span className="text-gray-600">References</span>
-      </label>
-      <label className="flex items-center gap-1">
-        <input
-          type="checkbox"
-          checked={showForward}
-          onChange={(e) => onShowForwardChange(e.target.checked)}
-        />
-        <span className="text-gray-600">Cited by</span>
-      </label>
-
-      {/* Candidate filter */}
-      <span className="text-gray-300">|</span>
-      <label className="flex items-center gap-1.5">
-        <span className="text-gray-500">Candidates</span>
-        <select
-          value={candidateFilter}
-          onChange={(e) => onCandidateFilterChange(e.target.value as CandidateFilter)}
-          className="border border-gray-300 rounded px-1.5 py-0.5 text-xs text-gray-700 bg-white"
-        >
-          <option value="all">All</option>
-          <option value="top-venues">Top venues</option>
-          <option value="none">None</option>
-        </select>
       </label>
 
       {/* Hops */}
@@ -122,25 +109,40 @@ export default function TimelineControls({
         </div>
       </label>
 
-      {/* Start year */}
-      {minYear != null && maxYear != null && (
-        <label className="flex items-center gap-1.5">
-          <span className="text-gray-500">From</span>
-          <input
-            type="range"
-            min={minYear}
-            max={maxYear}
-            step={1}
-            value={startYear ?? minYear}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              onStartYearChange(v <= minYear ? null : v);
-            }}
-            className="w-24"
-          />
-          <span className="text-gray-700 w-10">{startYear ?? minYear}</span>
-        </label>
-      )}
+      {/* Separator */}
+      <span className="text-gray-300 select-none">|</span>
+
+      {/* Candidate filter */}
+      <label className="flex items-center gap-1.5">
+        <span className="text-gray-500">Candidates</span>
+        <select
+          value={candidateFilter}
+          onChange={(e) => onCandidateFilterChange(e.target.value as CandidateFilter)}
+          className="border border-gray-300 rounded px-1.5 py-0.5 text-xs text-gray-700 bg-white"
+        >
+          <option value="all">All</option>
+          <option value="top-venues">Top venues</option>
+          <option value="none">None</option>
+        </select>
+      </label>
+
+      {/* Direction checkboxes */}
+      <label className="flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={showBackward}
+          onChange={(e) => onShowBackwardChange(e.target.checked)}
+        />
+        <span className="text-gray-600">References</span>
+      </label>
+      <label className="flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={showForward}
+          onChange={(e) => onShowForwardChange(e.target.checked)}
+        />
+        <span className="text-gray-600">Cited by</span>
+      </label>
 
       {/* Stats */}
       <span className="text-gray-400 ml-auto">
