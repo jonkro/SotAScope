@@ -213,7 +213,7 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
         >
           <option value="">Not configured</option>
           <option value="anthropic">anthropic</option>
-          <option value="openai">openai</option>
+          <option value="openai">openai-compatible</option>
         </select>
       </div>
 
