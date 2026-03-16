@@ -233,6 +233,15 @@ def _migrate_schema() -> None:
             ))
             db.commit()
 
+        # Add is_promoted column to extraction_schemas if it doesn't exist
+        if "extraction_schemas" in existing_tables:
+            es_cols = {c["name"] for c in inspector.get_columns("extraction_schemas")}
+            if "is_promoted" not in es_cols:
+                db.execute(text(
+                    "ALTER TABLE extraction_schemas ADD COLUMN is_promoted BOOLEAN NOT NULL DEFAULT 0"
+                ))
+                db.commit()
+
         # Create chat_messages table if it doesn't exist
         if "chat_messages" not in existing_tables:
             db.execute(text(

@@ -675,6 +675,10 @@ export function deleteExtractionSchema(id: number) {
   return apiFetch<void>(`/api/extraction/schemas/${id}`, { method: 'DELETE' });
 }
 
+export function promoteExtractionSchema(id: number) {
+  return apiFetch<ExtractionSchema>(`/api/extraction/schemas/${id}/promote`, { method: 'PATCH' });
+}
+
 export function createExtractionColumn(
   schemaId: number,
   data: {

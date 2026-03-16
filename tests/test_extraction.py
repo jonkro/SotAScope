@@ -163,6 +163,41 @@ def test_delete_schema_not_found(client):
     assert resp.status_code == 404
 
 
+def test_toggle_schema_promotion(client, schema, db_session):
+    # Default is not promoted
+    assert schema.is_promoted is False
+
+    # Pin it
+    resp = client.patch(f"/api/extraction/schemas/{schema.id}/promote")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_promoted"] is True
+
+    db_session.refresh(schema)
+    assert schema.is_promoted is True
+
+    # Unpin it
+    resp = client.patch(f"/api/extraction/schemas/{schema.id}/promote")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_promoted"] is False
+
+    db_session.refresh(schema)
+    assert schema.is_promoted is False
+
+
+def test_toggle_schema_promotion_not_found(client):
+    resp = client.patch("/api/extraction/schemas/99999/promote")
+    assert resp.status_code == 404
+
+
+def test_schema_out_includes_is_promoted(client, schema):
+    resp = client.get(f"/api/extraction/schemas/{schema.id}")
+    assert resp.status_code == 200
+    assert "is_promoted" in resp.json()
+    assert resp.json()["is_promoted"] is False
+
+
 # ---------------------------------------------------------------------------
 # Column CRUD tests
 # ---------------------------------------------------------------------------

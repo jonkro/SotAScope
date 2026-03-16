@@ -462,6 +462,7 @@ def _create_project_content(
             project_id=project_id,
             title=schema_data["title"],
             description=schema_data.get("description"),
+            is_promoted=schema_data.get("is_promoted", False),
         )
         db.add(schema)
         db.flush()

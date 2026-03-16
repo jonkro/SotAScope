@@ -9,6 +9,7 @@ import {
   useCreateExtractionSchema,
   useUpdateExtractionSchema,
   useDeleteExtractionSchema,
+  useToggleExtractionSchemaPromotion,
   useCreateExtractionColumn,
   useUpdateExtractionColumn,
   useDeleteExtractionColumn,
@@ -689,15 +690,6 @@ function SchemaCard({ schema, onEdit, onDelete, isPinned, onTogglePin }: SchemaC
 
 type View = { kind: 'list' } | { kind: 'new' } | { kind: 'editor'; schemaId: number };
 
-function loadPromotedSchemaIds(projectId: number): number[] {
-  try {
-    const raw = localStorage.getItem(`litexplorer:project:${projectId}:promotedSchemas`);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
 export default function ExtractionSchemasPage() {
   const { projectId: pid } = useParams<{ projectId: string }>();
   const projectId = Number(pid);
@@ -715,22 +707,7 @@ export default function ExtractionSchemasPage() {
   });
   const [deleteSchemaId, setDeleteSchemaId] = useState<number | null>(null);
 
-  // Promoted schema IDs — shared localStorage with ProjectDetailPage
-  const [promotedSchemaIds, setPromotedSchemaIds] = useState<number[]>(
-    () => loadPromotedSchemaIds(projectId),
-  );
-  const togglePromoted = (schemaId: number) => {
-    setPromotedSchemaIds((prev) => {
-      const next = prev.includes(schemaId)
-        ? prev.filter((id) => id !== schemaId)
-        : [...prev, schemaId];
-      localStorage.setItem(
-        `litexplorer:project:${projectId}:promotedSchemas`,
-        JSON.stringify(next),
-      );
-      return next;
-    });
-  };
+  const togglePromotion = useToggleExtractionSchemaPromotion();
 
   // Sync view to URL params (replace, not push)
   useEffect(() => {
@@ -817,8 +794,8 @@ export default function ExtractionSchemasPage() {
             schema={schema}
             onEdit={() => setView({ kind: 'editor', schemaId: schema.id })}
             onDelete={() => setDeleteSchemaId(schema.id)}
-            isPinned={promotedSchemaIds.includes(schema.id)}
-            onTogglePin={() => togglePromoted(schema.id)}
+            isPinned={schema.is_promoted}
+            onTogglePin={() => togglePromotion.mutate(schema.id)}
           />
         ))}
       </div>

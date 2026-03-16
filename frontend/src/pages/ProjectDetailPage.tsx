@@ -53,15 +53,6 @@ function loadProjectSettings(projectId: number): ProjectViewSettings {
   }
 }
 
-function loadPromotedSchemaIds(projectId: number): number[] {
-  try {
-    const raw = localStorage.getItem(`litexplorer:project:${projectId}:promotedSchemas`);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Promoted schema tab content
 // ---------------------------------------------------------------------------
@@ -174,30 +165,20 @@ export default function ProjectDetailPage() {
   // Load persisted settings for this project
   const saved = useMemo(() => loadProjectSettings(projectId), [projectId]);
 
-  // Promoted schema IDs (localStorage) — read-only here; toggling happens in ExtractionSchemasPage
-  const promotedSchemaIds = useMemo(() => loadPromotedSchemaIds(projectId), [projectId]);
-
-  // Tab state — initialized from URL param if present (deep link), then localStorage
+  // Tab state — initialized from URL param if present (deep link), then localStorage.
+  // Promoted state comes from DB (schemas.is_promoted); validation happens via useEffect once loaded.
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
     const urlTab = searchParams.get('tab');
     if (urlTab === 'extract') {
       const urlSchema = searchParams.get('schema');
       if (urlSchema) {
         const schemaId = parseInt(urlSchema, 10);
-        if (!isNaN(schemaId)) {
-          const promoted = loadPromotedSchemaIds(projectId);
-          if (promoted.includes(schemaId)) return `schema:${schemaId}` as ActiveTab;
-        }
+        if (!isNaN(schemaId)) return `schema:${schemaId}` as ActiveTab;
       }
     } else if (urlTab && (['timeline', 'lists', 'notes', 'venue-tiers'] as string[]).includes(urlTab)) {
       return urlTab as ActiveTab;
     }
     const savedTab = saved.activeTab ?? 'timeline';
-    if (savedTab.startsWith('schema:')) {
-      const schemaId = parseInt(savedTab.split(':')[1], 10);
-      const promoted = loadPromotedSchemaIds(projectId);
-      if (!promoted.includes(schemaId)) return 'timeline';
-    }
     if (savedTab === 'tables') return 'timeline';
     return savedTab;
   });
@@ -528,14 +509,22 @@ export default function ProjectDetailPage() {
     return undefined;
   }, [timeline, selectedWorkId]);
 
-  // Schemas that are promoted (preserve insertion order)
+  // Schemas that are promoted (derived from DB is_promoted field)
   const promotedSchemas = useMemo(
-    () =>
-      promotedSchemaIds
-        .map((id) => schemas?.find((s) => s.id === id))
-        .filter((s): s is NonNullable<typeof s> => s != null),
-    [promotedSchemaIds, schemas],
+    () => schemas?.filter((s) => s.is_promoted) ?? [],
+    [schemas],
   );
+
+  // Once schemas load, validate that the active schema tab is still promoted; fall back if not
+  useEffect(() => {
+    if (!schemas) return;
+    if (activeTab.startsWith('schema:')) {
+      const schemaId = parseInt(activeTab.split(':')[1], 10);
+      if (!schemas.some((s) => s.id === schemaId && s.is_promoted)) {
+        setActiveTab('timeline');
+      }
+    }
+  }, [schemas]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading || !project) {
     return <p className="p-6 text-sm text-gray-400">Loading...</p>;

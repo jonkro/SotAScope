@@ -228,6 +228,7 @@ def export_project(project_id: int, db: Session) -> io.BytesIO:
             {
                 "title": schema.title,
                 "description": schema.description,
+                "is_promoted": schema.is_promoted,
                 "columns": [
                     {
                         "name": c.name,

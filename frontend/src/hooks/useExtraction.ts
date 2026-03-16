@@ -5,6 +5,7 @@ import {
   createExtractionSchema,
   updateExtractionSchema,
   deleteExtractionSchema,
+  promoteExtractionSchema,
   createExtractionColumn,
   updateExtractionColumn,
   deleteExtractionColumn,
@@ -67,6 +68,17 @@ export function useDeleteExtractionSchema() {
     mutationFn: (schemaId: number) => deleteExtractionSchema(schemaId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['extraction', 'schemas'] });
+    },
+  });
+}
+
+export function useToggleExtractionSchemaPromotion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (schemaId: number) => promoteExtractionSchema(schemaId),
+    onSuccess: (schema) => {
+      qc.invalidateQueries({ queryKey: ['extraction', 'schemas'] });
+      qc.invalidateQueries({ queryKey: ['extraction', 'schema', schema.id] });
     },
   });
 }

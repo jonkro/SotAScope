@@ -151,6 +151,18 @@ def update_schema(schema_id: int, body: ExtractionSchemaUpdate, db: Session = De
     return ExtractionSchemaOut.model_validate(schema)
 
 
+@router.patch("/schemas/{schema_id}/promote", response_model=ExtractionSchemaOut)
+def toggle_schema_promotion(schema_id: int, db: Session = Depends(get_db)):
+    """Toggle the is_promoted flag on a schema (pin/unpin as a project tab)."""
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+    schema.is_promoted = not schema.is_promoted
+    db.commit()
+    db.refresh(schema)
+    return ExtractionSchemaOut.model_validate(schema)
+
+
 @router.delete("/schemas/{schema_id}", status_code=204)
 def delete_schema(schema_id: int, db: Session = Depends(get_db)):
     """Delete a schema (cascades to columns)."""

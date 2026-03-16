@@ -523,6 +523,7 @@ export interface ExtractionSchema {
   project_id: number | null;
   title: string;
   description: string | null;
+  is_promoted: boolean;
   created_at: string;
   updated_at: string;
   columns: ExtractionColumn[];
