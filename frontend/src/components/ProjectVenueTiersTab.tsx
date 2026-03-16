@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import {
   useProjectVenueTiers,
+  useResetAllProjectVenueTiers,
   useResetProjectVenueTier,
   useSetProjectVenueTier,
 } from '../hooks/useVenueTiers';
+import ConfirmDialog from './ConfirmDialog';
 
 const TIER_OPTIONS = [
   { value: 1, label: 'Top' },
@@ -17,10 +19,12 @@ interface Props {
 
 export default function ProjectVenueTiersTab({ projectId }: Props) {
   const [filter, setFilter] = useState('');
+  const [showResetAllConfirm, setShowResetAllConfirm] = useState(false);
 
   const { data: venues, isLoading } = useProjectVenueTiers(projectId);
   const setTier = useSetProjectVenueTier(projectId);
   const resetTier = useResetProjectVenueTier(projectId);
+  const resetAll = useResetAllProjectVenueTiers(projectId);
 
   if (isLoading) {
     return <p className="p-6 text-sm text-gray-400">Loading venue tiers…</p>;
@@ -36,22 +40,34 @@ export default function ProjectVenueTiersTab({ projectId }: Props) {
     );
   }
 
+  const localOverrideCount = venues.filter((v) => v.local_tier !== null).length;
+
   const q = filter.trim().toLowerCase();
   const filtered = q
     ? venues.filter((v) => v.all_names.some((n) => n.toLowerCase().includes(q)))
     : venues;
 
   return (
+    <>
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-2xl space-y-4">
-        {/* Filter input */}
-        <input
-          type="text"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter venues…"
-          className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
-        />
+        {/* Filter + reset-all row */}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter venues…"
+            className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+          <button
+            onClick={() => setShowResetAllConfirm(true)}
+            disabled={localOverrideCount === 0}
+            className="py-1.5 px-3 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+          >
+            Reset all to global
+          </button>
+        </div>
 
         <p className="text-xs text-gray-400">
           {filtered.length} venue{filtered.length !== 1 ? 's' : ''}
@@ -116,5 +132,18 @@ export default function ProjectVenueTiersTab({ projectId }: Props) {
         </div>
       </div>
     </div>
+
+    {showResetAllConfirm && (
+      <ConfirmDialog
+        title="Reset all venue tiers"
+        message={`Reset all ${localOverrideCount} venue tier${localOverrideCount !== 1 ? 's' : ''} to global defaults?`}
+        onConfirm={() => {
+          setShowResetAllConfirm(false);
+          resetAll.mutate();
+        }}
+        onCancel={() => setShowResetAllConfirm(false)}
+      />
+    )}
+    </>
   );
 }

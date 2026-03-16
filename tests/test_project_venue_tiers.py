@@ -300,6 +300,76 @@ class TestProjectVenueTiersAPI:
         assert row["effective_tier"] == 2  # global, not overridden by A
         assert row["local_tier"] is None
 
+    def test_bulk_delete_removes_all_overrides(self, client, db_session):
+        """DELETE /venue-tiers removes all overrides and returns correct count."""
+        venue1 = _make_venue(db_session, "NeurIPS", tier=2)
+        venue2 = _make_venue(db_session, "ICML", tier=1)
+        venue3 = _make_venue(db_session, "CVPR", tier=2)
+        work1 = _make_work(db_session, "Paper 1", venue1)
+        work2 = _make_work(db_session, "Paper 2", venue2)
+        work3 = _make_work(db_session, "Paper 3", venue3)
+        project = _make_project(db_session)
+        tl = _make_topic_list(db_session, project)
+        _add_seed(db_session, tl, work1)
+        _add_seed(db_session, tl, work2)
+        _add_seed(db_session, tl, work3)
+        db_session.add(ProjectVenueTier(project_id=project.id, venue_id=venue1.id, tier=1))
+        db_session.add(ProjectVenueTier(project_id=project.id, venue_id=venue2.id, tier=3))
+        db_session.add(ProjectVenueTier(project_id=project.id, venue_id=venue3.id, tier=3))
+        db_session.commit()
+
+        resp = client.delete(f"/api/projects/{project.id}/venue-tiers")
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted_count": 3}
+
+        # Verify all overrides are gone
+        remaining = db_session.query(ProjectVenueTier).filter_by(
+            project_id=project.id
+        ).all()
+        assert remaining == []
+
+        # List endpoint should show all venues as global
+        list_resp = client.get(f"/api/projects/{project.id}/venue-tiers")
+        for row in list_resp.json():
+            assert row["local_tier"] is None
+
+    def test_bulk_delete_no_overrides_returns_zero(self, client, db_session):
+        """Bulk delete on a project with no overrides returns deleted_count=0, not an error."""
+        project, _, _ = self._setup_project_with_seed(db_session)
+
+        resp = client.delete(f"/api/projects/{project.id}/venue-tiers")
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted_count": 0}
+
+    def test_bulk_delete_only_affects_target_project(self, client, db_session):
+        """Bulk delete must not remove overrides belonging to other projects."""
+        venue = _make_venue(db_session, "ICLR", tier=2)
+        work = _make_work(db_session, "Shared Paper", venue)
+        proj_a = _make_project(db_session, "A")
+        proj_b = _make_project(db_session, "B")
+        tl_a = _make_topic_list(db_session, proj_a)
+        tl_b = _make_topic_list(db_session, proj_b)
+        _add_seed(db_session, tl_a, work)
+        _add_seed(db_session, tl_b, work)
+        db_session.add(ProjectVenueTier(project_id=proj_a.id, venue_id=venue.id, tier=1))
+        db_session.add(ProjectVenueTier(project_id=proj_b.id, venue_id=venue.id, tier=3))
+        db_session.commit()
+
+        resp = client.delete(f"/api/projects/{proj_a.id}/venue-tiers")
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted_count": 1}
+
+        # proj_b's override must still exist
+        remaining = db_session.query(ProjectVenueTier).filter_by(
+            project_id=proj_b.id
+        ).all()
+        assert len(remaining) == 1
+        assert remaining[0].tier == 3
+
+    def test_bulk_delete_nonexistent_project_returns_404(self, client, db_session):
+        resp = client.delete("/api/projects/99999/venue-tiers")
+        assert resp.status_code == 404
+
     def test_project_deletion_cascades_overrides(self, client, db_session):
         project, venue, _ = self._setup_project_with_seed(db_session)
         db_session.add(

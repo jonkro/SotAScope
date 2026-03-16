@@ -409,6 +409,12 @@ export function resetProjectVenueTier(projectId: number, venueId: number) {
   });
 }
 
+export function resetAllProjectVenueTiers(projectId: number) {
+  return apiFetch<{ deleted_count: number }>(`/api/projects/${projectId}/venue-tiers`, {
+    method: 'DELETE',
+  });
+}
+
 // ---- Project Merge ----
 
 export function fetchMergePreview(targetId: number, sourceId: number) {

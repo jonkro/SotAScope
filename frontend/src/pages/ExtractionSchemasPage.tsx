@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import PageHeader from '../components/PageHeader';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ExtractionRunView from '../components/ExtractionRunView';
+import { ShareButton } from '../components/ShareButton';
 import {
   useExtractionSchemas,
   useExtractionSchema,
@@ -199,30 +200,8 @@ function ColumnFormModal({ schemaId, initial, nextSortOrder, onClose }: ColumnFo
 }
 
 // ---------------------------------------------------------------------------
-// Share button (icon-only, matches ProjectDetailPage)
+// Share button lives in components/ShareButton.tsx
 // ---------------------------------------------------------------------------
-
-function ShareButton() {
-  const [copied, setCopied] = useState(false);
-  const handleShare = () => {
-    navigator.clipboard.writeText(window.location.href).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-  return (
-    <button
-      onClick={handleShare}
-      className="h-8 w-8 flex items-center justify-center border border-gray-300 rounded hover:bg-gray-50 text-gray-500"
-      title={copied ? 'Link copied!' : 'Copy link'}
-    >
-      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-      </svg>
-    </button>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Schema editor (title/description + column management + extract/review)

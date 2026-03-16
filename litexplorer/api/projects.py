@@ -549,6 +549,22 @@ def reset_project_venue_tier(
     db.commit()
 
 
+@router.delete("/{project_id}/venue-tiers", status_code=200)
+def reset_all_project_venue_tiers(
+    project_id: int, db: Session = Depends(get_db)
+):
+    """Delete all per-project venue tier overrides, reverting every venue to its global tier."""
+    _get_project(db, project_id)
+    overrides = db.scalars(
+        select(ProjectVenueTier).where(ProjectVenueTier.project_id == project_id)
+    ).all()
+    deleted_count = len(overrides)
+    for override in overrides:
+        db.delete(override)
+    db.commit()
+    return {"deleted_count": deleted_count}
+
+
 # ---------------------------------------------------------------------------
 # Project merging
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import TimelineControls, { type CandidateFilter } from '../components/TimelineCo
 import TimelineEnrichBar from '../components/TimelineEnrichBar';
 import ExtractionRunView from '../components/ExtractionRunView';
 import ProjectVenueTiersTab from '../components/ProjectVenueTiersTab';
+import { ShareButton } from '../components/ShareButton';
 import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
   useAddIgnoredWork, useRemoveIgnoredWork, useRemoveWorkFromTopicList, useTopicList,
@@ -79,30 +80,8 @@ function PromotedSchemaTabContent({
 }
 
 // ---------------------------------------------------------------------------
-// Share button (icon-only)
+// Share button lives in components/ShareButton.tsx
 // ---------------------------------------------------------------------------
-
-function ShareButton({ href }: { href?: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleShare = () => {
-    navigator.clipboard.writeText(href ?? window.location.href).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-  return (
-    <button
-      onClick={handleShare}
-      className="h-8 w-8 flex items-center justify-center border border-gray-300 rounded hover:bg-gray-50 text-gray-500"
-      title={copied ? 'Link copied!' : 'Copy link'}
-    >
-      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-      </svg>
-    </button>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Dropdown menu
@@ -580,11 +559,7 @@ export default function ProjectDetailPage() {
           >
             Import paper
           </button>
-          <ShareButton
-            href={activeSchemaId !== null
-              ? `${window.location.origin}/projects/${projectId}/extraction?schema=${activeSchemaId}&view=review`
-              : undefined}
-          />
+          <ShareButton />
         </PageHeader>
 
         {project.description && (

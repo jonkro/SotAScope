@@ -3,6 +3,7 @@ import {
   addVenueField,
   fetchProjectVenueTiers,
   removeVenueField,
+  resetAllProjectVenueTiers,
   resetProjectVenueTier,
   setProjectVenueTier,
 } from '../api';
@@ -59,6 +60,17 @@ export function useResetProjectVenueTier(projectId: number) {
   return useMutation({
     mutationFn: ({ venueId }: { venueId: number }) =>
       resetProjectVenueTier(projectId, venueId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects', projectId, 'venue-tiers'] });
+      qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
+    },
+  });
+}
+
+export function useResetAllProjectVenueTiers(projectId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => resetAllProjectVenueTiers(projectId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects', projectId, 'venue-tiers'] });
       qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
