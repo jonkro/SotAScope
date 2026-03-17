@@ -185,18 +185,13 @@ function ExtractionCell({
 
   const { answer_note, reasoning_note, proposal } = cell;
 
-  const truncated =
-    answer_note.content.length > 80
-      ? answer_note.content.slice(0, 80) + '…'
-      : answer_note.content;
-
   return (
     <td
       className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 overflow-hidden"
       style={cellHeight !== undefined ? { height: cellHeight } : undefined}
     >
-      <div className="text-xs text-gray-800 leading-snug mb-1" title={answer_note.content}>
-        {truncated || <span className="text-gray-400 italic">empty</span>}
+      <div className="text-xs text-gray-800 leading-snug mb-1 break-words">
+        {answer_note.content || <span className="text-gray-400 italic">empty</span>}
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
         <ProvenanceBadge provenance={answer_note.provenance} />
@@ -626,18 +621,26 @@ export default function ExtractionRunView({
     colWidths[key] ?? DEFAULT_COL_WIDTHS[key] ?? DEFAULT_EXTRACTION_COL_WIDTH;
 
   const handleColResizeStart = useCallback(
-    (e: React.MouseEvent, key: string, currentWidth: number) => {
+    (e: React.PointerEvent<HTMLDivElement>, key: string, currentWidth: number) => {
       e.preventDefault();
+      // setPointerCapture routes all subsequent pointer events to this element
+      // even when the pointer leaves it — more reliable than document listeners,
+      // and the only approach that works consistently in Safari for thead cells.
+      const el = e.currentTarget;
+      el.setPointerCapture(e.pointerId);
+
       const startX = e.clientX;
       const startWidth = currentWidth;
       let latestWidth = startWidth;
 
-      const onMove = (ev: MouseEvent) => {
+      document.body.style.cursor = 'col-resize';
+
+      const onMove = (ev: PointerEvent) => {
         latestWidth = Math.max(60, startWidth + ev.clientX - startX);
         setColWidths((prev) => ({ ...prev, [key]: latestWidth }));
       };
 
-      const onUp = () => {
+      const onEnd = () => {
         setColWidths((prev) => {
           const next = { ...prev, [key]: latestWidth };
           try {
@@ -649,17 +652,14 @@ export default function ExtractionRunView({
           return next;
         });
         document.body.style.cursor = '';
-        document.body.style.removeProperty('user-select');
-        document.body.style.removeProperty('-webkit-user-select');
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
+        el.removeEventListener('pointermove', onMove);
+        el.removeEventListener('pointerup', onEnd);
+        el.removeEventListener('pointercancel', onEnd);
       };
 
-      document.body.style.cursor = 'col-resize';
-      document.body.style.setProperty('user-select', 'none');
-      document.body.style.setProperty('-webkit-user-select', 'none');
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
+      el.addEventListener('pointermove', onMove);
+      el.addEventListener('pointerup', onEnd);
+      el.addEventListener('pointercancel', onEnd);
     },
     [schema.id],
   );
@@ -671,18 +671,23 @@ export default function ExtractionRunView({
   const trRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
 
   const handleRowResizeStart = useCallback(
-    (e: React.MouseEvent, workId: number, currentHeight: number) => {
+    (e: React.PointerEvent<HTMLDivElement>, workId: number, currentHeight: number) => {
       e.preventDefault();
+      const el = e.currentTarget;
+      el.setPointerCapture(e.pointerId);
+
       const startY = e.clientY;
       const startHeight = currentHeight;
       let latestHeight = startHeight;
 
-      const onMove = (ev: MouseEvent) => {
+      document.body.style.cursor = 'row-resize';
+
+      const onMove = (ev: PointerEvent) => {
         latestHeight = Math.max(32, startHeight + ev.clientY - startY);
         setRowHeights((prev) => ({ ...prev, [workId]: latestHeight }));
       };
 
-      const onUp = () => {
+      const onEnd = () => {
         setRowHeights((prev) => {
           const next = { ...prev, [workId]: latestHeight };
           try {
@@ -694,17 +699,14 @@ export default function ExtractionRunView({
           return next;
         });
         document.body.style.cursor = '';
-        document.body.style.removeProperty('user-select');
-        document.body.style.removeProperty('-webkit-user-select');
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
+        el.removeEventListener('pointermove', onMove);
+        el.removeEventListener('pointerup', onEnd);
+        el.removeEventListener('pointercancel', onEnd);
       };
 
-      document.body.style.cursor = 'row-resize';
-      document.body.style.setProperty('user-select', 'none');
-      document.body.style.setProperty('-webkit-user-select', 'none');
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
+      el.addEventListener('pointermove', onMove);
+      el.addEventListener('pointerup', onEnd);
+      el.addEventListener('pointercancel', onEnd);
     },
     [schema.id],
   );
@@ -1004,7 +1006,7 @@ export default function ExtractionRunView({
                   <span className="block pr-2 truncate">Paper</span>
                   <div
                     className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                    onMouseDown={(e) => handleColResizeStart(e, 'title', getColW('title'))}
+                    onPointerDown={(e) => handleColResizeStart(e, 'title', getColW('title'))}
                   />
                 </div>
               </th>
@@ -1013,7 +1015,7 @@ export default function ExtractionRunView({
                   <span className="block pr-2 truncate">Year</span>
                   <div
                     className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                    onMouseDown={(e) => handleColResizeStart(e, 'year', getColW('year'))}
+                    onPointerDown={(e) => handleColResizeStart(e, 'year', getColW('year'))}
                   />
                 </div>
               </th>
@@ -1034,7 +1036,7 @@ export default function ExtractionRunView({
                     </span>
                     <div
                       className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                      onMouseDown={(e) => handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`))}
+                      onPointerDown={(e) => handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`))}
                     />
                   </div>
                 </th>
@@ -1081,7 +1083,7 @@ export default function ExtractionRunView({
                   className="p-0 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] overflow-hidden relative"
                   style={rowH !== undefined ? { height: rowH } : undefined}
                 >
-                  <div className="flex" style={{ minHeight: '2.25rem', height: rowH !== undefined ? rowH : undefined, overflow: rowH !== undefined ? 'hidden' : undefined }}>
+                  <div className="flex" style={{ minHeight: '2.25rem' }}>
                     {seed.topic_list_ids
                       .map((id) => topicListColorMap.get(id))
                       .filter((c): c is string => Boolean(c))
@@ -1094,7 +1096,7 @@ export default function ExtractionRunView({
                     <div className="px-3 py-2 min-w-0 flex-1 flex items-start justify-between gap-2">
                       <button
                         onClick={() => setPanelWorkId(prev => prev === seed.id ? null : seed.id)}
-                        className="text-xs font-medium text-left text-gray-900 line-clamp-2 hover:text-blue-600 cursor-pointer"
+                        className="text-xs font-medium text-left text-gray-900 break-words hover:text-blue-600 cursor-pointer"
                       >
                         {seed.title}
                       </button>
@@ -1108,7 +1110,7 @@ export default function ExtractionRunView({
                   {/* Row resize handle at bottom of title cell */}
                   <div
                     className="absolute bottom-0 left-0 right-0 h-1.5 cursor-row-resize hover:bg-indigo-200/60 select-none z-10"
-                    onMouseDown={(e) => {
+                    onPointerDown={(e) => {
                       const current = rowH ?? trRefs.current.get(seed.id)?.offsetHeight ?? 60;
                       handleRowResizeStart(e, seed.id, current);
                     }}
