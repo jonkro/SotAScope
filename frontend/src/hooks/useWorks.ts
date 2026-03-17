@@ -26,6 +26,7 @@ export function useForwardCitations(
     queryKey: ['works', workId, 'citations', 'forward', params],
     queryFn: () => fetchForwardCitations(workId!, params),
     enabled: workId !== null,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -37,6 +38,7 @@ export function useBackwardCitations(
     queryKey: ['works', workId, 'citations', 'backward', params],
     queryFn: () => fetchBackwardCitations(workId!, params),
     enabled: workId !== null,
+    placeholderData: (prev) => prev,
   });
 }
 
