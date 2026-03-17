@@ -347,12 +347,15 @@ Authentication and per-user access control are explicitly deferred to a future p
 
 ## Project export / import
 
-### Export (implemented)
-- `GET /api/projects/{id}/export` → `.zip` (manifest.json + seeds.bib)
+### Export / Save (implemented)
+- `GET /api/projects/{id}/export` → `.zip` (manifest.json + seeds.bib + optional files/)
+- `GET /api/projects/{id}/export?include_files=true` → also includes PDFs and extracted `.txt` files under `files/{work_id}/` for all seeds that have uploaded PDFs. Archive built entirely in `io.BytesIO` — for very large projects a streaming approach would be needed.
 - `GET /api/projects/{id}/export/bibtex?work_ids=...` → BibTeX text
 - Manifest format_version: **2**. Works referenced by stable IDs (DOI → arXiv → OpenAlex — never SQLite row IDs). Only seeds exported; candidates re-discovered via auto-enrichment on import.
 - `venue_tiers` section: effective tier (project-local override if present, else global `Venue.tier`) for every venue associated with any seed or citation-neighbour work in the project. Works with `venue_id=NULL` are skipped silently. Each entry also carries all `VenueAlias` strings for that venue (excluding the preferred alias, which is already stored in `venue_name`).
-- Service: `litexplorer/services/project_export.py` — `export_project(project_id, db) → io.BytesIO`
+- `files` section: populated when `include_files=True`; each entry is `{work_id, doi, arxiv_id, filenames}`. `work_id` is the archive-side DB id (needed by the importer to locate files in the ZIP). Empty list `[]` when `include_files=False`.
+- UI: "Save project (.zip)" in the Export dropdown; dialog has an "Include paper content (PDFs / extracted text)" checkbox (unchecked by default).
+- Service: `litexplorer/services/project_export.py` — `export_project(project_id, db, include_files=False) → io.BytesIO`
 
 ### Import (implemented)
 - `POST /api/projects/import` (multipart `file` upload) → `ImportResult` (201)
@@ -367,10 +370,11 @@ Authentication and per-user access control are explicitly deferred to a future p
   - `action="rename"` + `new_name`: renames temp project to new name, schedules enrichment.
 - `POST /api/projects/import/{project_id}/resolve-aliases` → `{message}` (200)
   - Writes accepted `VenueAlias` rows to the global table; rejected decisions are ignored. Idempotent. No ownership validation (local-first tool assumption).
-- Service: `litexplorer/services/project_import.py` — `import_project()`, `resolve_import()`, `_import_venue_tiers_v2()`
+- PDF file import: `_import_pdf_files()` runs after `_import_works()`; reads all `files/` ZIP entries eagerly into memory before closing the archive, then copies each to `{pdf_root}/{local_work_id}/{filename}`, creates `WorkPDF` rows (skips if already exists for that work+filename), and sets `extraction_status="ready"` when a companion `.txt` is present. Unresolvable file entries (no matching work) are skipped with a warning.
+- Service: `litexplorer/services/project_import.py` — `import_project()`, `resolve_import()`, `_import_venue_tiers_v2()`, `_import_pdf_files()`
 - Schemas: `litexplorer/schemas/project_import.py` — `ImportResult`, `ImportResolveRequest`, `AmbiguousMatch`, `PendingVenueAlias`, `AliasDecision`, `ResolveAliasesRequest`
 - Frontend: `ProjectImportDialog.tsx` — file upload → results → (optional) collision UI → (optional) alias confirmation UI → done. Alias step shown only for format_version=2 imports with new aliases; skippable.
-- Tests: `tests/test_project_import.py` (36 tests)
+- Tests: `tests/test_project_import.py` (42 tests)
 
 ### Project merge (implemented)
 - Non-destructive: content from source copied into target; source remains intact.

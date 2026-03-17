@@ -156,9 +156,11 @@ Environment variables (all prefixed `LITEXPLORER_`) can be set in a shell or in 
 
 Works can be exported as BibTeX from the library (all works) or from within a project (a paper-selector dialog lets you pick by topic list or individually, matching the extraction table paper selector). Endpoint: `GET /api/works/export/bibtex?work_ids=...`.
 
-### Project export (.zip)
+### Project save (.zip)
 
-A project — including topic lists, extraction schemas, extraction results, per-project venue tier overrides, chat sessions, and project-scoped work notes — can be exported as a `.zip` archive. The manifest references works by DOI or arXiv ID (never by DB row ID), making archives portable across LitExplorer instances. Only seed papers are included; candidates are rediscovered automatically on import via the normal enrichment pipeline. PDF/text export is planned but not yet implemented; the manifest schema already reserves a `"files"` key (currently empty) so future archives will be forward-compatible.
+A project — including topic lists, extraction schemas, extraction results, per-project venue tier overrides, chat sessions, and project-scoped work notes — can be saved as a `.zip` archive via the **Save project (.zip)** item in the Export dropdown. The manifest references works by DOI or arXiv ID (never by DB row ID), making archives portable across LitExplorer instances. Only seed papers are included; candidates are rediscovered automatically on import via the normal enrichment pipeline.
+
+Check **Include paper content (PDFs / extracted text)** in the save dialog to also bundle uploaded PDFs and their extracted `.txt` files into the archive under `files/{work_id}/`. This makes the archive larger but self-contained; the importer will restore the files and create `WorkPDF` rows automatically. The checkbox is unchecked by default.
 
 ### Project import (.zip)
 
