@@ -995,7 +995,12 @@ export default function ExtractionRunView({
                 </th>
               )}
               <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
-                <div className="relative">
+                {/* -mx-3 -my-2 px-3 py-2: expands wrapper to cover the full cell box
+                    (content + padding), so right-0 on the handle aligns with the
+                    cell's right border. Safari needs this relative div because
+                    position:sticky does not reliably establish a containing block
+                    for absolute children in WebKit. */}
+                <div className="relative -mx-3 -my-2 px-3 py-2">
                   <span className="block pr-2 truncate">Paper</span>
                   <div
                     className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
@@ -1004,7 +1009,7 @@ export default function ExtractionRunView({
                 </div>
               </th>
               <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200">
-                <div className="relative">
+                <div className="relative -mx-3 -my-2 px-3 py-2">
                   <span className="block pr-2 truncate">Year</span>
                   <div
                     className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
@@ -1018,7 +1023,7 @@ export default function ExtractionRunView({
                   className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0"
                   title={col.prompt}
                 >
-                  <div className="relative">
+                  <div className="relative -mx-3 -my-2 px-3 py-2">
                     <span className="block pr-2 truncate">
                       {col.name}
                       {col.allowed_values && col.allowed_values.length > 0 && (
