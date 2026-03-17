@@ -7,7 +7,7 @@ import math
 import pytest
 
 from litexplorer.models.library import Citation, Work
-from litexplorer.api.works import _relevance_score
+from litexplorer.services.scoring import compute_relevance_score
 
 
 # ---------------------------------------------------------------------------
@@ -62,33 +62,34 @@ def referenced_works(db_session, seed_work):
 
 
 # ---------------------------------------------------------------------------
-# Unit tests for _relevance_score
+# Unit tests for compute_relevance_score
 # ---------------------------------------------------------------------------
 
 
 def test_relevance_score_basic():
-    score = _relevance_score(100, 2020)
-    assert score == pytest.approx(math.log1p(100) + (2020 - 2000) / 5.0)
+    score = compute_relevance_score(100, 2020)
+    # Function rounds to 4 decimal places; use abs tolerance accordingly
+    assert score == pytest.approx(math.log1p(100) + (2020 - 2000) / 5.0, abs=1e-4)
 
 
 def test_relevance_score_null_values():
-    # NULL citation_count and year treated as 0
-    assert _relevance_score(None, None) == pytest.approx(0.0)
-    assert _relevance_score(0, 2000) == pytest.approx(math.log1p(0) + 0.0)
+    # NULL year → no recency bonus; zero citations → score is 0
+    assert compute_relevance_score(0, None) == pytest.approx(0.0)
+    assert compute_relevance_score(0, 2000) == pytest.approx(math.log1p(0) + 0.0)
 
 
 def test_relevance_score_old_year_no_penalty():
     # Year before 2000 → no penalty (clamped at 0)
-    score_old = _relevance_score(0, 1990)
-    score_zero = _relevance_score(0, None)
-    assert score_old == score_zero  # both 0
+    score_old = compute_relevance_score(0, 1990)
+    score_null = compute_relevance_score(0, None)
+    assert score_old == score_null  # both 0
 
 
 def test_relevance_ordering():
     # High-cited recent paper should beat high-cited old paper
-    assert _relevance_score(900, 2023) > _relevance_score(900, 2005)
+    assert compute_relevance_score(900, 2023) > compute_relevance_score(900, 2005)
     # High-cited paper should beat low-cited recent paper
-    assert _relevance_score(1000, 2010) > _relevance_score(10, 2023)
+    assert compute_relevance_score(1000, 2010) > compute_relevance_score(10, 2023)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +111,7 @@ def test_forward_citations_relevance_order(client, seed_work, citing_works):
     assert resp.status_code == 200
     items = resp.json()["items"]
     scores = [
-        _relevance_score(w.get("citation_count"), w.get("publication_year"))
+        compute_relevance_score(w.get("citation_count") or 0, w.get("publication_year"))
         for w in items
     ]
     assert scores == sorted(scores, reverse=True), "Items not in descending relevance order"
@@ -199,7 +200,7 @@ def test_backward_citations_relevance_order(client, seed_work, referenced_works)
     resp = client.get(f"/api/works/{seed_work.id}/citations/backward?sort=relevance")
     items = resp.json()["items"]
     scores = [
-        _relevance_score(w.get("citation_count"), w.get("publication_year"))
+        compute_relevance_score(w.get("citation_count") or 0, w.get("publication_year"))
         for w in items
     ]
     assert scores == sorted(scores, reverse=True)

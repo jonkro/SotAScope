@@ -1,7 +1,6 @@
 """CRUD routes for works, locations, authors, citations, and BibTeX import."""
 
 import logging
-import math
 import os
 import re
 import shutil
@@ -16,6 +15,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from litexplorer.api.deps import get_db
 from litexplorer.config import settings
+from litexplorer.services.scoring import compute_relevance_score
 from litexplorer.services.work_lock import work_lock
 from litexplorer.models.library import (
     Author,
@@ -535,13 +535,6 @@ def create_author(body: AuthorCreate, db: Session = Depends(get_db)):
 _CITATION_SORT_OPTIONS = frozenset({"relevance", "year_desc", "year_asc", "citations_desc"})
 
 
-def _relevance_score(citation_count: int | None, publication_year: int | None) -> float:
-    """Server-side relevance score: log-citation-count + recency bonus."""
-    c = citation_count or 0
-    y = publication_year or 0
-    return math.log1p(c) + max(0.0, (y - 2000) / 5.0)
-
-
 def _paginate_citations(
     db: Session,
     base_stmt,
@@ -554,7 +547,7 @@ def _paginate_citations(
         # Fetch all matching works, sort in Python, then slice.
         all_works = list(db.scalars(base_stmt).all())
         all_works.sort(
-            key=lambda w: _relevance_score(w.citation_count, w.publication_year),
+            key=lambda w: compute_relevance_score(w.citation_count or 0, w.publication_year),
             reverse=True,
         )
         total_count = len(all_works)

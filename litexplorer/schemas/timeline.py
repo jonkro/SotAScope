@@ -46,6 +46,7 @@ class TimelineNeighborWork(BaseModel):
     direction: str  # 'backward' | 'forward'
     connected_seed_ids: list[int]
     has_citation_data: bool = True  # False when openalex_id is None (no OA citation graph data)
+    relevance_score: float = 0.0    # pre-computed by compute_relevance_score(); used for client-side visibility threshold
 
 
 class SeedCitation(BaseModel):

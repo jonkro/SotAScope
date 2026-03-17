@@ -345,6 +345,7 @@ export interface TimelineNeighborWork {
   direction: 'backward' | 'forward';
   connected_seed_ids: number[];
   has_citation_data: boolean;
+  relevance_score: number;
 }
 
 export interface SeedCitation {

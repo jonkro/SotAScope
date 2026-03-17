@@ -25,7 +25,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useWorks } from '../hooks/useWorks';
 import { useTimeline } from '../hooks/useTimeline';
 import { fetchBackwardCitationsEnrich, fetchForwardCitationsEnrich, enrichFromCrossref } from '../api';
-import { filterNeighbors } from '../lib/timelineFilter';
+import { filterNeighbors, applyVisibilityThreshold } from '../lib/timelineFilter';
 import { useProjectNotes } from '../hooks/useWorkNotes';
 import { updateWorkNote, deleteWorkNote } from '../api';
 import type { TimelineNeighborWork, ProjectNote } from '../types';
@@ -399,6 +399,12 @@ export default function ProjectDetailPage() {
     return result;
   }, [timeline, tier1Set, ignoredSet, showBackward, showForward, candidateFilter, activeSeedIds, inactiveTopicListIds]);
 
+  const DEFAULT_MAX_VISIBLE = 3000;
+  const visibilityResult = useMemo(
+    () => applyVisibilityThreshold(filteredNeighbors, DEFAULT_MAX_VISIBLE),
+    [filteredNeighbors],
+  );
+
   // Seed color map: seed work ID → array of topic list colors (active TLs only)
   const seedColorMap = useMemo(() => {
     if (!timeline) return new Map<number, string[]>();
@@ -428,9 +434,9 @@ export default function ProjectDetailPage() {
     if (timeline) {
       for (const s of timeline.seeds) ids.add(s.id);
     }
-    for (const n of filteredNeighbors) ids.add(n.id);
+    for (const n of visibilityResult.filtered) ids.add(n.id);
     return ids;
-  }, [timeline, filteredNeighbors]);
+  }, [timeline, visibilityResult]);
 
   // Ignored work IDs for this project
   const ignoredWorkIds = useMemo(
@@ -652,7 +658,8 @@ export default function ProjectDetailPage() {
               minYear={yearRange.min}
               maxYear={yearRange.max}
               totalNeighbors={timeline?.neighbors.length ?? 0}
-              filteredNeighbors={filteredNeighbors.length}
+              filteredNeighbors={visibilityResult.filtered.length}
+              hiddenByRelevance={visibilityResult.hiddenCount}
               candidateFilter={candidateFilter}
               onCandidateFilterChange={setCandidateFilter}
               hops={hops}
@@ -661,7 +668,7 @@ export default function ProjectDetailPage() {
             <div className="flex-1 min-h-[320px]">
               <CitationTimeline
                 seeds={filteredSeeds}
-                neighbors={filteredNeighbors}
+                neighbors={visibilityResult.filtered}
                 topicLists={timeline?.topic_lists ?? project.topic_lists}
                 seedCitations={filteredSeedCitations}
                 selectedWorkId={selectedWorkId}

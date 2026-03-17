@@ -5,6 +5,32 @@ export interface FilterParams {
   showForward: boolean;
 }
 
+export interface VisibilityThresholdResult {
+  filtered: TimelineNeighborWork[];
+  totalBeforeFilter: number;
+  hiddenCount: number;
+}
+
+/**
+ * Keep only the top `maxVisible` neighbors by relevance score.
+ * If the list is already within the limit, returns it unchanged (hiddenCount=0).
+ */
+export function applyVisibilityThreshold(
+  neighbors: TimelineNeighborWork[],
+  maxVisible: number,
+): VisibilityThresholdResult {
+  const total = neighbors.length;
+  if (total <= maxVisible) {
+    return { filtered: neighbors, totalBeforeFilter: total, hiddenCount: 0 };
+  }
+  const scored = [...neighbors].sort((a, b) => b.relevance_score - a.relevance_score);
+  return {
+    filtered: scored.slice(0, maxVisible),
+    totalBeforeFilter: total,
+    hiddenCount: total - maxVisible,
+  };
+}
+
 /**
  * Compute the citation count for a work given a "citations since" window.
  *

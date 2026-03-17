@@ -13,6 +13,7 @@ interface TimelineControlsProps {
   maxYear: number | null;
   totalNeighbors: number;
   filteredNeighbors: number;
+  hiddenByRelevance: number;
   candidateFilter: CandidateFilter;
   onCandidateFilterChange: (v: CandidateFilter) => void;
   hops: number;
@@ -45,6 +46,7 @@ export default function TimelineControls({
   maxYear,
   totalNeighbors,
   filteredNeighbors,
+  hiddenByRelevance,
   candidateFilter,
   onCandidateFilterChange,
   hops,
@@ -146,7 +148,9 @@ export default function TimelineControls({
 
       {/* Stats */}
       <span className="text-gray-400 ml-auto">
-        Showing {filteredNeighbors} of {totalNeighbors} candidates
+        {hiddenByRelevance > 0
+          ? `Showing top ${filteredNeighbors.toLocaleString()} of ${(filteredNeighbors + hiddenByRelevance).toLocaleString()} candidates (by relevance)`
+          : `Showing ${filteredNeighbors} of ${totalNeighbors} candidates`}
       </span>
     </div>
   );

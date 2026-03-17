@@ -70,6 +70,15 @@ export default function CitationTimeline({
   // For click-to-cycle through overlapping dots
   const cycleStateRef = useRef<{ ids: number[]; index: number }>({ ids: [], index: -1 });
 
+  // Refs shared between the two render effects
+  const dotPositionsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const dotsMapRef = useRef<Map<number, DotDatum>>(new Map());
+  // Stable SVG layer refs set by renderData, read by renderSelection
+  const khopLinesGRef = useRef<SVGGElement | null>(null);
+  const selectionOverlayGRef = useRef<SVGGElement | null>(null);
+  // Track previous selectedWorkId to fire ripple only when selection changes
+  const prevSelectedWorkIdRef = useRef<number | null>(null);
+
   // Memoize dots: combines color lookup, seed connectivity, and dot building
   const dots = useMemo(() => {
     const tlColorMap = new Map(topicLists.map((tl) => [tl.id, tl.color]));
@@ -196,9 +205,6 @@ export default function CitationTimeline({
   // Radius: sqrt scaling proportional to area
   const rScale = (connectivity: number) => BASE_RADIUS * Math.sqrt(connectivity);
 
-  // Track previous selectedWorkId to fire ripple only when selection changes
-  const prevSelectedWorkIdRef = useRef<number | null>(null);
-
   // Observe svg wrapper size (excludes the legend div above it)
   useEffect(() => {
     const el = svgWrapperRef.current;
@@ -213,8 +219,12 @@ export default function CitationTimeline({
     return () => ro.disconnect();
   }, []);
 
-  // Render D3
-  const render = useCallback(() => {
+  // ---------------------------------------------------------------------------
+  // Effect 1 — DATA BINDING: rebuild SVG structure when data or dimensions change.
+  // Does NOT include selection state (selectedWorkId / kHopResult / tier1VenueIds).
+  // Clicking a dot does NOT trigger this effect.
+  // ---------------------------------------------------------------------------
+  const renderData = useCallback(() => {
     const svg = d3.select(svgRef.current);
     const tooltip = d3.select(tooltipRef.current);
     const { width, height } = dimensions;
@@ -222,6 +232,9 @@ export default function CitationTimeline({
     const innerH = height - MARGIN.top - MARGIN.bottom;
 
     svg.selectAll('*').remove();
+    khopLinesGRef.current = null;
+    selectionOverlayGRef.current = null;
+
     // SVG root handles deselection for clicks anywhere in the chart (incl. axis margins)
     svg.on('click', () => onSelectWorkRef.current(null));
     // Always hide tooltip on re-render to prevent lingering after element is destroyed
@@ -324,6 +337,10 @@ export default function CitationTimeline({
       });
     }
 
+    // Persist dot positions and map for use by renderSelection
+    dotPositionsRef.current = dotPositions;
+    dotsMapRef.current = new Map(dots.map((d) => [d.id, d]));
+
     // --- Click-to-cycle handler for overlapping dots ---
     const HIT_RADIUS = 8; // px radius to find overlapping dots
     const handleDotClick = (event: MouseEvent, clickedId: number) => {
@@ -366,15 +383,13 @@ export default function CitationTimeline({
       }
     };
 
-    // --- Draw lines ---
-    const lineGroup = g.append('g').attr('class', 'citation-lines');
-
-    // Background seed-to-seed citation lines (always visible)
+    // --- Static seed-to-seed lines ---
+    const staticLinesG = g.append('g').attr('class', 'static-lines');
     for (const sc of seedCitations) {
       const from = dotPositions.get(sc.citing_seed_id);
       const to = dotPositions.get(sc.cited_seed_id);
       if (from && to) {
-        lineGroup.append('line')
+        staticLinesG.append('line')
           .attr('x1', from.x).attr('y1', from.y)
           .attr('x2', to.x).attr('y2', to.y)
           .attr('stroke', '#d1d5db')
@@ -384,13 +399,196 @@ export default function CitationTimeline({
       }
     }
 
-    // Highlighted k-hop edges (drawn on top)
+    // Stable layer for k-hop edges (populated by renderSelection)
+    khopLinesGRef.current = g.append('g').attr('class', 'khop-lines').node();
+
+    // --- Draw dots ---
+    const dotGroup = g.append('g').attr('class', 'dots');
+
+    for (const d of dots) {
+      const pos = dotPositions.get(d.id);
+      if (!pos) continue;
+
+      const r = rScale(d.connectivity);
+
+      if (d.type === 'seed') {
+        if (d.colors.length > 1) {
+          // Multi-color seed: <g> wrapper with vertical stripe rects
+          const seedG = dotGroup.append('g')
+            .attr('class', 'dot-marker dot-mc-seed')
+            .attr('data-work-id', String(d.id))
+            .attr('transform', `translate(${pos.x},${pos.y})`);
+
+          const stripeWidth = (2 * r) / d.colors.length;
+          for (let i = 0; i < d.colors.length; i++) {
+            seedG.append('rect')
+              .attr('class', 'dot-stripe')
+              .attr('x', -r + i * stripeWidth).attr('y', -r)
+              .attr('width', stripeWidth).attr('height', 2 * r)
+              .attr('fill', d.colors[i])
+              .attr('opacity', 1)
+              .attr('cursor', 'pointer')
+              .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
+              .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
+              .on('mouseleave', () => hideTooltip(tooltip));
+          }
+
+          // Pre-created border outline for tier1/selection stroke (hidden by default)
+          seedG.append('rect')
+            .attr('class', 'dot-border-outline')
+            .attr('x', -r).attr('y', -r)
+            .attr('width', 2 * r).attr('height', 2 * r)
+            .attr('fill', 'none')
+            .attr('stroke', 'none')
+            .attr('stroke-width', 0)
+            .attr('pointer-events', 'none');
+
+          // Pre-created outer selection ring (shown only when selected)
+          seedG.append('rect')
+            .attr('class', 'dot-selected-ring')
+            .attr('x', -(r + 3)).attr('y', -(r + 3))
+            .attr('width', (r + 3) * 2).attr('height', (r + 3) * 2)
+            .attr('fill', 'none')
+            .attr('stroke', 'none')
+            .attr('stroke-width', 2)
+            .attr('pointer-events', 'none');
+        } else {
+          // Single-color seed: filled square
+          const color = d.colors[0] ?? '#6b7280';
+          dotGroup.append('rect')
+            .attr('class', 'dot-marker')
+            .attr('data-work-id', String(d.id))
+            .attr('x', pos.x - r).attr('y', pos.y - r)
+            .attr('width', r * 2).attr('height', r * 2)
+            .attr('fill', color)
+            .attr('opacity', 1)
+            .attr('stroke', 'none')
+            .attr('stroke-width', 0)
+            .attr('cursor', 'pointer')
+            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
+            .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
+            .on('mouseleave', () => hideTooltip(tooltip));
+        }
+      } else {
+        const color = d.colors[0] ?? '#9ca3af';
+        const isForward = d.type === 'forward';
+
+        if (isForward) {
+          const size = r * 2;
+          dotGroup.append('rect')
+            .attr('class', 'dot-marker')
+            .attr('data-work-id', String(d.id))
+            .attr('x', pos.x - r)
+            .attr('y', pos.y - r)
+            .attr('width', size).attr('height', size)
+            .attr('transform', `rotate(45,${pos.x},${pos.y})`)
+            .attr('fill', color)
+            .attr('opacity', NEIGHBOR_OPACITY)
+            .attr('stroke', 'none')
+            .attr('stroke-width', 0)
+            .attr('cursor', 'pointer')
+            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
+            .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
+            .on('mouseleave', () => hideTooltip(tooltip));
+        } else {
+          // Backward neighbor: hollow (no OA data) or solid (has OA data)
+          const isHollow = !d.hasCitationData;
+          dotGroup.append('circle')
+            .attr('class', 'dot-marker')
+            .attr('data-work-id', String(d.id))
+            .attr('cx', pos.x).attr('cy', pos.y)
+            .attr('r', r)
+            .attr('fill', isHollow ? 'none' : color)
+            .attr('opacity', NEIGHBOR_OPACITY)
+            .attr('stroke', isHollow ? '#9ca3af' : 'none')
+            .attr('stroke-width', isHollow ? 1.5 : 0)
+            .attr('cursor', 'pointer')
+            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
+            .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
+            .on('mouseleave', () => hideTooltip(tooltip));
+        }
+      }
+    }
+
+    // Stable layer for selection overlays (connection rings, ripple) populated by renderSelection
+    selectionOverlayGRef.current = g.append('g').attr('class', 'selection-overlay').node();
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dimensions, dots, seedCitations]);
+
+  // ---------------------------------------------------------------------------
+  // Effect 2 — SELECTION STYLE: update visual attributes on existing DOM elements.
+  // Runs on every click (selectedWorkId change) — does NOT create or remove main dot elements.
+  // Only redraws k-hop lines and connection rings (cheap overlays).
+  //
+  // NOTE: If performance is still insufficient after auto-filter + this render refactor,
+  // the next step would be canvas rendering for candidate markers (seeds stay as SVG).
+  // See the HTML5 Canvas + D3 binding pattern for mixed SVG/canvas approaches.
+  // ---------------------------------------------------------------------------
+  const renderSelection = useCallback(() => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+
+    const dotPositions = dotPositionsRef.current;
+    const dotsMap = dotsMapRef.current;
+    const khopLinesG = khopLinesGRef.current;
+    const selectionOverlayG = selectionOverlayGRef.current;
+
+    if (!khopLinesG || !selectionOverlayG) return; // renderData hasn't run yet
+
+    // --- Update opacity and stroke on all existing dot markers ---
+    d3.select(svgEl).selectAll<Element, unknown>('.dot-marker').each(function () {
+      const el = d3.select(this);
+      const workId = parseInt(el.attr('data-work-id'), 10);
+      const dot = dotsMap.get(workId);
+      if (!dot) return;
+
+      const isSelected = workId === selectedWorkId;
+      const hopDist = kHopResult.nodeHops.get(workId);
+      const isConnected = hopDist != null;
+      const dimmed = selectedWorkId != null && !isConnected;
+      const isTier1 = dot.venueId != null && tier1VenueIds.has(dot.venueId);
+
+      if ((this as SVGElement).tagName === 'g') {
+        // Multi-color seed group: dim individual stripes, update pre-created border/ring
+        el.selectAll<SVGRectElement, unknown>('.dot-stripe')
+          .attr('opacity', dimmed ? 0.2 : 1);
+
+        const stroke = isSelected ? '#6366f1' : isTier1 ? TIER1_STROKE : 'none';
+        const strokeW = isSelected ? 2 : isTier1 ? TIER1_STROKE_WIDTH : 0;
+        el.select('.dot-border-outline')
+          .attr('stroke', stroke)
+          .attr('stroke-width', strokeW);
+
+        el.select('.dot-selected-ring')
+          .attr('stroke', isSelected ? '#6366f1' : 'none');
+      } else {
+        // Single-color seed rect, backward circle, or forward rect
+        const isSeed = dot.type === 'seed';
+        const isHollow = dot.type === 'backward' && !dot.hasCitationData;
+        const baseOpacity = isSeed ? 1 : NEIGHBOR_OPACITY;
+        const dimmOpacity = isSeed ? 0.2 : 0.1;
+        el.attr('opacity', dimmed ? dimmOpacity : baseOpacity);
+
+        const stroke = isSelected ? '#6366f1'
+          : isTier1 ? TIER1_STROKE
+          : isHollow ? '#9ca3af' : 'none';
+        const strokeW = isSelected ? 2
+          : isTier1 ? TIER1_STROKE_WIDTH
+          : isHollow ? 1.5 : 0;
+        el.attr('stroke', stroke).attr('stroke-width', strokeW);
+      }
+    });
+
+    // --- Redraw k-hop edges ---
+    const khopSel = d3.select(khopLinesG);
+    khopSel.selectAll('*').remove();
     for (const edge of kHopResult.edges) {
       const from = dotPositions.get(edge.from);
       const to = dotPositions.get(edge.to);
       if (from && to) {
         const isDirect = edge.hop === 1;
-        lineGroup.append('line')
+        khopSel.append('line')
           .attr('x1', from.x).attr('y1', from.y)
           .attr('x2', to.x).attr('y2', to.y)
           .attr('stroke', '#6366f1')
@@ -400,126 +598,40 @@ export default function CitationTimeline({
       }
     }
 
-    // --- Draw dots ---
-    const dotGroup = g.append('g').attr('class', 'dots');
+    // --- Redraw connection rings in selection-overlay ---
+    const overlaySel = d3.select(selectionOverlayG);
+    overlaySel.selectAll('*').remove();
 
-    for (const d of dots) {
-      const pos = dotPositions.get(d.id);
-      if (!pos) continue;
+    if (selectedWorkId != null) {
+      for (const [workId, hopDist] of kHopResult.nodeHops) {
+        if (hopDist === 0) continue; // skip the selected dot itself (gets its own stroke via above)
+        const dot = dotsMap.get(workId);
+        const pos = dotPositions.get(workId);
+        if (!dot || !pos) continue;
 
-      const isSelected = d.id === selectedWorkId;
-      const hopDist = kHopResult.nodeHops.get(d.id);
-      const isConnected = hopDist != null;
-      const isIntermediate = kHopResult.intermediateNodes.has(d.id);
-      const dimmed = selectedWorkId != null && !isConnected;
-      const r = rScale(d.connectivity);
-      const isTier1 = d.venueId != null && tier1VenueIds.has(d.venueId);
+        const isIntermediate = kHopResult.intermediateNodes.has(workId);
+        const ringStroke = isIntermediate ? '#d97706' : '#6366f1';
+        const ringOpacity = hopDist === 1 ? 0.5 : 0.3;
+        const r = rScale(dot.connectivity);
 
-      // Stroke priority: selection > tier-1 > none
-      const markerStroke = isSelected ? '#6366f1' : isTier1 ? TIER1_STROKE : 'none';
-      const markerStrokeW = isSelected ? 2 : isTier1 ? TIER1_STROKE_WIDTH : 0;
-
-      if (d.type === 'seed') {
-        if (d.colors.length > 1) {
-          // Multi-color seed: square with vertical color stripes
-          const seedG = dotGroup.append('g').attr('transform', `translate(${pos.x},${pos.y})`);
-          const stripeWidth = (2 * r) / d.colors.length;
-          for (let i = 0; i < d.colors.length; i++) {
-            seedG.append('rect')
-              .attr('x', -r + i * stripeWidth).attr('y', -r)
-              .attr('width', stripeWidth).attr('height', 2 * r)
-              .attr('fill', d.colors[i])
-              .attr('opacity', dimmed ? 0.2 : 1)
-              .attr('cursor', 'pointer')
-              .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
-              .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
-              .on('mouseleave', () => hideTooltip(tooltip));
-          }
-          // Tier-1 or selection outline for multi-color seeds
-          if (markerStroke !== 'none') {
-            seedG.append('rect')
-              .attr('x', -r).attr('y', -r)
-              .attr('width', 2 * r).attr('height', 2 * r)
-              .attr('fill', 'none')
-              .attr('stroke', markerStroke)
-              .attr('stroke-width', markerStrokeW);
-          }
-          if (isSelected) {
-            seedG.append('rect')
-              .attr('x', -(r + 3)).attr('y', -(r + 3))
-              .attr('width', (r + 3) * 2).attr('height', (r + 3) * 2)
-              .attr('fill', 'none')
-              .attr('stroke', '#6366f1')
-              .attr('stroke-width', 2);
-          }
-        } else {
-          // Single-color seed: filled square
-          const color = d.colors[0] ?? '#6b7280';
-          dotGroup.append('rect')
-            .attr('x', pos.x - r).attr('y', pos.y - r)
-            .attr('width', r * 2).attr('height', r * 2)
-            .attr('fill', color)
-            .attr('opacity', dimmed ? 0.2 : 1)
-            .attr('stroke', markerStroke)
-            .attr('stroke-width', markerStrokeW)
-            .attr('cursor', 'pointer')
-            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
-            .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
-            .on('mouseleave', () => hideTooltip(tooltip));
-        }
-        // Connected highlight ring (square outline)
-        if (isConnected && !isSelected && selectedWorkId != null) {
-          dotGroup.append('rect')
+        if (dot.type === 'seed') {
+          overlaySel.append('rect')
             .attr('x', pos.x - (r + 3)).attr('y', pos.y - (r + 3))
             .attr('width', (r + 3) * 2).attr('height', (r + 3) * 2)
             .attr('fill', 'none')
-            .attr('stroke', isIntermediate ? '#d97706' : '#6366f1')
+            .attr('stroke', ringStroke)
             .attr('stroke-width', isIntermediate ? 1.5 : 1)
-            .attr('opacity', (hopDist ?? 1) === 1 ? 0.5 : 0.3);
-        }
-      } else {
-        const color = d.colors[0] ?? '#9ca3af';
-        const isForward = d.type === 'forward';
-
-        if (isForward) {
-          const size = r * 2;
-          dotGroup.append('rect')
-            .attr('x', pos.x - r)
-            .attr('y', pos.y - r)
-            .attr('width', size).attr('height', size)
-            .attr('transform', `rotate(45,${pos.x},${pos.y})`)
-            .attr('fill', color)
-            .attr('opacity', dimmed ? 0.1 : NEIGHBOR_OPACITY)
-            .attr('stroke', markerStroke)
-            .attr('stroke-width', markerStrokeW)
-            .attr('cursor', 'pointer')
-            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
-            .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
-            .on('mouseleave', () => hideTooltip(tooltip));
+            .attr('opacity', ringOpacity)
+            .attr('pointer-events', 'none');
         } else {
-          // Backward neighbor: hollow (no OA data) or solid (has OA data)
-          const isHollow = !d.hasCitationData;
-          dotGroup.append('circle')
-            .attr('cx', pos.x).attr('cy', pos.y)
-            .attr('r', r)
-            .attr('fill', isHollow ? 'none' : color)
-            .attr('opacity', dimmed ? 0.1 : NEIGHBOR_OPACITY)
-            .attr('stroke', markerStroke || (isHollow ? '#9ca3af' : 'none'))
-            .attr('stroke-width', markerStroke ? markerStrokeW : (isHollow ? 1.5 : 0))
-            .attr('cursor', 'pointer')
-            .on('click', (event: MouseEvent) => handleDotClick(event, d.id))
-            .on('mouseenter', (event: MouseEvent) => showTooltip(event, d, tooltip))
-            .on('mouseleave', () => hideTooltip(tooltip));
-        }
-
-        if (isConnected && !isSelected && selectedWorkId != null) {
-          dotGroup.append('circle')
+          overlaySel.append('circle')
             .attr('cx', pos.x).attr('cy', pos.y)
             .attr('r', r + 3)
             .attr('fill', 'none')
-            .attr('stroke', isIntermediate ? '#d97706' : '#6366f1')
+            .attr('stroke', ringStroke)
             .attr('stroke-width', isIntermediate ? 1.5 : 1)
-            .attr('opacity', (hopDist ?? 1) === 1 ? 0.5 : 0.3);
+            .attr('opacity', ringOpacity)
+            .attr('pointer-events', 'none');
         }
       }
     }
@@ -530,10 +642,10 @@ export default function CitationTimeline({
 
     if (selectedWorkId != null && selectionChanged) {
       const selPos = dotPositions.get(selectedWorkId);
-      const selDot = dots.find((d) => d.id === selectedWorkId);
+      const selDot = dotsMap.get(selectedWorkId);
       if (selPos && selDot) {
         const r = rScale(selDot.connectivity);
-        g.append('circle')
+        overlaySel.append('circle')
           .attr('cx', selPos.x)
           .attr('cy', selPos.y)
           .attr('r', r + 2)
@@ -552,11 +664,15 @@ export default function CitationTimeline({
     }
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimensions, dots, selectedWorkId, seedCitations, tier1VenueIds, kHopResult]);
+  }, [selectedWorkId, kHopResult, tier1VenueIds]);
 
   useEffect(() => {
-    render();
-  }, [render]);
+    renderData();
+  }, [renderData]);
+
+  useEffect(() => {
+    renderSelection();
+  }, [renderSelection]);
 
   return (
     <div ref={containerRef} className="w-full h-full min-h-[300px] flex flex-col">

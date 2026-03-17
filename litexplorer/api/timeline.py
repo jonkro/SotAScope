@@ -20,6 +20,7 @@ from litexplorer.schemas.timeline import (
     TimelineSeedWork,
 )
 from litexplorer.schemas.projects import TopicListOut
+from litexplorer.services.scoring import compute_relevance_score
 from litexplorer.services.venue_tiers import bulk_resolve_venue_tiers
 
 router = APIRouter(prefix="/api/projects", tags=["timeline"])
@@ -279,6 +280,7 @@ def get_project_timeline(
             direction="backward",
             connected_seed_ids=sorted(bwd_neighbor_seeds[nid]),
             has_citation_data=w.openalex_id is not None,
+            relevance_score=compute_relevance_score(w.citation_count or 0, w.publication_year),
         ))
 
     for nid in sorted(fwd_neighbor_seeds.keys()):
@@ -297,6 +299,7 @@ def get_project_timeline(
             direction="forward",
             connected_seed_ids=sorted(fwd_neighbor_seeds[nid]),
             has_citation_data=w.openalex_id is not None,
+            relevance_score=compute_relevance_score(w.citation_count or 0, w.publication_year),
         ))
 
     topic_lists_out = [
