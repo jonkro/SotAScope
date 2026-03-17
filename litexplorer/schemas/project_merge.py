@@ -59,3 +59,5 @@ class MergeDecisions(BaseModel):
     schema_decisions: dict[int, SchemaDecision] = {}
     # Keyed by venue_id; absent keys keep target's existing tier
     venue_tier_decisions: dict[int, int] = {}
+    # When set, only merge source topic lists whose ID is in this list; None = merge all
+    selected_topic_list_ids: list[int] | None = None

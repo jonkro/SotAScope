@@ -66,6 +66,11 @@ class TopicListDetail(TopicListOut):
     works: list[TopicListWorkOut] = []
 
 
+class TopicListMergeResult(BaseModel):
+    merged_count: int
+    skipped_duplicate_count: int
+
+
 # ---------------------------------------------------------------------------
 # Projects
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from litexplorer.schemas.projects import (
     ProjectVenueTierUpdate,
     TopicListCreate,
     TopicListDetail,
+    TopicListMergeResult,
     TopicListOut,
     TopicListUpdate,
     TopicListWorkAdd,
@@ -329,6 +330,54 @@ def remove_work_from_topic_list(
         raise HTTPException(status_code=404, detail="Work not in this topic list")
     db.delete(assoc)
     db.commit()
+
+
+@router.post(
+    "/{project_id}/topic-lists/{target_id}/merge/{source_id}",
+    response_model=TopicListMergeResult,
+)
+def merge_topic_lists(
+    project_id: int,
+    target_id: int,
+    source_id: int,
+    db: Session = Depends(get_db),
+):
+    """Copy all works from source topic list into target (within the same project).
+
+    Non-destructive: the source list is left intact. Works already in the target
+    are skipped. Auto-enrichment is NOT triggered — these works are already seeds.
+    """
+    if target_id == source_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a topic list into itself")
+    target_tl = _get_topic_list(db, project_id, target_id)
+    source_tl = _get_topic_list(db, project_id, source_id)
+
+    existing_in_target: set[int] = set(
+        db.scalars(
+            select(TopicListWork.work_id).where(
+                TopicListWork.topic_list_id == target_tl.id
+            )
+        ).all()
+    )
+
+    source_works = db.scalars(
+        select(TopicListWork).where(TopicListWork.topic_list_id == source_tl.id)
+    ).all()
+
+    merged_count = 0
+    skipped_duplicate_count = 0
+    for tlw in source_works:
+        if tlw.work_id in existing_in_target:
+            skipped_duplicate_count += 1
+        else:
+            db.add(TopicListWork(topic_list_id=target_tl.id, work_id=tlw.work_id))
+            merged_count += 1
+
+    db.commit()
+    return TopicListMergeResult(
+        merged_count=merged_count,
+        skipped_duplicate_count=skipped_duplicate_count,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +738,7 @@ def export_project_bibtex(
 @router.get("/{project_id}/export")
 def export_project_zip(
     project_id: int,
+    include_files: bool = Query(False, description="When true, include PDFs and extracted text in the archive"),
     db: Session = Depends(get_db),
 ) -> Response:
     """Export the full project as a .zip archive.
@@ -698,6 +748,7 @@ def export_project_zip(
       extraction schemas + results, venue overrides, chat sessions, work notes,
       citation edges between seeds).
     - ``seeds.bib``: BibTeX for all seed works.
+    - ``files/{work_id}/``: PDFs and extracted text (only when ``include_files=true``).
 
     Returns an ``application/zip`` response with ``Content-Disposition: attachment``.
     """
@@ -707,7 +758,7 @@ def export_project_zip(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    buf = export_project(project_id, db)
+    buf = export_project(project_id, db, include_files=include_files)
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in project.name)
     filename = f"{safe_name}.zip" if safe_name else "project.zip"
 

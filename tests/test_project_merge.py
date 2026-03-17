@@ -787,3 +787,233 @@ class TestMergePreviewAPI:
 
         resp = client.get(f"/api/projects/99999/merge-preview/{source.id}")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Selective topic-list merge tests (Part A)
+# ---------------------------------------------------------------------------
+
+class TestSelectiveTopicListMerge:
+
+    def test_selected_lists_are_copied(self, db_session):
+        """Only the topic lists whose IDs are in selected_topic_list_ids get merged."""
+        target = _project(db_session, "Target")
+        source = _project(db_session, "Source")
+        w1 = _work(db_session, "Paper 1")
+        w2 = _work(db_session, "Paper 2")
+        w3 = _work(db_session, "Paper 3")
+        tl1 = _topic_list(db_session, source, "List A")
+        tl2 = _topic_list(db_session, source, "List B")
+        tl3 = _topic_list(db_session, source, "List C")
+        _seed(db_session, tl1, w1)
+        _seed(db_session, tl2, w2)
+        _seed(db_session, tl3, w3)
+        db_session.commit()
+
+        # Select only List A and List C (skip List B)
+        decisions = MergeDecisions(selected_topic_list_ids=[tl1.id, tl3.id])
+        execute_merge(target.id, source.id, decisions, db_session)
+
+        db_session.expire_all()
+        target_lists = db_session.scalars(
+            select(TopicList).where(TopicList.project_id == target.id)
+        ).all()
+        target_names = {tl.name for tl in target_lists}
+        assert "List A" in target_names
+        assert "List C" in target_names
+        assert "List B" not in target_names
+
+    def test_unselected_list_not_copied(self, db_session):
+        """A topic list excluded from selection is not copied to the target."""
+        target = _project(db_session, "Target")
+        source = _project(db_session, "Source")
+        tl1 = _topic_list(db_session, source, "Keep")
+        tl2 = _topic_list(db_session, source, "Skip")
+        db_session.commit()
+
+        decisions = MergeDecisions(selected_topic_list_ids=[tl1.id])
+        execute_merge(target.id, source.id, decisions, db_session)
+
+        db_session.expire_all()
+        skipped = db_session.scalars(
+            select(TopicList).where(
+                TopicList.project_id == target.id,
+                TopicList.name == "Skip",
+            )
+        ).one_or_none()
+        assert skipped is None
+
+    def test_none_selected_topic_list_ids_merges_all(self, db_session):
+        """When selected_topic_list_ids is None, all topic lists are merged (default behavior)."""
+        target = _project(db_session, "Target")
+        source = _project(db_session, "Source")
+        _topic_list(db_session, source, "List A")
+        _topic_list(db_session, source, "List B")
+        _topic_list(db_session, source, "List C")
+        db_session.commit()
+
+        execute_merge(target.id, source.id, MergeDecisions(), db_session)
+
+        db_session.expire_all()
+        target_names = {
+            tl.name
+            for tl in db_session.scalars(
+                select(TopicList).where(TopicList.project_id == target.id)
+            ).all()
+        }
+        assert target_names == {"List A", "List B", "List C"}
+
+    def test_selective_merge_via_api(self, client, db_session):
+        """API accepts selected_topic_list_ids and merges only selected lists."""
+        target = _project(db_session, "Target")
+        source = _project(db_session, "Source")
+        tl1 = _topic_list(db_session, source, "Wanted")
+        _topic_list(db_session, source, "Unwanted")
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/projects/{target.id}/merge/{source.id}",
+            json={"selected_topic_list_ids": [tl1.id]},
+        )
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        target_names = {
+            tl.name
+            for tl in db_session.scalars(
+                select(TopicList).where(TopicList.project_id == target.id)
+            ).all()
+        }
+        assert "Wanted" in target_names
+        assert "Unwanted" not in target_names
+
+
+# ---------------------------------------------------------------------------
+# Intra-project topic-list merge endpoint tests (Part B)
+# ---------------------------------------------------------------------------
+
+class TestMergeTopicListsEndpoint:
+
+    def test_works_copied_to_target_list(self, client, db_session):
+        """Works from the source list are added to the target list."""
+        project = _project(db_session)
+        w1 = _work(db_session, "Paper in source only")
+        tl_target = _topic_list(db_session, project, "Target List")
+        tl_source = _topic_list(db_session, project, "Source List")
+        _seed(db_session, tl_source, w1)
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/projects/{project.id}/topic-lists/{tl_target.id}/merge/{tl_source.id}"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["merged_count"] == 1
+        assert data["skipped_duplicate_count"] == 0
+
+        db_session.expire_all()
+        tlw = db_session.scalars(
+            select(TopicListWork).where(
+                TopicListWork.topic_list_id == tl_target.id,
+                TopicListWork.work_id == w1.id,
+            )
+        ).one_or_none()
+        assert tlw is not None
+
+    def test_source_list_is_unchanged(self, client, db_session):
+        """Source topic list and its memberships are not modified."""
+        project = _project(db_session)
+        w1 = _work(db_session, "Paper")
+        tl_target = _topic_list(db_session, project, "Target")
+        tl_source = _topic_list(db_session, project, "Source")
+        _seed(db_session, tl_source, w1)
+        db_session.commit()
+
+        client.post(
+            f"/api/projects/{project.id}/topic-lists/{tl_target.id}/merge/{tl_source.id}"
+        )
+
+        db_session.expire_all()
+        assert db_session.get(TopicList, tl_source.id) is not None
+        source_works = db_session.scalars(
+            select(TopicListWork).where(TopicListWork.topic_list_id == tl_source.id)
+        ).all()
+        assert len(source_works) == 1
+
+    def test_duplicate_works_skipped(self, client, db_session):
+        """Works already in the target list count as skipped, not added twice."""
+        project = _project(db_session)
+        w_shared = _work(db_session, "Shared")
+        w_unique = _work(db_session, "Unique")
+        tl_target = _topic_list(db_session, project, "Target")
+        tl_source = _topic_list(db_session, project, "Source")
+        _seed(db_session, tl_target, w_shared)
+        _seed(db_session, tl_source, w_shared)
+        _seed(db_session, tl_source, w_unique)
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/projects/{project.id}/topic-lists/{tl_target.id}/merge/{tl_source.id}"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["merged_count"] == 1
+        assert data["skipped_duplicate_count"] == 1
+
+        db_session.expire_all()
+        count = len(
+            db_session.scalars(
+                select(TopicListWork).where(
+                    TopicListWork.topic_list_id == tl_target.id,
+                    TopicListWork.work_id == w_shared.id,
+                )
+            ).all()
+        )
+        assert count == 1  # no duplicate
+
+    def test_merge_self_returns_400(self, client, db_session):
+        project = _project(db_session)
+        tl = _topic_list(db_session, project, "List")
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/projects/{project.id}/topic-lists/{tl.id}/merge/{tl.id}"
+        )
+        assert resp.status_code == 400
+
+    def test_source_wrong_project_returns_404(self, client, db_session):
+        """Source topic list must belong to the same project."""
+        project_a = _project(db_session, "A")
+        project_b = _project(db_session, "B")
+        tl_target = _topic_list(db_session, project_a, "Target")
+        tl_other = _topic_list(db_session, project_b, "Other")
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/projects/{project_a.id}/topic-lists/{tl_target.id}/merge/{tl_other.id}"
+        )
+        assert resp.status_code == 404
+
+    def test_nonexistent_target_returns_404(self, client, db_session):
+        project = _project(db_session)
+        tl_source = _topic_list(db_session, project, "Source")
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/projects/{project.id}/topic-lists/99999/merge/{tl_source.id}"
+        )
+        assert resp.status_code == 404
+
+    def test_empty_source_list_returns_zero_counts(self, client, db_session):
+        project = _project(db_session)
+        tl_target = _topic_list(db_session, project, "Target")
+        tl_source = _topic_list(db_session, project, "Empty Source")
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/projects/{project.id}/topic-lists/{tl_target.id}/merge/{tl_source.id}"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["merged_count"] == 0
+        assert data["skipped_duplicate_count"] == 0

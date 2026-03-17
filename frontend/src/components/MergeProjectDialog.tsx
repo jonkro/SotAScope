@@ -22,6 +22,8 @@ export function MergeProjectDialog({ targetProjectId, targetProjectName, onClose
   const [schemaDecisions, setSchemaDecisions] = useState<Record<number, SchemaDecision>>({});
   // Venue tier decisions: keyed by venue_id
   const [venueTierDecisions, setVenueTierDecisions] = useState<Record<number, number>>({});
+  // Topic list selection: IDs of source lists to include (all = checked by default)
+  const [selectedTopicListIds, setSelectedTopicListIds] = useState<Set<number>>(new Set());
 
   const sourceProjects = projects?.filter((p) => p.id !== targetProjectId) ?? [];
   const sourceProject = sourceProjects.find((p) => p.id === sourceId);
@@ -48,6 +50,11 @@ export function MergeProjectDialog({ targetProjectId, targetProjectName, onClose
       initialVenue[conflict.venue_id] = conflict.target_tier;
     }
     setVenueTierDecisions(initialVenue);
+
+    // Default: all topic lists selected
+    setSelectedTopicListIds(
+      new Set(preview.data.topic_list_merges.map((tl) => tl.source_topic_list_id))
+    );
   }, [preview.data, sourceProject]);
 
   function handleBulkBestTier() {
@@ -83,9 +90,17 @@ export function MergeProjectDialog({ targetProjectId, targetProjectName, onClose
       }
     }
 
+    // If all lists are checked (or no lists exist), send null (merge all); otherwise send the selection
+    const allTopicListCount = preview.data?.topic_list_merges.length ?? 0;
+    const selectedTopicListIdsArray =
+      selectedTopicListIds.size === allTopicListCount
+        ? null
+        : Array.from(selectedTopicListIds);
+
     const decisions: MergeDecisions = {
       schema_decisions: filteredSchema,
       venue_tier_decisions: filteredVenue,
+      selected_topic_list_ids: selectedTopicListIdsArray,
     };
 
     merge.mutate(
@@ -161,23 +176,66 @@ export function MergeProjectDialog({ targetProjectId, targetProjectName, onClose
                 <div className="space-y-5">
                   {/* Topic lists */}
                   <section>
-                    <h3 className="text-sm font-semibold text-gray-800 mb-2">Topic lists</h3>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-sm font-semibold text-gray-800">Topic lists</h3>
+                      {preview.data.topic_list_merges.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const allIds = preview.data!.topic_list_merges.map(
+                              (tl) => tl.source_topic_list_id
+                            );
+                            if (selectedTopicListIds.size === allIds.length) {
+                              setSelectedTopicListIds(new Set());
+                            } else {
+                              setSelectedTopicListIds(new Set(allIds));
+                            }
+                          }}
+                          className="text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          {selectedTopicListIds.size === preview.data.topic_list_merges.length
+                            ? 'Deselect all'
+                            : 'Select all'}
+                        </button>
+                      )}
+                    </div>
                     {preview.data.topic_list_merges.length === 0 ? (
                       <p className="text-xs text-gray-500">No topic lists in source project.</p>
                     ) : (
-                      <ul className="space-y-1 text-sm text-gray-700">
+                      <ul className="space-y-1.5 text-sm text-gray-700">
                         {preview.data.topic_list_merges.map((tl) => (
                           <li key={tl.source_topic_list_id} className="flex items-center gap-2">
-                            <span className="font-medium">{tl.source_topic_list_name}</span>
-                            {tl.action === 'merge' ? (
-                              <span className="text-xs text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                                merged into existing list
-                              </span>
-                            ) : (
-                              <span className="text-xs text-green-600 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded">
-                                copied as-is
-                              </span>
-                            )}
+                            <input
+                              type="checkbox"
+                              id={`tl-${tl.source_topic_list_id}`}
+                              checked={selectedTopicListIds.has(tl.source_topic_list_id)}
+                              onChange={(e) => {
+                                setSelectedTopicListIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) {
+                                    next.add(tl.source_topic_list_id);
+                                  } else {
+                                    next.delete(tl.source_topic_list_id);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <label
+                              htmlFor={`tl-${tl.source_topic_list_id}`}
+                              className="flex items-center gap-2 cursor-pointer"
+                            >
+                              <span className="font-medium">{tl.source_topic_list_name}</span>
+                              {tl.action === 'merge' ? (
+                                <span className="text-xs text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                                  merged into existing list
+                                </span>
+                              ) : (
+                                <span className="text-xs text-green-600 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded">
+                                  copied as-is
+                                </span>
+                              )}
+                            </label>
                           </li>
                         ))}
                       </ul>

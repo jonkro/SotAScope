@@ -266,7 +266,15 @@ def execute_merge(
     ).all()
     target_list_by_name = {tl.name: tl for tl in target_lists}
 
+    selected_ids: set[int] | None = (
+        set(decisions.selected_topic_list_ids)
+        if decisions.selected_topic_list_ids is not None
+        else None
+    )
+
     for sl in source_lists:
+        if selected_ids is not None and sl.id not in selected_ids:
+            continue
         source_works = db.scalars(
             select(TopicListWork).where(TopicListWork.topic_list_id == sl.id)
         ).all()

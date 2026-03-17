@@ -556,7 +556,7 @@ export default function ProjectDetailPage() {
           <DropdownMenu
             label="Export"
             items={[
-              { label: 'Export project (.zip)', onClick: () => setShowProjectExport(true) },
+              { label: 'Save project (.zip)', onClick: () => setShowProjectExport(true) },
               { label: 'Export BibTeX', onClick: () => setShowBibTeXExport(true) },
             ]}
           />
@@ -704,6 +704,7 @@ export default function ProjectDetailPage() {
                   <TopicListCard
                     topicList={tl}
                     projectId={projectId}
+                    allTopicLists={project.topic_lists}
                     onEdit={() => setEditList({ id: tl.id, name: tl.name, color: tl.color })}
                     onDelete={() => setDeleteListId(tl.id)}
                     onSelectWork={(wid) => setSelectedWorkId(wid)}

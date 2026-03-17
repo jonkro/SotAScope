@@ -429,6 +429,13 @@ export function mergeProject(targetId: number, sourceId: number, decisions: impo
   });
 }
 
+export function mergeTopicLists(projectId: number, targetId: number, sourceId: number) {
+  return apiFetch<import('./types').TopicListMergeResult>(
+    `/api/projects/${projectId}/topic-lists/${targetId}/merge/${sourceId}`,
+    { method: 'POST' },
+  );
+}
+
 // ---- Timeline ----
 
 export function fetchTimeline(projectId: number) {

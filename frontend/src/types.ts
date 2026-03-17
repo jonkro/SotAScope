@@ -236,6 +236,12 @@ export interface SchemaDecision {
 export interface MergeDecisions {
   schema_decisions: Record<number, SchemaDecision>;
   venue_tier_decisions: Record<number, number>;
+  selected_topic_list_ids?: number[] | null;
+}
+
+export interface TopicListMergeResult {
+  merged_count: number;
+  skipped_duplicate_count: number;
 }
 
 // ---- Project Import ----
