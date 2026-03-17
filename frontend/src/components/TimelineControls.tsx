@@ -149,7 +149,7 @@ export default function TimelineControls({
       {/* Stats */}
       <span className="text-gray-400 ml-auto">
         {hiddenByRelevance > 0
-          ? `Showing top ${filteredNeighbors.toLocaleString()} of ${(filteredNeighbors + hiddenByRelevance).toLocaleString()} candidates (by relevance)`
+          ? `Showing top ${filteredNeighbors.toLocaleString()} of ${totalNeighbors.toLocaleString()} candidates (by relevance)`
           : `Showing ${filteredNeighbors} of ${totalNeighbors} candidates`}
       </span>
     </div>
