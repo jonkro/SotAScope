@@ -354,14 +354,11 @@ export default function WorkDetailPanel({
   const [bwdPage, setBwdPage] = useState(0);
   const PAGE_SIZE = 50;
 
-  // Reset pages when work changes
-  const prevWorkIdRef = useRef<number | null>(null);
-  if (prevWorkIdRef.current !== workId) {
-    prevWorkIdRef.current = workId;
-    // Use a layout-equivalent reset (won't trigger extra renders since it's synchronous)
-    if (fwdPage !== 0) setFwdPage(0);
-    if (bwdPage !== 0) setBwdPage(0);
-  }
+  // Reset pages when selected work changes
+  useEffect(() => {
+    setFwdPage(0);
+    setBwdPage(0);
+  }, [workId]);
 
   const fwd = useForwardCitations(workId, { offset: fwdPage * PAGE_SIZE, limit: PAGE_SIZE });
   const bwd = useBackwardCitations(workId, { offset: bwdPage * PAGE_SIZE, limit: PAGE_SIZE });
