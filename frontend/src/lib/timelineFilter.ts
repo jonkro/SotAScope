@@ -3,6 +3,7 @@ import type { TimelineNeighborWork, CitationsByYearEntry } from '../types';
 export interface FilterParams {
   showBackward: boolean;
   showForward: boolean;
+  startYear?: number | null;
 }
 
 export interface VisibilityThresholdResult {
@@ -69,6 +70,9 @@ export function filterNeighbors(
 
     // Must have a year to display on timeline
     if (n.publication_year == null) return false;
+
+    // "From" year slider
+    if (params.startYear != null && n.publication_year < params.startYear) return false;
 
     // Ignored venues are always excluded
     if (n.venue_id != null && ignoredVenueIds.has(n.venue_id)) return false;

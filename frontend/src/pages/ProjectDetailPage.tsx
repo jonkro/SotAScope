@@ -389,6 +389,7 @@ export default function ProjectDetailPage() {
     let result = filterNeighbors(timeline.neighbors, ignoredSet, {
       showBackward,
       showForward,
+      startYear,
     });
     if (candidateFilter === 'top-venues') {
       result = result.filter((n) => n.venue_id != null && tier1Set.has(n.venue_id));
@@ -397,7 +398,7 @@ export default function ProjectDetailPage() {
       result = result.filter((n) => n.connected_seed_ids.some((sid) => activeSeedIds.has(sid)));
     }
     return result;
-  }, [timeline, tier1Set, ignoredSet, showBackward, showForward, candidateFilter, activeSeedIds, inactiveTopicListIds]);
+  }, [timeline, tier1Set, ignoredSet, showBackward, showForward, startYear, candidateFilter, activeSeedIds, inactiveTopicListIds]);
 
   const DEFAULT_MAX_VISIBLE = 3000;
   const visibilityResult = useMemo(
