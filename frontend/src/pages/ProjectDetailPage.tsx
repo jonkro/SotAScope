@@ -576,7 +576,7 @@ export default function ProjectDetailPage() {
         {/* Tab switcher */}
         <div className="flex border-b border-gray-200 px-6 overflow-x-auto">
           <button
-            onClick={() => setActiveTab('timeline')}
+            onClick={() => { setActiveTab('timeline'); setSelectedWorkId(null); }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'timeline'
                 ? 'border-blue-600 text-blue-600'
@@ -586,7 +586,7 @@ export default function ProjectDetailPage() {
             Timeline
           </button>
           <button
-            onClick={() => setActiveTab('lists')}
+            onClick={() => { setActiveTab('lists'); setSelectedWorkId(null); }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'lists'
                 ? 'border-blue-600 text-blue-600'
@@ -596,7 +596,7 @@ export default function ProjectDetailPage() {
             Topic Lists
           </button>
           <button
-            onClick={() => setActiveTab('notes')}
+            onClick={() => { setActiveTab('notes'); setSelectedWorkId(null); }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'notes'
                 ? 'border-blue-600 text-blue-600'
@@ -609,7 +609,7 @@ export default function ProjectDetailPage() {
             )}
           </button>
           <button
-            onClick={() => setActiveTab('venue-tiers')}
+            onClick={() => { setActiveTab('venue-tiers'); setSelectedWorkId(null); }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'venue-tiers'
                 ? 'border-blue-600 text-blue-600'
@@ -626,7 +626,7 @@ export default function ProjectDetailPage() {
             return (
               <button
                 key={tabId}
-                onClick={() => setActiveTab(tabId)}
+                onClick={() => { setActiveTab(tabId); setSelectedWorkId(null); }}
                 className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
                   activeTab === tabId
                     ? 'border-blue-600 text-blue-600'

@@ -64,6 +64,7 @@ class ExtractionSchemaOut(BaseModel):
     title: str
     description: Optional[str]
     is_promoted: bool = False
+    selected_work_ids: Optional[list[int]] = None
     created_at: datetime
     updated_at: datetime
     columns: list[ExtractionColumnOut] = []

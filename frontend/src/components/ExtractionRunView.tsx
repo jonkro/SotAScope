@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import ConfirmDialog from './ConfirmDialog';
 import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from './WorkDetailPanel';
@@ -13,6 +13,7 @@ import {
   useEditExtractionNote,
   useManualFillExtractionCell,
   useDismissExtractionProposal,
+  useSaveExtractionSelection,
 } from '../hooks/useExtraction';
 import { useTimeline } from '../hooks/useTimeline';
 import { getExtractionPromptPreview } from '../api';
@@ -300,9 +301,11 @@ export interface ExtractionRunViewProps {
   readOnlyPaperSelection?: boolean;
 }
 
-export default function ExtractionRunView({ schema, readOnlyPaperSelection = false }: ExtractionRunViewProps) {
+export default function ExtractionRunView({
+  schema,
+  readOnlyPaperSelection = false,
+}: ExtractionRunViewProps) {
   const projectId = schema.project_id;
-  const lsKey = `litexplorer:project:${projectId}:schema:${schema.id}:selection`;
 
   const { data: timeline, isLoading: timelineLoading } = useTimeline(projectId ?? 0);
   const seeds = useMemo(
@@ -352,32 +355,32 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
   // Work selection state
   const [searchQ, setSearchQ] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [isDirty, setIsDirty] = useState(false);
   const initializedRef = useRef(false);
 
-  // Restore selection from localStorage, or default to seeds-with-text on first visit
+  // Initialize selection from DB (schema.selected_work_ids) or default to seeds-with-text
   useEffect(() => {
     if (!initializedRef.current && seedPdfsLoaded && seeds.length > 0) {
       const allSeedIdSet = new Set(seeds.map((s) => s.id));
-      const stored = localStorage.getItem(lsKey);
-      if (stored) {
-        try {
-          const storedIds = JSON.parse(stored) as number[];
-          setSelectedIds(new Set(storedIds.filter((id) => allSeedIdSet.has(id))));
-        } catch {
-          setSelectedIds(new Set(seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
-        }
+      if (schema.selected_work_ids !== null && schema.selected_work_ids !== undefined) {
+        // Restore from DB, filtering to valid seed IDs
+        setSelectedIds(new Set(schema.selected_work_ids.filter((id) => allSeedIdSet.has(id))));
       } else {
+        // No saved selection — default to seeds with extracted text
         setSelectedIds(new Set(seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
       }
+      setIsDirty(false);
       initializedRef.current = true;
     }
-  }, [seedPdfsLoaded, seeds, seedsWithText, lsKey]);
+  }, [seedPdfsLoaded, seeds, seedsWithText, schema.selected_work_ids]);
 
-  // Persist selection to localStorage after initialization
-  useEffect(() => {
-    if (!initializedRef.current) return;
-    localStorage.setItem(lsKey, JSON.stringify(Array.from(selectedIds)));
-  }, [selectedIds, lsKey]);
+  // Save selection mutation
+  const saveSelection = useSaveExtractionSelection(schema.id);
+
+  const handleSaveSelection = useCallback(async () => {
+    await saveSelection.mutateAsync(Array.from(selectedIds));
+    setIsDirty(false);
+  }, [saveSelection, selectedIds]);
 
   const filteredSeeds = useMemo(() => {
     if (!searchQ.trim()) return seeds;
@@ -388,7 +391,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
   // Sort: selected float to top, then unselected-with-text, then no-text
   const sortedFilteredSeeds = useMemo(() => {
     if (readOnlyPaperSelection) {
-      // In read-only mode, show only the papers the user selected (persisted in localStorage)
+      // In read-only mode, show only the papers the user selected (saved in DB)
       return filteredSeeds.filter((s) => selectedIds.has(s.id));
     }
     const selected = filteredSeeds.filter((s) => selectedIds.has(s.id));
@@ -521,6 +524,10 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
     [schema.columns],
   );
 
+  const markDirty = useCallback(() => {
+    if (initializedRef.current) setIsDirty(true);
+  }, []);
+
   const toggleId = (id: number) => {
     if (!seedsWithText.has(id)) return; // no text — not selectable
     setSelectedIds((prev) => {
@@ -529,11 +536,17 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
       else next.add(id);
       return next;
     });
+    markDirty();
   };
 
-  const selectAll = () =>
+  const selectAll = () => {
     setSelectedIds(new Set(filteredSeeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
-  const deselectAll = () => setSelectedIds(new Set());
+    markDirty();
+  };
+  const deselectAll = () => {
+    setSelectedIds(new Set());
+    markDirty();
+  };
 
   // Topic list bulk-select: indeterminate state via refs
   const tlCheckboxRefs = useRef<Map<number, HTMLInputElement>>(new Map());
@@ -562,6 +575,7 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
       }
       return next;
     });
+    markDirty();
   };
 
   // --- Render ---
@@ -760,9 +774,18 @@ export default function ExtractionRunView({ schema, readOnlyPaperSelection = fal
           <button
             onClick={handleExtractClick}
             disabled={selectedCount === 0 || isExtracting}
-            className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isExtracting ? 'Extracting…' : `Extract ${selectedCount > 0 ? selectedCount : ''} paper${selectedCount !== 1 ? 's' : ''} →`}
+          </button>
+          <div className="w-px h-5 bg-gray-200 shrink-0" />
+          <button
+            onClick={handleSaveSelection}
+            disabled={!isDirty || saveSelection.isPending}
+            className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Save paper selection for all users"
+          >
+            {saveSelection.isPending ? 'Saving…' : isDirty ? 'Save •' : 'Save'}
           </button>
         </div>
       )}

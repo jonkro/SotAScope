@@ -173,6 +173,24 @@ def delete_schema(schema_id: int, db: Session = Depends(get_db)):
     db.commit()
 
 
+class SchemaSelectionRequest(BaseModel):
+    work_ids: list[int]
+
+
+@router.put("/schemas/{schema_id}/selection", response_model=ExtractionSchemaOut)
+def save_schema_selection(
+    schema_id: int, body: SchemaSelectionRequest, db: Session = Depends(get_db)
+):
+    """Persist the paper selection for an extraction schema."""
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+    schema.selected_work_ids = body.work_ids
+    db.commit()
+    db.refresh(schema)
+    return ExtractionSchemaOut.model_validate(schema)
+
+
 # ---------------------------------------------------------------------------
 # Column CRUD
 # ---------------------------------------------------------------------------

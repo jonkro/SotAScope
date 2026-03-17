@@ -17,6 +17,7 @@ import {
   updateWorkNote,
   manualFillExtractionCell,
   dismissExtractionProposal,
+  saveExtractionSelection,
 } from '../api';
 
 export function useExtractionSchemas(projectId?: number) {
@@ -273,6 +274,17 @@ export function useDismissExtractionProposal(schemaId: number) {
       dismissExtractionProposal(schemaId, columnId, workId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['extraction', 'results', schemaId] });
+    },
+  });
+}
+
+export function useSaveExtractionSelection(schemaId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (workIds: number[]) => saveExtractionSelection(schemaId, workIds),
+    onSuccess: (schema) => {
+      qc.setQueryData(['extraction', 'schema', schema.id], schema);
+      qc.invalidateQueries({ queryKey: ['extraction', 'schemas'] });
     },
   });
 }

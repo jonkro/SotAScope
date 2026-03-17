@@ -238,11 +238,21 @@ def export_project(
                 }
             )
 
+        # Convert selected_work_ids DB IDs → stable work refs for portability
+        selected_work_refs: list[str] | None = None
+        if schema.selected_work_ids is not None:
+            selected_work_refs = []
+            for wid in schema.selected_work_ids:
+                w = seed_work_map.get(wid)
+                if w is not None:
+                    selected_work_refs.append(_work_ref(w))
+
         schemas_manifest.append(
             {
                 "title": schema.title,
                 "description": schema.description,
                 "is_promoted": schema.is_promoted,
+                "selected_work_refs": selected_work_refs,
                 "columns": [
                     {
                         "name": c.name,

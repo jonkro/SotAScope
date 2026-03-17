@@ -25,6 +25,7 @@ class ExtractionSchema(Base):
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_promoted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    selected_work_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

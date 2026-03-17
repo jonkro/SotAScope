@@ -222,6 +222,7 @@ function SchemaEditor({ schemaId, projectId, onBack, initialTab }: SchemaEditorP
 
   const [activeTab, setActiveTab] = useState<EditorTab>(initialTab ?? 'schema');
 
+
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [descDraft, setDescDraft] = useState<string | null>(null);
   const [metaSaved, setMetaSaved] = useState(false);
@@ -456,7 +457,10 @@ function SchemaEditor({ schemaId, projectId, onBack, initialTab }: SchemaEditorP
           </div>
         </div>
       ) : (
-        <ExtractionRunView key={schema.id} schema={schema} />
+        <ExtractionRunView
+          key={schema.id}
+          schema={schema}
+        />
       )}
 
       {/* Column form modal */}

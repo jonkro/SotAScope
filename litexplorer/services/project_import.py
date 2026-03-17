@@ -459,11 +459,22 @@ def _create_project_content(
     # ---- f. Extraction schemas + columns  ----
     # ---- g. Extraction results as WorkNotes ----
     for schema_data in manifest.get("extraction_schemas", []):
+        # Resolve selected_work_refs → local work IDs (if present in manifest)
+        selected_refs = schema_data.get("selected_work_refs")
+        resolved_selected_ids: list[int] | None = None
+        if selected_refs is not None:
+            resolved_selected_ids = []
+            for ref in selected_refs:
+                wid = state.work_ref_to_id.get(ref)
+                if wid is not None:
+                    resolved_selected_ids.append(wid)
+
         schema = ExtractionSchema(
             project_id=project_id,
             title=schema_data["title"],
             description=schema_data.get("description"),
             is_promoted=schema_data.get("is_promoted", False),
+            selected_work_ids=resolved_selected_ids,
         )
         db.add(schema)
         db.flush()

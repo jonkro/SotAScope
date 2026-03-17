@@ -537,6 +537,7 @@ export interface ExtractionSchema {
   title: string;
   description: string | null;
   is_promoted: boolean;
+  selected_work_ids: number[] | null;
   created_at: string;
   updated_at: string;
   columns: ExtractionColumn[];

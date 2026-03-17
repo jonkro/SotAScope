@@ -693,6 +693,13 @@ export function promoteExtractionSchema(id: number) {
   return apiFetch<ExtractionSchema>(`/api/extraction/schemas/${id}/promote`, { method: 'PATCH' });
 }
 
+export function saveExtractionSelection(schemaId: number, workIds: number[]) {
+  return apiFetch<ExtractionSchema>(`/api/extraction/schemas/${schemaId}/selection`, {
+    method: 'PUT',
+    body: JSON.stringify({ work_ids: workIds }),
+  });
+}
+
 export function createExtractionColumn(
   schemaId: number,
   data: {

@@ -1291,3 +1291,62 @@ def test_batch_extraction_with_re_evaluate_edited_via_api(
     data = resp.json()
     assert "job_id" in data
     assert "message" in data
+
+
+# ---------------------------------------------------------------------------
+# Selection persistence tests
+# ---------------------------------------------------------------------------
+
+
+def test_save_schema_selection(client, schema):
+    """PUT /schemas/{id}/selection persists work_ids on the schema."""
+    resp = client.put(
+        f"/api/extraction/schemas/{schema.id}/selection",
+        json={"work_ids": [10, 20, 30]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["selected_work_ids"] == [10, 20, 30]
+
+    # Verify it's persisted by fetching the schema
+    fetch_resp = client.get(f"/api/extraction/schemas/{schema.id}")
+    assert fetch_resp.status_code == 200
+    assert fetch_resp.json()["selected_work_ids"] == [10, 20, 30]
+
+
+def test_save_schema_selection_empty(client, schema):
+    """PUT with an empty list clears the selection."""
+    # First set a non-empty selection
+    client.put(
+        f"/api/extraction/schemas/{schema.id}/selection",
+        json={"work_ids": [5, 6]},
+    )
+    # Then clear it
+    resp = client.put(
+        f"/api/extraction/schemas/{schema.id}/selection",
+        json={"work_ids": []},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["selected_work_ids"] == []
+
+    fetch_resp = client.get(f"/api/extraction/schemas/{schema.id}")
+    assert fetch_resp.json()["selected_work_ids"] == []
+
+
+def test_schema_selected_work_ids_default_null(client, project):
+    """Newly created schemas have selected_work_ids = null."""
+    resp = client.post(
+        "/api/extraction/schemas",
+        json={"title": "New Schema", "project_id": project.id},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["selected_work_ids"] is None
+
+
+def test_save_schema_selection_not_found(client):
+    """PUT on a non-existent schema returns 404."""
+    resp = client.put(
+        "/api/extraction/schemas/9999/selection",
+        json={"work_ids": [1, 2]},
+    )
+    assert resp.status_code == 404
