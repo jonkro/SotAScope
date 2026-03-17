@@ -78,6 +78,9 @@ export default function CitationTimeline({
   const selectionOverlayGRef = useRef<SVGGElement | null>(null);
   // Track previous selectedWorkId to fire ripple only when selection changes
   const prevSelectedWorkIdRef = useRef<number | null>(null);
+  // Ref to latest renderSelection — lets renderData call it after a full SVG rebuild
+  // without creating a circular useCallback dependency.
+  const renderSelectionRef = useRef<() => void>(() => {});
 
   // Memoize dots: combines color lookup, seed connectivity, and dot building
   const dots = useMemo(() => {
@@ -513,6 +516,12 @@ export default function CitationTimeline({
     // Stable layer for selection overlays (connection rings, ripple) populated by renderSelection
     selectionOverlayGRef.current = g.append('g').attr('class', 'selection-overlay').node();
 
+    // Re-apply selection state immediately after a full SVG rebuild (e.g. triggered by resize
+    // when WorkDetailPanel mounts). Without this, edges drawn by renderSelection are wiped
+    // by svg.selectAll('*').remove() above and renderSelection's own effect doesn't re-fire
+    // because its deps (selectedWorkId / kHopResult / tier1VenueIds) didn't change.
+    renderSelectionRef.current();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dimensions, dots, seedCitations]);
 
@@ -665,6 +674,11 @@ export default function CitationTimeline({
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWorkId, kHopResult, tier1VenueIds]);
+
+  // Keep renderSelectionRef current. Defined before renderData's effect so React runs it
+  // first within the same commit — renderData() can then call renderSelectionRef.current()
+  // with the latest closure.
+  useEffect(() => { renderSelectionRef.current = renderSelection; });
 
   useEffect(() => {
     renderData();
