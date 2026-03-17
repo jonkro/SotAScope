@@ -5,15 +5,20 @@ The archive contains:
                    extraction schemas + results, venue overrides, chat sessions,
                    project-scoped work notes, citation edges between seeds).
   seeds.bib      — BibTeX entries for all seed works.
+  files/{id}/    — PDFs and extracted .txt files (only when include_files=True).
 """
 
 from __future__ import annotations
 
 import io
 import json
+import logging
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -29,6 +34,7 @@ from litexplorer.models.library import (
     WorkAuthor,
     WorkLocation,
     WorkNote,
+    WorkPDF,
 )
 from litexplorer.models.project import (
     Project,
@@ -72,13 +78,21 @@ def _venue_preferred_name(venue: Venue) -> str:
 # ---------------------------------------------------------------------------
 
 
-def export_project(project_id: int, db: Session) -> io.BytesIO:
+def export_project(
+    project_id: int,
+    db: Session,
+    include_files: bool = False,
+) -> io.BytesIO:
     """Build a .zip export archive for the given project.
 
     Args:
         project_id: DB primary key of the project to export.
         db: SQLAlchemy session.  All relationships are loaded eagerly inside
             this function — the caller does not need to pre-load anything.
+        include_files: When True, include PDFs and extracted text files in the
+            archive under ``files/{work_id}/``.  The entire archive is built
+            in memory (io.BytesIO), so for very large projects with many PDFs
+            a streaming approach would be needed instead.
 
     Returns:
         A :class:`io.BytesIO` buffer positioned at offset 0, containing the
@@ -400,7 +414,64 @@ def export_project(project_id: int, db: Session) -> io.BytesIO:
         )
 
     # ------------------------------------------------------------------
-    # 9. Assemble manifest
+    # 9. Collect PDF / text files (only when include_files=True)
+    # ------------------------------------------------------------------
+    # files_to_zip: list of (disk_path, zip_path) pairs to add to the archive.
+    # files_manifest: list of manifest entries referencing each work's files.
+    files_to_zip: list[tuple[Path, str]] = []
+    files_manifest: list[dict[str, Any]] = []
+
+    if include_files and seed_ids:
+        from litexplorer.api.settings import get_setting_value
+        from litexplorer.config import settings as _settings
+
+        custom_root = get_setting_value(db, "pdf_storage_path")
+        pdf_root = Path(custom_root) if custom_root else _settings.pdf_dir
+
+        pdfs_stmt = select(WorkPDF).where(WorkPDF.work_id.in_(seed_ids))
+        work_pdfs: list[WorkPDF] = list(db.scalars(pdfs_stmt).all())
+
+        # Group PDFs by work_id, collecting file paths that actually exist on disk
+        for pdf in work_pdfs:
+            pdf_path = pdf_root / str(pdf.work_id) / pdf.filename
+            if not pdf_path.exists():
+                logger.warning("export: PDF not found on disk, skipping: %s", pdf_path)
+                continue
+
+            zip_pdf_path = f"files/{pdf.work_id}/{pdf.filename}"
+            files_to_zip.append((pdf_path, zip_pdf_path))
+
+            # Companion extracted-text file (same stem, .txt extension)
+            if pdf.extraction_status == "ready":
+                stem = Path(pdf.filename).stem
+                txt_path = pdf_root / str(pdf.work_id) / f"{stem}.txt"
+                if txt_path.exists():
+                    files_to_zip.append((txt_path, f"files/{pdf.work_id}/{stem}.txt"))
+
+        # Build the manifest "files" list keyed by stable work reference
+        # Group collected files by work_id so we emit one entry per work
+        filenames_by_work: dict[int, list[str]] = {}
+        for disk_path, zip_path in files_to_zip:
+            # zip_path is "files/{work_id}/{filename}"
+            parts = zip_path.split("/")
+            wid = int(parts[1])
+            fname = parts[2]
+            filenames_by_work.setdefault(wid, []).append(fname)
+
+        for wid, fnames in filenames_by_work.items():
+            w = seed_work_map.get(wid)
+            if w:
+                files_manifest.append(
+                    {
+                        "work_id": wid,
+                        "doi": w.doi,
+                        "arxiv_id": w.arxiv_id,
+                        "filenames": fnames,
+                    }
+                )
+
+    # ------------------------------------------------------------------
+    # 10. Assemble manifest
     # ------------------------------------------------------------------
     manifest: dict[str, Any] = {
         "format_version": 2,
@@ -416,20 +487,22 @@ def export_project(project_id: int, db: Session) -> io.BytesIO:
         "citations": citation_manifest,
         "chat_sessions": chat_sessions_manifest,
         "work_notes": work_notes_manifest,
-        "files": [],
+        "files": files_manifest,
     }
 
     # ------------------------------------------------------------------
-    # 10. Build BibTeX
+    # 11. Build BibTeX
     # ------------------------------------------------------------------
     bibtex_content = works_to_bibtex(seed_works)
 
     # ------------------------------------------------------------------
-    # 11. Package into ZIP
+    # 12. Package into ZIP
     # ------------------------------------------------------------------
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
         zf.writestr("seeds.bib", bibtex_content)
+        for disk_path, zip_path in files_to_zip:
+            zf.write(str(disk_path), zip_path)
     buf.seek(0)
     return buf

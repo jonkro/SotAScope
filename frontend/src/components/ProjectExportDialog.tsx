@@ -24,21 +24,25 @@ export default function ProjectExportDialog({
 }: Props) {
   const defaultFilename = toSafeFilename(projectName, 'zip');
   const [filename, setFilename] = useState(defaultFilename);
+  const [includeFiles, setIncludeFiles] = useState(false);
 
   const handleExport = async () => {
-    const res = await fetch(`/api/projects/${projectId}/export`);
+    const url = includeFiles
+      ? `/api/projects/${projectId}/export?include_files=true`
+      : `/api/projects/${projectId}/export`;
+    const res = await fetch(url);
     if (!res.ok) return;
     const blob = await res.blob();
     // Use a blob URL so the browser has no Content-Disposition header to
     // override the user-chosen filename set on the anchor's download attribute.
-    const url = URL.createObjectURL(blob);
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = blobUrl;
     a.download = filename.trim() || defaultFilename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(blobUrl);
     onClose();
   };
 
@@ -59,7 +63,7 @@ export default function ProjectExportDialog({
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-100">
-          <h3 className="text-base font-semibold text-gray-900">Export Project</h3>
+          <h3 className="text-base font-semibold text-gray-900">Save Project</h3>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 text-xl leading-none"
@@ -118,34 +122,28 @@ export default function ProjectExportDialog({
             </li>
           </ul>
 
-          {/* Paper content checkbox (disabled, coming soon) — hidden until implemented
+          {/* Paper content checkbox */}
           <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-            <label className="flex items-start gap-3 cursor-not-allowed opacity-50">
+            <label className="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"
-                disabled
+                checked={includeFiles}
+                onChange={(e) => setIncludeFiles(e.target.checked)}
                 className="mt-0.5 rounded"
               />
               <div>
                 <span className="text-sm font-medium text-gray-700 block">
                   Include paper content (PDFs / extracted text)
                 </span>
-                <span
-                  className="text-xs text-gray-500 block mt-0.5"
-                  title="Coming soon — reserved for future implementation"
-                >
-                  Coming soon — reserved for future implementation
-                </span>
-                <span className="text-xs text-amber-600 block mt-1">
-                  Note: ensure you have redistribution rights before sharing exported PDFs.
+                <span className="text-xs text-gray-500 block mt-0.5">
+                  Only papers with uploaded PDFs are included. Makes the archive larger.
                 </span>
               </div>
             </label>
           </div>
-          */}
 
           <p className="text-xs text-gray-400">
-            Candidates (non-seed neighbors) are not exported — the importer will
+            Candidates (non-seed neighbors) are not saved — the importer will
             re-discover them by re-running enrichment on the seeds.
           </p>
         </div>
@@ -162,7 +160,7 @@ export default function ProjectExportDialog({
             onClick={handleExport}
             className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
           >
-            Export
+            Save
           </button>
         </div>
       </div>

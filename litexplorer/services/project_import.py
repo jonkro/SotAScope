@@ -18,6 +18,7 @@ import json
 import logging
 import zipfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import bibtexparser
@@ -26,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from litexplorer.models.chat import ChatMessage, ChatSession
 from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Venue, VenueAlias, Work, WorkNote
+from litexplorer.models.library import Venue, VenueAlias, Work, WorkNote, WorkPDF
 from litexplorer.models.project import (
     Project,
     ProjectVenueTier,
@@ -609,6 +610,127 @@ def _create_project_content(
 
 
 # ---------------------------------------------------------------------------
+# PDF file import
+# ---------------------------------------------------------------------------
+
+
+def _import_pdf_files(
+    zip_entries: dict[str, bytes],
+    manifest_files: list[dict],
+    state: _ImportState,
+    db: Session,
+) -> None:
+    """Copy PDF and extracted text files from the archive to local storage.
+
+    *zip_entries* is a ``{zip_path: bytes}`` mapping pre-read from the archive.
+
+    For each entry in the manifest ``files`` list:
+    - Resolve the work by DOI or arXiv ID using *state.work_ref_to_id*.
+    - Copy each PDF to ``{pdf_root}/{local_work_id}/{filename}``.
+    - Create a ``WorkPDF`` row if none exists for that work + filename.
+    - If a companion ``.txt`` file is present, copy it and set
+      ``extraction_status = "ready"`` on the corresponding WorkPDF row.
+
+    Skips gracefully (with a warning) if the work cannot be resolved or if
+    a file is absent from *zip_entries*.
+    """
+    if not manifest_files:
+        return
+
+    from litexplorer.api.settings import get_setting_value
+    from litexplorer.config import settings as _settings
+
+    custom_root = get_setting_value(db, "pdf_storage_path")
+    pdf_root = Path(custom_root) if custom_root else _settings.pdf_dir
+
+    for entry in manifest_files:
+        doi: str | None = entry.get("doi")
+        arxiv_id: str | None = entry.get("arxiv_id")
+        archive_work_id: int | None = entry.get("work_id")
+        filenames: list[str] = entry.get("filenames", [])
+
+        if not filenames:
+            continue
+
+        # Resolve local work_id via stable reference
+        if doi:
+            work_ref = f"doi:{doi}"
+        elif arxiv_id:
+            work_ref = f"arxiv:{arxiv_id}"
+        else:
+            logger.warning("import files: entry has no doi or arxiv_id, skipping")
+            continue
+
+        local_work_id = state.work_ref_to_id.get(work_ref)
+        if local_work_id is None:
+            logger.warning(
+                "import files: no work found for ref %r, skipping %d file(s)",
+                work_ref,
+                len(filenames),
+            )
+            continue
+
+        if archive_work_id is None:
+            logger.warning(
+                "import files: entry for %r has no work_id, cannot locate files in archive",
+                work_ref,
+            )
+            continue
+
+        work_dir = pdf_root / str(local_work_id)
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        for filename in filenames:
+            zip_path = f"files/{archive_work_id}/{filename}"
+            file_data = zip_entries.get(zip_path)
+            if file_data is None:
+                logger.warning("import files: %r not found in archive, skipping", zip_path)
+                continue
+
+            dest_path = work_dir / filename
+            dest_path.write_bytes(file_data)
+
+            suffix = Path(filename).suffix.lower()
+
+            if suffix == ".pdf":
+                # Create WorkPDF row if it doesn't already exist
+                existing_pdf = db.scalars(
+                    select(WorkPDF).where(
+                        WorkPDF.work_id == local_work_id,
+                        WorkPDF.filename == filename,
+                    )
+                ).one_or_none()
+                if existing_pdf is None:
+                    has_any_pdf = db.scalars(
+                        select(WorkPDF).where(WorkPDF.work_id == local_work_id)
+                    ).first()
+                    db.add(
+                        WorkPDF(
+                            work_id=local_work_id,
+                            filename=filename,
+                            is_primary=(has_any_pdf is None),
+                            extraction_status="pending",
+                        )
+                    )
+                    db.flush()
+
+            elif suffix == ".txt":
+                # Companion extracted text — mark the matching PDF as ready
+                stem = Path(filename).stem
+                pdf_row = db.scalars(
+                    select(WorkPDF).where(
+                        WorkPDF.work_id == local_work_id,
+                        WorkPDF.filename == f"{stem}.pdf",
+                    )
+                ).one_or_none()
+                if pdf_row is not None:
+                    pdf_row.extraction_status = "ready"
+                    db.flush()
+
+    db.flush()
+
+
+# ---------------------------------------------------------------------------
 # Helper: seed IDs for a project
 # ---------------------------------------------------------------------------
 
@@ -644,18 +766,26 @@ def import_project(
         ValueError: for invalid ZIP, missing manifest, unsupported version.
     """
     # ---- a. Parse ZIP ----
+    # Read all content eagerly so the ZipFile can be closed before DB work begins.
     try:
         buf = io.BytesIO(zip_bytes)
-        with zipfile.ZipFile(buf, "r") as zf:
-            manifest_bytes = zf.read("manifest.json")
+        with zipfile.ZipFile(buf, "r") as zf_obj:
             try:
-                bibtex_content = zf.read("seeds.bib").decode("utf-8", errors="replace")
+                manifest_bytes = zf_obj.read("manifest.json")
+            except KeyError:
+                raise ValueError("Archive is missing manifest.json")
+            try:
+                bibtex_content = zf_obj.read("seeds.bib").decode("utf-8", errors="replace")
             except KeyError:
                 bibtex_content = ""
+            # Pre-read all files/* entries so _import_pdf_files doesn't need the ZipFile open.
+            zip_entries: dict[str, bytes] = {
+                name: zf_obj.read(name)
+                for name in zf_obj.namelist()
+                if name.startswith("files/")
+            }
     except zipfile.BadZipFile as exc:
         raise ValueError(f"Invalid ZIP file: {exc}") from exc
-    except KeyError:
-        raise ValueError("Archive is missing manifest.json")
 
     manifest: dict[str, Any] = json.loads(manifest_bytes)
 
@@ -676,6 +806,9 @@ def import_project(
     bibtex_entries = _parse_bibtex_entries(bibtex_content)
     state = _ImportState()
     _import_works(manifest.get("works", []), bibtex_entries, state, db)
+
+    # ---- b2. Import PDF files (library-level; independent of project collision) ----
+    _import_pdf_files(zip_entries, manifest.get("files", []), state, db)
 
     # ---- c/d. Handle project name collision ----
     existing_project = db.scalars(

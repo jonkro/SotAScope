@@ -29,7 +29,7 @@ import pytest
 
 from litexplorer.models.chat import ChatMessage, ChatSession
 from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Citation, Venue, VenueAlias, Work, WorkNote
+from litexplorer.models.library import Citation, Venue, VenueAlias, Work, WorkNote, WorkPDF
 from litexplorer.models.project import (
     Project,
     ProjectVenueTier,
@@ -1028,3 +1028,237 @@ class TestVenueExportImport:
             venue_id=venue.id, alias="European Conference on Computer Vision"
         ).all()
         assert len(rows) == 1  # not duplicated
+
+
+# ---------------------------------------------------------------------------
+# PDF file export / import
+# ---------------------------------------------------------------------------
+
+
+class TestPDFFileExportImport:
+    def test_export_include_files_adds_pdf_to_zip(self, db_session, tmp_path):
+        """export_project(include_files=True) adds PDFs to archive and populates manifest."""
+        work = _make_work(db_session, title="PDF Paper", year=2023, doi="10.9999/pdfexport")
+        project = _make_project(db_session, name="PDF Export Project")
+        tl = _make_topic_list(db_session, project.id)
+        _add_seed(db_session, tl, work)
+
+        # Write a fake PDF to the expected location
+        pdf_root = tmp_path / "pdfs"
+        work_dir = pdf_root / str(work.id)
+        work_dir.mkdir(parents=True)
+        (work_dir / "paper.pdf").write_bytes(b"fake pdf bytes")
+
+        # Create WorkPDF row
+        db_session.add(WorkPDF(
+            work_id=work.id,
+            filename="paper.pdf",
+            is_primary=True,
+            extraction_status="pending",
+        ))
+        db_session.commit()
+
+        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+            buf = export_project(project.id, db_session, include_files=True)
+
+        zip_bytes = buf.read()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            names = zf.namelist()
+            assert f"files/{work.id}/paper.pdf" in names
+            assert zf.read(f"files/{work.id}/paper.pdf") == b"fake pdf bytes"
+            manifest = json.loads(zf.read("manifest.json"))
+
+        assert len(manifest["files"]) == 1
+        entry = manifest["files"][0]
+        assert entry["doi"] == "10.9999/pdfexport"
+        assert entry["work_id"] == work.id
+        assert "paper.pdf" in entry["filenames"]
+
+    def test_export_include_files_also_adds_txt(self, db_session, tmp_path):
+        """When extraction_status='ready', the companion .txt file is also included."""
+        work = _make_work(db_session, title="TXT Paper", year=2023, doi="10.9999/txtexport")
+        project = _make_project(db_session, name="TXT Export Project")
+        tl = _make_topic_list(db_session, project.id)
+        _add_seed(db_session, tl, work)
+
+        pdf_root = tmp_path / "pdfs"
+        work_dir = pdf_root / str(work.id)
+        work_dir.mkdir(parents=True)
+        (work_dir / "paper.pdf").write_bytes(b"pdf bytes")
+        (work_dir / "paper.txt").write_text("extracted text", encoding="utf-8")
+
+        db_session.add(WorkPDF(
+            work_id=work.id,
+            filename="paper.pdf",
+            is_primary=True,
+            extraction_status="ready",
+        ))
+        db_session.commit()
+
+        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+            buf = export_project(project.id, db_session, include_files=True)
+
+        zip_bytes = buf.read()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            names = zf.namelist()
+            assert f"files/{work.id}/paper.pdf" in names
+            assert f"files/{work.id}/paper.txt" in names
+            manifest = json.loads(zf.read("manifest.json"))
+
+        entry = manifest["files"][0]
+        assert "paper.pdf" in entry["filenames"]
+        assert "paper.txt" in entry["filenames"]
+
+    def test_export_default_no_files(self, db_session, tmp_path):
+        """Without include_files, the archive contains no files/ entries."""
+        work = _make_work(db_session, title="No Files Paper", year=2023, doi="10.9999/nofiles")
+        project = _make_project(db_session, name="No Files Project")
+        tl = _make_topic_list(db_session, project.id)
+        _add_seed(db_session, tl, work)
+        db_session.add(WorkPDF(work_id=work.id, filename="paper.pdf", is_primary=True,
+                                extraction_status="pending"))
+        db_session.commit()
+
+        buf = export_project(project.id, db_session)  # include_files defaults to False
+        zip_bytes = buf.read()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            names = zf.namelist()
+            assert not any(n.startswith("files/") for n in names)
+            manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["files"] == []
+
+    def test_import_creates_workpdf_and_copies_file(self, db_session, tmp_path):
+        """Importing a ZIP with files/ copies the PDF and creates a WorkPDF row."""
+        # Work already exists in library (will be matched by DOI)
+        work = _make_work(db_session, title="Import PDF Paper", year=2023,
+                          doi="10.8888/importpdf")
+        db_session.commit()
+
+        archive_work_id = work.id  # same instance here; on a real cross-instance import this differs
+
+        manifest_data = {
+            "format_version": 2,
+            "project": {"name": "Import PDF Project"},
+            "works": [{"doi": "10.8888/importpdf", "title": "Import PDF Paper",
+                        "year": 2023, "arxiv_id": None, "openalex_id": None, "bibtex_key": None}],
+            "topic_lists": [{"name": "Main", "color": "#3b82f6",
+                              "works": ["doi:10.8888/importpdf"]}],
+            "extraction_schemas": [], "venue_tiers": [], "citations": [],
+            "chat_sessions": [], "work_notes": [],
+            "files": [
+                {"work_id": archive_work_id, "doi": "10.8888/importpdf",
+                 "arxiv_id": None, "filenames": ["paper.pdf"]},
+            ],
+        }
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("manifest.json", json.dumps(manifest_data))
+            zf.writestr("seeds.bib", "")
+            zf.writestr(f"files/{archive_work_id}/paper.pdf", b"imported pdf content")
+        buf.seek(0)
+        zip_bytes = buf.read()
+
+        pdf_root = tmp_path / "pdfs"
+        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+            result, seed_ids = import_project(zip_bytes, db_session)
+
+        assert result.works_matched == 1  # work already existed
+
+        # PDF should be on disk
+        dest = pdf_root / str(work.id) / "paper.pdf"
+        assert dest.exists()
+        assert dest.read_bytes() == b"imported pdf content"
+
+        # WorkPDF row should exist
+        pdf_row = db_session.query(WorkPDF).filter_by(
+            work_id=work.id, filename="paper.pdf"
+        ).one_or_none()
+        assert pdf_row is not None
+        assert pdf_row.is_primary is True
+        assert pdf_row.extraction_status == "pending"
+
+    def test_import_skips_existing_workpdf(self, db_session, tmp_path):
+        """Importing the same archive twice does not create duplicate WorkPDF rows."""
+        work = _make_work(db_session, title="Dedup PDF Paper", year=2023,
+                          doi="10.8888/deduppdf")
+        db_session.commit()
+
+        manifest_data = {
+            "format_version": 2,
+            "project": {"name": "Dedup PDF Project"},
+            "works": [{"doi": "10.8888/deduppdf", "title": "Dedup PDF Paper",
+                        "year": 2023, "arxiv_id": None, "openalex_id": None, "bibtex_key": None}],
+            "topic_lists": [{"name": "Main", "color": "#3b82f6",
+                              "works": ["doi:10.8888/deduppdf"]}],
+            "extraction_schemas": [], "venue_tiers": [], "citations": [],
+            "chat_sessions": [], "work_notes": [],
+            "files": [
+                {"work_id": work.id, "doi": "10.8888/deduppdf",
+                 "arxiv_id": None, "filenames": ["paper.pdf"]},
+            ],
+        }
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("manifest.json", json.dumps(manifest_data))
+            zf.writestr("seeds.bib", "")
+            zf.writestr(f"files/{work.id}/paper.pdf", b"pdf bytes")
+        buf.seek(0)
+        zip_bytes = buf.read()
+
+        pdf_root = tmp_path / "pdfs"
+        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+            import_project(zip_bytes, db_session)
+            # Second import — project name collision creates temp project, but PDF import
+            # still runs on the same work row; no duplicate WorkPDF should be created.
+            import_project(zip_bytes, db_session)
+
+        rows = db_session.query(WorkPDF).filter_by(
+            work_id=work.id, filename="paper.pdf"
+        ).all()
+        assert len(rows) == 1
+
+    def test_import_sets_extraction_status_ready_for_txt(self, db_session, tmp_path):
+        """When a .txt companion is in the archive, extraction_status is set to 'ready'."""
+        work = _make_work(db_session, title="TXT Import Paper", year=2023,
+                          doi="10.8888/txtimport")
+        db_session.commit()
+
+        manifest_data = {
+            "format_version": 2,
+            "project": {"name": "TXT Import Project"},
+            "works": [{"doi": "10.8888/txtimport", "title": "TXT Import Paper",
+                        "year": 2023, "arxiv_id": None, "openalex_id": None, "bibtex_key": None}],
+            "topic_lists": [{"name": "Main", "color": "#3b82f6",
+                              "works": ["doi:10.8888/txtimport"]}],
+            "extraction_schemas": [], "venue_tiers": [], "citations": [],
+            "chat_sessions": [], "work_notes": [],
+            "files": [
+                {"work_id": work.id, "doi": "10.8888/txtimport",
+                 "arxiv_id": None, "filenames": ["paper.pdf", "paper.txt"]},
+            ],
+        }
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("manifest.json", json.dumps(manifest_data))
+            zf.writestr("seeds.bib", "")
+            zf.writestr(f"files/{work.id}/paper.pdf", b"pdf bytes")
+            zf.writestr(f"files/{work.id}/paper.txt", b"extracted text")
+        buf.seek(0)
+        zip_bytes = buf.read()
+
+        pdf_root = tmp_path / "pdfs"
+        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+            import_project(zip_bytes, db_session)
+
+        pdf_row = db_session.query(WorkPDF).filter_by(
+            work_id=work.id, filename="paper.pdf"
+        ).one_or_none()
+        assert pdf_row is not None
+        assert pdf_row.extraction_status == "ready"
+
+        txt_dest = pdf_root / str(work.id) / "paper.txt"
+        assert txt_dest.exists()
+        assert txt_dest.read_bytes() == b"extracted text"
