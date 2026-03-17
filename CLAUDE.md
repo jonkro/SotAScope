@@ -79,6 +79,24 @@ The main project view is a D3 scatter plot (x = publication year, y = log-scaled
 
 **Citation window**: A slider controls the time window: **All** (all-time `citation_count`) or **Of last Ny** (1–10 years, sums `citations_by_year`). Computed client-side — no re-fetch on slider change. Works without `citations_by_year` (e.g., imported from Crossref or BibTeX only) fall back to all-time count regardless of slider position. Timeline settings persist in `localStorage` per project (`litexplorer:project:{id}:view`). URL search params (`?tab=`, `?work=`, `?schema=`) encode view state for deep links and the **Share** button (copies current URL to clipboard). On initial mount, URL params override localStorage; after that, normal interaction and localStorage take over. `?tab=extract&schema={id}` activates a promoted schema tab. URL is kept in sync via `useSearchParams` with `replace: true`.
 
+**Candidate filtering pipeline** (applied client-side in `ProjectDetailPage`, all steps are computed in `useMemo`):
+1. `filterNeighbors()` — removes neighbors by direction toggles (show/hide backward/forward), ignored-venue set, and publication year presence.
+2. Top-venues filter — when the "top venues" candidate filter is active, further restricts to neighbors whose `venue_id` is in the tier-1 set.
+3. Active topic-list filter — when some topic lists are toggled off, removes neighbors whose `connected_seed_ids` only overlap with inactive lists.
+4. `applyVisibilityThreshold(neighbors, 3000)` — to keep the D3 scatter plot performant, at most **3 000** neighbors are rendered. When the filtered set exceeds this limit, neighbors are sorted descending by **relevance score** and only the top 3 000 are passed to `CitationTimeline`. The relevance score is pre-computed by the backend (populated in `TimelineNeighborWork.relevance_score`) using `compute_relevance_score()` from `litexplorer/services/scoring.py`.
+
+**Relevance score formula** (shared via `litexplorer/services/scoring.py`, used by both the timeline and the side-panel citation sort):
+```
+score = log(1 + citation_count) + max(0, (publication_year − 2000) / 2)
+```
+Papers before 2000 receive no recency bonus. The result is rounded to 4 decimal places.
+
+**Candidates indicator** in `TimelineControls`:
+- Normal (≤ 3 000 after all filters): `Showing K of N candidates` — K = dots in the plot, N = total union of all reference and cited-by lists from the backend (constant; only changes when citation data is updated).
+- Threshold active (> 3 000): `Showing top K of N candidates (by relevance)` — same N, K capped at 3 000.
+
+**Side-panel citation lists** (`WorkDetailPanel`): both the "References (backward)" and "Cited by (forward)" lists are paginated (50 per page, sorted by relevance by default; also supports `year_desc`, `year_asc`, `citations_desc`). The API endpoints (`GET /api/works/{id}/citations/{forward|backward}`) return `CitationListResponse { items, total_count }` — `total_count` reflects all Citation rows for that work regardless of page, and is used for the **staleness indicator** shown below the "Cited by" list when `total_count < work.citation_count * 0.8` (i.e. more than 20 % of citing papers have not been fetched yet).
+
 ---
 
 ## Design principles
@@ -201,6 +219,9 @@ litexplorer/
 │   ├── project_export.py  # export_project() → io.BytesIO (ZIP: manifest.json + seeds.bib)
 │   ├── project_import.py  # import_project() → (ImportResult, seed_ids); resolve_import() for collision
 │   ├── project_merge.py   # merge_preview(), execute_merge() — non-destructive source→target copy
+│   ├── scoring.py        # compute_relevance_score(citation_count, year) — shared formula used by
+│   │                     #   the timeline API (TimelineNeighborWork.relevance_score) and the
+│   │                     #   citation-list sort in api/works.py; formula: log(1+c) + max(0,(y-2000)/2)
 │   └── work_lock.py      # _WorkLockRegistry singleton `work_lock`; stale locks auto-released after 600s
 └── external/
     ├── base.py           # ExternalWork, ExternalVenue, ExternalAuthor, ExternalLocation
@@ -217,7 +238,8 @@ frontend/src/
 ├── api.ts                # All fetch functions
 ├── types.ts              # TypeScript interfaces matching backend schemas
 ├── lib/
-│   └── timelineFilter.ts # computeCitationCount(), filterNeighbors()
+│   └── timelineFilter.ts # computeCitationCount(), filterNeighbors(),
+│                         #   applyVisibilityThreshold() — caps neighbors at 3 000 by relevance_score
 ├── utils/
 │   └── proposalParser.ts # parseProposals() — 5-strategy parser: fenced block → fenced JSON →
 │                         #   bare JSON → markdown table → numbered/bulleted bold list
@@ -298,7 +320,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 
 - Venue normalization in CS is messy. OpenAlex venue names are inconsistent across years for the same conference. The VenueAlias table handles this, with automatic normalization at startup and manual curation in the Venues UI.
 - The same work may appear under different DOIs (rare but real) or without a DOI (arXiv-only papers). The dedup logic checks DOI first, then openalex_id, then arxiv_id, then semantic_scholar_id (4th fallback).
-- Forward citation queries can return hundreds of results for well-cited papers. The candidate filter is applied before rendering, not after.
+- Forward citation queries can return hundreds of results for well-cited papers. All four candidate filter steps (direction, top-venues, topic-list, visibility threshold) are applied client-side before passing neighbors to `CitationTimeline`; the D3 component only receives the final ≤ 3 000 dots.
 - BibTeX entry keys follow AuthorYearKeyword convention but the internal unique key is always DOI or arXiv ID.
 - When transferring a UNIQUE field value between rows (e.g., during work merge), null out the field on the source row and `db.flush()` before setting it on the target — SQLAlchemy batches UPDATEs within a single flush with no guaranteed row ordering.
 - TestClient + in-memory SQLite requires `StaticPool` + `check_same_thread=False`. Override `get_db` from `litexplorer.api.deps` (not `litexplorer.database`).
