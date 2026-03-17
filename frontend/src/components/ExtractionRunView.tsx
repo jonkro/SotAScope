@@ -59,6 +59,7 @@ interface ExtractionCellProps {
   isRunningGlobal: boolean;
   noText?: boolean;
   onExtractSingle: (workId: number) => void;
+  cellHeight?: number;
 }
 
 function ExtractionCell({
@@ -69,6 +70,7 @@ function ExtractionCell({
   isRunningGlobal,
   noText = false,
   onExtractSingle,
+  cellHeight,
 }: ExtractionCellProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
@@ -150,7 +152,10 @@ function ExtractionCell({
   // Empty cell: show sparkle + pencil icons
   if (!cell) {
     return (
-      <td className="px-3 py-2 text-center align-top border-r border-gray-100 last:border-r-0">
+      <td
+        className="px-3 py-2 text-center align-top border-r border-gray-100 last:border-r-0"
+        style={cellHeight !== undefined ? { height: cellHeight, overflow: 'hidden' } : undefined}
+      >
         {!noText && (
           <div className="flex items-center justify-center gap-2">
             <button
@@ -186,7 +191,10 @@ function ExtractionCell({
       : answer_note.content;
 
   return (
-    <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 overflow-hidden">
+    <td
+      className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 overflow-hidden"
+      style={cellHeight !== undefined ? { height: cellHeight } : undefined}
+    >
       <div className="text-xs text-gray-800 leading-snug mb-1" title={answer_note.content}>
         {truncated || <span className="text-gray-400 italic">empty</span>}
       </div>
@@ -298,6 +306,21 @@ function loadColWidths(schemaId: number): Record<string, number> {
   try {
     const raw = localStorage.getItem(`litexplorer:schema:${schemaId}:columnWidths`);
     return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function loadRowHeights(schemaId: number): Record<number, number> {
+  try {
+    const raw = localStorage.getItem(`litexplorer:schema:${schemaId}:rowHeights`);
+    if (!raw) return {};
+    const parsed: Record<string, number> = JSON.parse(raw);
+    const out: Record<number, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'number') out[Number(k)] = v;
+    }
+    return out;
   } catch {
     return {};
   }
@@ -626,22 +649,65 @@ export default function ExtractionRunView({
           return next;
         });
         document.body.style.cursor = '';
-        document.body.style.userSelect = '';
+        document.body.style.removeProperty('user-select');
+        document.body.style.removeProperty('-webkit-user-select');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       };
 
       document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
+      document.body.style.setProperty('user-select', 'none');
+      document.body.style.setProperty('-webkit-user-select', 'none');
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     },
     [schema.id],
   );
 
-  // TODO: Per-row height adjustment (persisted in litexplorer:schema:{id}:rowHeights) is
-  // deferred — requires explicit <tr> height management and is significantly more
-  // complex than column resize.
+  // ---- Row resize ----
+  const [rowHeights, setRowHeights] = useState<Record<number, number>>(() =>
+    loadRowHeights(schema.id),
+  );
+  const trRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
+
+  const handleRowResizeStart = useCallback(
+    (e: React.MouseEvent, workId: number, currentHeight: number) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startHeight = currentHeight;
+      let latestHeight = startHeight;
+
+      const onMove = (ev: MouseEvent) => {
+        latestHeight = Math.max(32, startHeight + ev.clientY - startY);
+        setRowHeights((prev) => ({ ...prev, [workId]: latestHeight }));
+      };
+
+      const onUp = () => {
+        setRowHeights((prev) => {
+          const next = { ...prev, [workId]: latestHeight };
+          try {
+            localStorage.setItem(
+              `litexplorer:schema:${schema.id}:rowHeights`,
+              JSON.stringify(next),
+            );
+          } catch { /* quota exceeded */ }
+          return next;
+        });
+        document.body.style.cursor = '';
+        document.body.style.removeProperty('user-select');
+        document.body.style.removeProperty('-webkit-user-select');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+
+      document.body.style.cursor = 'row-resize';
+      document.body.style.setProperty('user-select', 'none');
+      document.body.style.setProperty('-webkit-user-select', 'none');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    },
+    [schema.id],
+  );
 
   // --- Render ---
 
@@ -929,37 +995,43 @@ export default function ExtractionRunView({
                 </th>
               )}
               <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
-                <span className="block pr-2 truncate">Paper</span>
-                <div
-                  className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                  onMouseDown={(e) => handleColResizeStart(e, 'title', getColW('title'))}
-                />
+                <div className="relative">
+                  <span className="block pr-2 truncate">Paper</span>
+                  <div
+                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
+                    onMouseDown={(e) => handleColResizeStart(e, 'title', getColW('title'))}
+                  />
+                </div>
               </th>
-              <th className="relative px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200">
-                <span className="block pr-2 truncate">Year</span>
-                <div
-                  className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                  onMouseDown={(e) => handleColResizeStart(e, 'year', getColW('year'))}
-                />
+              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200">
+                <div className="relative">
+                  <span className="block pr-2 truncate">Year</span>
+                  <div
+                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
+                    onMouseDown={(e) => handleColResizeStart(e, 'year', getColW('year'))}
+                  />
+                </div>
               </th>
               {sortedColumns.map((col) => (
                 <th
                   key={col.id}
-                  className="relative px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0"
+                  className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0"
                   title={col.prompt}
                 >
-                  <span className="block pr-2 truncate">
-                    {col.name}
-                    {col.allowed_values && col.allowed_values.length > 0 && (
-                      <span className="ml-1 font-normal text-gray-400">
-                        ({col.allowed_values.length})
-                      </span>
-                    )}
-                  </span>
-                  <div
-                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                    onMouseDown={(e) => handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`))}
-                  />
+                  <div className="relative">
+                    <span className="block pr-2 truncate">
+                      {col.name}
+                      {col.allowed_values && col.allowed_values.length > 0 && (
+                        <span className="ml-1 font-normal text-gray-400">
+                          ({col.allowed_values.length})
+                        </span>
+                      )}
+                    </span>
+                    <div
+                      className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
+                      onMouseDown={(e) => handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`))}
+                    />
+                  </div>
                 </th>
               ))}
             </tr>
@@ -968,9 +1040,12 @@ export default function ExtractionRunView({
             {sortedFilteredSeeds.map((seed) => {
               const hasText = seedsWithText.has(seed.id);
               const noText = seedPdfsLoaded && !hasText;
+              const rowH = rowHeights[seed.id];
               return (
               <tr
                 key={seed.id}
+                ref={(el) => { if (el) trRefs.current.set(seed.id, el); else trRefs.current.delete(seed.id); }}
+                style={rowH !== undefined ? { height: rowH } : undefined}
                 className={
                   noText
                     ? 'bg-gray-50 opacity-50'
@@ -981,7 +1056,10 @@ export default function ExtractionRunView({
               >
                 {/* Checkbox cell — hidden in read-only mode */}
                 {!readOnlyPaperSelection && (
-                  <td className="px-3 py-2 text-center align-top border-r border-gray-100">
+                  <td
+                    className="px-3 py-2 text-center align-top border-r border-gray-100"
+                    style={rowH !== undefined ? { height: rowH, overflow: 'hidden' } : undefined}
+                  >
                     <span title={noText ? 'No extracted text — upload and extract a PDF first' : undefined}>
                       <input
                         type="checkbox"
@@ -993,10 +1071,12 @@ export default function ExtractionRunView({
                     </span>
                   </td>
                 )}
+                {/* Title td — sticky, holds the row-resize handle */}
                 <td
-                  className="p-0 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] overflow-hidden"
+                  className="p-0 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] overflow-hidden relative"
+                  style={rowH !== undefined ? { height: rowH } : undefined}
                 >
-                  <div className="flex" style={{ minHeight: '2.25rem' }}>
+                  <div className="flex" style={{ minHeight: '2.25rem', height: rowH !== undefined ? rowH : undefined, overflow: rowH !== undefined ? 'hidden' : undefined }}>
                     {seed.topic_list_ids
                       .map((id) => topicListColorMap.get(id))
                       .filter((c): c is string => Boolean(c))
@@ -1020,8 +1100,19 @@ export default function ExtractionRunView({
                       )}
                     </div>
                   </div>
+                  {/* Row resize handle at bottom of title cell */}
+                  <div
+                    className="absolute bottom-0 left-0 right-0 h-1.5 cursor-row-resize hover:bg-indigo-200/60 select-none z-10"
+                    onMouseDown={(e) => {
+                      const current = rowH ?? trRefs.current.get(seed.id)?.offsetHeight ?? 60;
+                      handleRowResizeStart(e, seed.id, current);
+                    }}
+                  />
                 </td>
-                <td className="px-3 py-2 align-top border-r border-gray-100 text-xs text-gray-500 whitespace-nowrap">
+                <td
+                  className="px-3 py-2 align-top border-r border-gray-100 text-xs text-gray-500 whitespace-nowrap"
+                  style={rowH !== undefined ? { height: rowH, overflow: 'hidden' } : undefined}
+                >
                   {seed.publication_year ?? '—'}
                 </td>
                 {sortedColumns.map((col) => (
@@ -1034,6 +1125,7 @@ export default function ExtractionRunView({
                     isRunningGlobal={isExtracting}
                     noText={noText}
                     onExtractSingle={handleExtractSingle}
+                    cellHeight={rowH}
                   />
                 ))}
               </tr>
