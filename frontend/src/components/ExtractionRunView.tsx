@@ -102,7 +102,7 @@ function ExtractionCell({
     const isSaving = manualFill.isPending || editNote.isPending;
 
     return (
-      <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 min-w-[180px]">
+      <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0">
         {hasAllowedValues ? (
           <select
             value={editValue}
@@ -186,7 +186,7 @@ function ExtractionCell({
       : answer_note.content;
 
   return (
-    <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 min-w-[160px] max-w-[240px]">
+    <td className="px-3 py-2 align-top border-r border-gray-100 last:border-r-0 overflow-hidden">
       <div className="text-xs text-gray-800 leading-snug mb-1" title={answer_note.content}>
         {truncated || <span className="text-gray-400 italic">empty</span>}
       </div>
@@ -285,6 +285,22 @@ function ExtractionCell({
       )}
     </td>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Column resize helpers
+// ---------------------------------------------------------------------------
+
+const DEFAULT_COL_WIDTHS: Record<string, number> = { title: 280, year: 80 };
+const DEFAULT_EXTRACTION_COL_WIDTH = 180;
+
+function loadColWidths(schemaId: number): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(`litexplorer:schema:${schemaId}:columnWidths`);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +594,55 @@ export default function ExtractionRunView({
     markDirty();
   };
 
+  // ---- Column resize (Part 1) ----
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() =>
+    loadColWidths(schema.id),
+  );
+
+  const getColW = (key: string): number =>
+    colWidths[key] ?? DEFAULT_COL_WIDTHS[key] ?? DEFAULT_EXTRACTION_COL_WIDTH;
+
+  const handleColResizeStart = useCallback(
+    (e: React.MouseEvent, key: string, currentWidth: number) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = currentWidth;
+      let latestWidth = startWidth;
+
+      const onMove = (ev: MouseEvent) => {
+        latestWidth = Math.max(60, startWidth + ev.clientX - startX);
+        setColWidths((prev) => ({ ...prev, [key]: latestWidth }));
+      };
+
+      const onUp = () => {
+        setColWidths((prev) => {
+          const next = { ...prev, [key]: latestWidth };
+          try {
+            localStorage.setItem(
+              `litexplorer:schema:${schema.id}:columnWidths`,
+              JSON.stringify(next),
+            );
+          } catch { /* quota exceeded */ }
+          return next;
+        });
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    },
+    [schema.id],
+  );
+
+  // TODO: Per-row height adjustment (persisted in litexplorer:schema:{id}:rowHeights) is
+  // deferred — requires explicit <tr> height management and is significantly more
+  // complex than column resize.
+
   // --- Render ---
 
   if (projectId == null) {
@@ -625,8 +690,8 @@ export default function ExtractionRunView({
     !isExtracting && extractProgress !== null && extractProgress.done === extractProgress.total;
 
   return (
-    <div className="flex-1 flex min-h-0 overflow-hidden">
-    <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+    <div className="flex-1 flex min-h-0">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0">
       {/* Read-only mode: show export bar with edit link */}
       {readOnlyPaperSelection ? (
         <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-2 flex items-center gap-3">
@@ -774,7 +839,7 @@ export default function ExtractionRunView({
           <button
             onClick={handleExtractClick}
             disabled={selectedCount === 0 || isExtracting}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isExtracting ? 'Extracting…' : `Extract ${selectedCount > 0 ? selectedCount : ''} paper${selectedCount !== 1 ? 's' : ''} →`}
           </button>
@@ -838,12 +903,20 @@ export default function ExtractionRunView({
 
       {/* Results table */}
       <div className="flex-1 overflow-auto">
-        <table className="w-full text-sm border-collapse">
+        <table className="text-sm border-collapse" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            {!readOnlyPaperSelection && <col style={{ width: 40 }} />}
+            <col style={{ width: getColW('title') }} />
+            <col style={{ width: getColW('year') }} />
+            {sortedColumns.map((col) => (
+              <col key={col.id} style={{ width: getColW(`col_${col.id}`) }} />
+            ))}
+          </colgroup>
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
               {/* Checkbox column — hidden in read-only mode */}
               {!readOnlyPaperSelection && (
-                <th className="w-6 px-3 py-2 text-left border-b border-r border-gray-200">
+                <th className="px-3 py-2 text-left border-b border-r border-gray-200">
                   <input
                     type="checkbox"
                     checked={
@@ -855,24 +928,38 @@ export default function ExtractionRunView({
                   />
                 </th>
               )}
-              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20 min-w-[200px] max-w-[280px]">
-                Paper
+              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
+                <span className="block pr-2 truncate">Paper</span>
+                <div
+                  className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
+                  onMouseDown={(e) => handleColResizeStart(e, 'title', getColW('title'))}
+                />
               </th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 whitespace-nowrap">
-                Year
+              <th className="relative px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200">
+                <span className="block pr-2 truncate">Year</span>
+                <div
+                  className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
+                  onMouseDown={(e) => handleColResizeStart(e, 'year', getColW('year'))}
+                />
               </th>
               {sortedColumns.map((col) => (
                 <th
                   key={col.id}
-                  className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0 min-w-[160px] max-w-[240px]"
+                  className="relative px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0"
                   title={col.prompt}
                 >
-                  {col.name}
-                  {col.allowed_values && col.allowed_values.length > 0 && (
-                    <span className="ml-1 font-normal text-gray-400">
-                      ({col.allowed_values.length})
-                    </span>
-                  )}
+                  <span className="block pr-2 truncate">
+                    {col.name}
+                    {col.allowed_values && col.allowed_values.length > 0 && (
+                      <span className="ml-1 font-normal text-gray-400">
+                        ({col.allowed_values.length})
+                      </span>
+                    )}
+                  </span>
+                  <div
+                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
+                    onMouseDown={(e) => handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`))}
+                  />
                 </th>
               ))}
             </tr>
@@ -907,7 +994,7 @@ export default function ExtractionRunView({
                   </td>
                 )}
                 <td
-                  className="p-0 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] min-w-[200px] max-w-[280px]"
+                  className="p-0 align-top border-r border-gray-100 sticky left-0 bg-inherit z-[5] overflow-hidden"
                 >
                   <div className="flex" style={{ minHeight: '2.25rem' }}>
                     {seed.topic_list_ids

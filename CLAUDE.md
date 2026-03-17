@@ -117,6 +117,7 @@ Rules that apply to all page headers:
 3. **Dropdowns** styled identically to outline buttons with a small `▾` indicator. Built as the local `DropdownMenu` component in `ProjectDetailPage.tsx`; close on outside `mousedown`.
 4. **Button sizing**: `py-1.5 px-3 text-sm` (≈ 32 px tall). The share icon button is `h-8 w-8` (square, same height).
 5. **`ProjectDetailPage` header**: breadcrumb (`← Projects / {name}`) on the left using `PageHeader leftContent`; three action dropdowns (Project, Analyze, Export) + "Import paper" primary + link icon on the right.
+6. **AI-action buttons** use indigo outline style: `border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50`. Apply this to any button that triggers an LLM call: extraction runs ("Extract N papers →"), AI refinement ("Refine with AI"), and AI-oriented navigation dropdowns ("Analyze"). This distinguishes them from the blue primary button (structural/save actions) and plain outline buttons (navigation/filter/export actions). The `DropdownMenu` component in `ProjectDetailPage.tsx` accepts an `accent` prop to switch to this style.
 
 ---
 

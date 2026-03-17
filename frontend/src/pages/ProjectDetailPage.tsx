@@ -87,9 +87,10 @@ function PromotedSchemaTabContent({
 // Dropdown menu
 // ---------------------------------------------------------------------------
 
-function DropdownMenu({ label, items }: {
+function DropdownMenu({ label, items, accent = false }: {
   label: string;
   items: { label: string; onClick: () => void }[];
+  accent?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -107,7 +108,11 @@ function DropdownMenu({ label, items }: {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 flex items-center gap-1 text-gray-700"
+        className={`px-3 py-1.5 text-sm border rounded flex items-center gap-1 ${
+          accent
+            ? 'border-indigo-300 text-indigo-700 hover:bg-indigo-50'
+            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+        }`}
       >
         {label}
         <span className="text-[10px] text-gray-400 leading-none">▾</span>
@@ -548,6 +553,7 @@ export default function ProjectDetailPage() {
           />
           <DropdownMenu
             label="Analyze"
+            accent={true}
             items={[
               { label: 'Discuss', onClick: () => navigate(`/projects/${projectId}/discuss`) },
               { label: 'Extraction tables', onClick: () => navigate(`/projects/${projectId}/extraction`) },
