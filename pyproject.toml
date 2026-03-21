@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "sotascope"
 version = "0.9.5"
 description = "Local-first research literature dashboard"
+license = {text = "AGPL-3.0-or-later"}
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",

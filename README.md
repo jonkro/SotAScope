@@ -1,5 +1,21 @@
 # SotAScope
 
+**Map the state of the art around your research project.**
+
+SotAScope is a local-first, open-source research literature dashboard. Start from a few seed papers, explore their citation graph across OpenAlex, Crossref, and Semantic Scholar, and build structured extraction tables with LLM assistance — or fill them manually. All data stays on your machine.
+
+Key capabilities:
+- Citation timeline visualization (seeds, backward/forward neighbors, venue filtering)
+- Structured information extraction with three workflows: LLM API, manual entry, or paste from external LLM
+- Per-paper and per-project AI discussions with schema design assistance
+- Multi-source enrichment (OpenAlex, Crossref, Semantic Scholar, GROBID)
+- Project export/import, BibTeX export, CSV/LaTeX extraction export
+- Works with Anthropic, OpenAI, or local models via Ollama — no vendor lock-in
+
+[Screenshot or GIF here — add before launch]
+
+---
+
 A local-first research literature dashboard for mapping the state of the art around a research topic.
 
 You build a library of papers (BibTeX import, DOI / arXiv ID lookup, or search-by-title), group them into topic lists, and SotAScope fetches the citation graph from OpenAlex, Crossref, and Semantic Scholar. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years. Topic lists in the legend are clickable to toggle their visibility — hiding seeds, updating multi-topic-list color stripes, and removing candidates connected only to hidden lists.
@@ -220,3 +236,9 @@ tests/                pytest suite
 env.example           Template for the env file (copy to env and fill in values)
 sotascope.service   Optional systemd unit file for server deployment
 ```
+
+---
+
+## License
+
+SotAScope is licensed under the GNU Affero General Public License v3.0.

@@ -11,3 +11,9 @@ frontend/node_modules/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Data files — never commit the local database or data directory
+*.db
+*.sqlite
+*.sqlite3
+.sotascope/
