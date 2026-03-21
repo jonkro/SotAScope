@@ -16,11 +16,23 @@ interface OnboardingHintProps {
 interface TooltipPos {
   top: number;
   left: number;
-  arrowLeft: number;
+  // top/bottom arrows
+  arrowLeft?: number;
+  // left/right arrows
+  arrowTop?: number;
+  arrowSide: 'top' | 'bottom' | 'left' | 'right';
 }
 
 function computePos(el: HTMLElement, placement: string): TooltipPos {
   const rect = el.getBoundingClientRect();
+
+  if (placement === 'right') {
+    const left = rect.right + GAP;
+    const centerY = rect.top + rect.height / 2;
+    const top = Math.max(8, centerY - 40); // 40 ≈ half tooltip height
+    return { top, left, arrowTop: centerY - top, arrowSide: 'left' };
+  }
+
   const centerX = rect.left + rect.width / 2;
   const rawLeft = centerX - TOOLTIP_WIDTH / 2;
   const clampedLeft = Math.min(
@@ -32,7 +44,7 @@ function computePos(el: HTMLElement, placement: string): TooltipPos {
     placement === 'top'
       ? rect.top - GAP - ARROW_SIZE - 72 // 72 ≈ tooltip height estimate
       : rect.bottom + GAP;
-  return { top, left: clampedLeft, arrowLeft };
+  return { top, left: clampedLeft, arrowLeft, arrowSide: placement === 'top' ? 'bottom' : 'top' };
 }
 
 export function OnboardingHint({
@@ -67,8 +79,6 @@ export function OnboardingHint({
     onDismiss?.();
   };
 
-  const isAbove = placement === 'top';
-
   return createPortal(
     <>
       {/* Subtle backdrop — click anywhere to dismiss */}
@@ -82,52 +92,87 @@ export function OnboardingHint({
         className="fixed z-[9999] bg-white rounded-lg shadow-lg border border-gray-200 p-3"
         style={{ width: TOOLTIP_WIDTH, top: pos.top, left: pos.left }}
       >
-        {/* Arrow outer (border color) */}
-        <div
-          style={{
-            position: 'absolute',
-            ...(isAbove
-              ? { bottom: -(ARROW_SIZE + 1) }
-              : { top: -(ARROW_SIZE + 1) }),
-            left: pos.arrowLeft,
-            transform: 'translateX(-50%)',
-            width: 0,
-            height: 0,
-            ...(isAbove
-              ? {
-                  borderLeft: `${ARROW_SIZE + 1}px solid transparent`,
-                  borderRight: `${ARROW_SIZE + 1}px solid transparent`,
-                  borderTop: `${ARROW_SIZE + 1}px solid #e5e7eb`,
-                }
-              : {
-                  borderLeft: `${ARROW_SIZE + 1}px solid transparent`,
-                  borderRight: `${ARROW_SIZE + 1}px solid transparent`,
-                  borderBottom: `${ARROW_SIZE + 1}px solid #e5e7eb`,
-                }),
-          }}
-        />
-        {/* Arrow inner (white fill) */}
-        <div
-          style={{
-            position: 'absolute',
-            ...(isAbove ? { bottom: -ARROW_SIZE } : { top: -ARROW_SIZE }),
-            left: pos.arrowLeft,
-            transform: 'translateX(-50%)',
-            width: 0,
-            height: 0,
-            ...(isAbove
-              ? {
-                  borderLeft: `${ARROW_SIZE}px solid transparent`,
-                  borderRight: `${ARROW_SIZE}px solid transparent`,
-                  borderTop: `${ARROW_SIZE}px solid white`,
-                }
-              : {
-                  borderLeft: `${ARROW_SIZE}px solid transparent`,
-                  borderRight: `${ARROW_SIZE}px solid transparent`,
-                  borderBottom: `${ARROW_SIZE}px solid white`,
-                }),
-          }}
-        />
+        {pos.arrowSide === 'left' ? (
+          <>
+            {/* Left-side arrow outer (border color) — tooltip is to the right of the anchor */}
+            <div
+              style={{
+                position: 'absolute',
+                left: -(ARROW_SIZE + 1),
+                top: pos.arrowTop,
+                transform: 'translateY(-50%)',
+                width: 0,
+                height: 0,
+                borderTop: `${ARROW_SIZE + 1}px solid transparent`,
+                borderBottom: `${ARROW_SIZE + 1}px solid transparent`,
+                borderRight: `${ARROW_SIZE + 1}px solid #e5e7eb`,
+              }}
+            />
+            {/* Left-side arrow inner (white fill) */}
+            <div
+              style={{
+                position: 'absolute',
+                left: -ARROW_SIZE,
+                top: pos.arrowTop,
+                transform: 'translateY(-50%)',
+                width: 0,
+                height: 0,
+                borderTop: `${ARROW_SIZE}px solid transparent`,
+                borderBottom: `${ARROW_SIZE}px solid transparent`,
+                borderRight: `${ARROW_SIZE}px solid white`,
+              }}
+            />
+          </>
+        ) : (
+          <>
+            {/* Top/bottom arrow outer (border color) */}
+            <div
+              style={{
+                position: 'absolute',
+                ...(pos.arrowSide === 'bottom'
+                  ? { bottom: -(ARROW_SIZE + 1) }
+                  : { top: -(ARROW_SIZE + 1) }),
+                left: pos.arrowLeft,
+                transform: 'translateX(-50%)',
+                width: 0,
+                height: 0,
+                ...(pos.arrowSide === 'bottom'
+                  ? {
+                      borderLeft: `${ARROW_SIZE + 1}px solid transparent`,
+                      borderRight: `${ARROW_SIZE + 1}px solid transparent`,
+                      borderTop: `${ARROW_SIZE + 1}px solid #e5e7eb`,
+                    }
+                  : {
+                      borderLeft: `${ARROW_SIZE + 1}px solid transparent`,
+                      borderRight: `${ARROW_SIZE + 1}px solid transparent`,
+                      borderBottom: `${ARROW_SIZE + 1}px solid #e5e7eb`,
+                    }),
+              }}
+            />
+            {/* Top/bottom arrow inner (white fill) */}
+            <div
+              style={{
+                position: 'absolute',
+                ...(pos.arrowSide === 'bottom' ? { bottom: -ARROW_SIZE } : { top: -ARROW_SIZE }),
+                left: pos.arrowLeft,
+                transform: 'translateX(-50%)',
+                width: 0,
+                height: 0,
+                ...(pos.arrowSide === 'bottom'
+                  ? {
+                      borderLeft: `${ARROW_SIZE}px solid transparent`,
+                      borderRight: `${ARROW_SIZE}px solid transparent`,
+                      borderTop: `${ARROW_SIZE}px solid white`,
+                    }
+                  : {
+                      borderLeft: `${ARROW_SIZE}px solid transparent`,
+                      borderRight: `${ARROW_SIZE}px solid transparent`,
+                      borderBottom: `${ARROW_SIZE}px solid white`,
+                    }),
+              }}
+            />
+          </>
+        )}
         <p className="text-xs text-gray-700 leading-relaxed mb-2">{text}</p>
         <button
           onClick={handleDismiss}

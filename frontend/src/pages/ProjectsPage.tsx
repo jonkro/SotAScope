@@ -35,6 +35,7 @@ export default function ProjectsPage() {
           Import
         </button>
         <button
+          data-hint="new-project"
           onClick={() => setShowCreate(true)}
           className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
         >
