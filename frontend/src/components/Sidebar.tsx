@@ -30,7 +30,7 @@ export default function Sidebar() {
 
   return (
     <aside className="w-56 shrink-0 border-r border-gray-200 bg-gray-50 flex flex-col h-screen sticky top-0">
-      <div className="px-4 py-5 font-semibold text-lg text-gray-800">LitExplorer</div>
+      <div className="px-4 py-5 font-semibold text-lg text-gray-800">SotAScope</div>
       <nav className="flex-1 px-2 space-y-1">
         {links.map((l) => {
           const href = l.to === '/projects' ? lastProjectsPath.current : l.to;
@@ -60,19 +60,19 @@ export default function Sidebar() {
         hints={[
           {
             anchorRef: newProjectBtnRef,
-            storageKey: 'litexplorer:onboarding:app:new-project',
+            storageKey: 'sotascope:onboarding:app:new-project',
             text: 'Create or import a project to get started.',
             placement: 'bottom',
           },
           {
             anchorRef: venuesLinkRef,
-            storageKey: 'litexplorer:onboarding:app:venues',
+            storageKey: 'sotascope:onboarding:app:venues',
             text: 'Manage venues across projects.',
             placement: 'right',
           },
           {
             anchorRef: settingsLinkRef,
-            storageKey: 'litexplorer:onboarding:app:settings',
+            storageKey: 'sotascope:onboarding:app:settings',
             text: 'Check settings for full performance.',
             placement: 'right',
           },

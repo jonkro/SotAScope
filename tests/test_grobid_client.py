@@ -1,4 +1,4 @@
-"""Tests for GrobidClient (litexplorer/external/grobid.py)."""
+"""Tests for GrobidClient (sotascope/external/grobid.py)."""
 
 import sys
 from contextlib import contextmanager
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from litexplorer.external.grobid import GrobidClient, GrobidError, GrobidReference
+from sotascope.external.grobid import GrobidClient, GrobidError, GrobidReference
 
 # ---------------------------------------------------------------------------
 # Realistic TEI XML fixture (mirrors a GROBID processReferences response)

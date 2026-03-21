@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from litexplorer.external.openalex import OpenAlexClient, parse_work
+from sotascope.external.openalex import OpenAlexClient, parse_work
 from tests.fixtures.openalex_responses import (
     SAMPLE_BATCH_RESPONSE,
     SAMPLE_FORWARD_CITATIONS_PAGE1,

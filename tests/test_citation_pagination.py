@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from litexplorer.models.library import Citation, Work
-from litexplorer.services.scoring import compute_relevance_score
+from sotascope.models.library import Citation, Work
+from sotascope.services.scoring import compute_relevance_score
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ def referenced_works(db_session, seed_work):
 def test_relevance_score_basic():
     score = compute_relevance_score(100, 2020)
     # Function rounds to 4 decimal places; use abs tolerance accordingly
-    assert score == pytest.approx(math.log1p(100) + (2020 - 2000) / 5.0, abs=1e-4)
+    assert score == pytest.approx(math.log1p(100) + (2020 - 2000) / 2.0, abs=1e-4)
 
 
 def test_relevance_score_null_values():
@@ -88,8 +88,9 @@ def test_relevance_score_old_year_no_penalty():
 def test_relevance_ordering():
     # High-cited recent paper should beat high-cited old paper
     assert compute_relevance_score(900, 2023) > compute_relevance_score(900, 2005)
-    # High-cited paper should beat low-cited recent paper
-    assert compute_relevance_score(1000, 2010) > compute_relevance_score(10, 2023)
+    # Very high-cited paper should beat low-cited recent paper
+    # With formula log(1+c) + (y-2000)/2: log(100001)+5 ≈ 16.6 > log(11)+11.5 ≈ 13.9
+    assert compute_relevance_score(100000, 2010) > compute_relevance_score(10, 2023)
 
 
 # ---------------------------------------------------------------------------

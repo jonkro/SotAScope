@@ -8,10 +8,10 @@ import re
 
 import pytest
 
-from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Work, WorkNote
-from litexplorer.models.project import Project
-from litexplorer.services.extraction_export import (
+from sotascope.models.extraction import ExtractionColumn, ExtractionSchema
+from sotascope.models.library import Work, WorkNote
+from sotascope.models.project import Project
+from sotascope.services.extraction_export import (
     _escape_latex,
     export_as_csv,
     export_as_latex,

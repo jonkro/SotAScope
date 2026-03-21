@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "litexplorer"
+name = "sotascope"
 version = "0.9.5"
 description = "Local-first research literature dashboard"
 requires-python = ">=3.11"
@@ -34,10 +34,10 @@ fixtures = [
 ]
 
 [project.scripts]
-litexplorer = "litexplorer.cli:main"
+sotascope = "sotascope.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["litexplorer*"]
+include = ["sotascope*"]
 
 [tool.ruff]
 target-version = "py311"

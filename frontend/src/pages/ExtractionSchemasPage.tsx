@@ -805,7 +805,7 @@ export default function ExtractionSchemasPage() {
         hints={[
           {
             anchorRef: newSchemaBtnRef,
-            storageKey: 'litexplorer:onboarding:extraction-schemas:new-schema',
+            storageKey: 'sotascope:onboarding:extraction-schemas:new-schema',
             text: 'Define columns of information to extract from your papers.',
             placement: 'bottom',
           },

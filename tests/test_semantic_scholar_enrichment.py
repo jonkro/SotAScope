@@ -8,11 +8,11 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.api.deps import get_db
-from litexplorer.external.base import ExternalWork
-from litexplorer.external.semantic_scholar import SemanticScholarClient
-from litexplorer.models.base import Base
-from litexplorer.models.library import Citation, Work
+from sotascope.api.deps import get_db
+from sotascope.external.base import ExternalWork
+from sotascope.external.semantic_scholar import SemanticScholarClient
+from sotascope.models.base import Base
+from sotascope.models.library import Citation, Work
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ def mock_oa_client():
 @pytest.fixture()
 def client(db_session, mock_ss_client, mock_oa_client):
     """TestClient with mocked S2 + OA clients."""
-    from litexplorer.app import app
+    from sotascope.app import app
 
     def _override_get_db():
         try:
@@ -74,8 +74,8 @@ def client(db_session, mock_ss_client, mock_oa_client):
 
     app.dependency_overrides[get_db] = _override_get_db
 
-    with patch("litexplorer.api.enrichment._get_ss_client") as mock_get_ss, \
-         patch("litexplorer.api.enrichment._get_client") as mock_get_oa:
+    with patch("sotascope.api.enrichment._get_ss_client") as mock_get_ss, \
+         patch("sotascope.api.enrichment._get_client") as mock_get_oa:
         mock_get_ss.return_value = mock_ss_client
         mock_get_oa.return_value = mock_oa_client
         with TestClient(app, raise_server_exceptions=False) as c:
@@ -259,7 +259,7 @@ def test_existing_work_matched_by_ss_id(db_session, client, mock_ss_client):
 def test_s2_ref_with_doi_gets_openalex_id(db_session, client, mock_ss_client, mock_oa_client):
     """OA pipeline integration is tested in the service layer; API returns 202."""
     from tests.fixtures.openalex_responses import SAMPLE_WORK_RAW
-    from litexplorer.external.openalex import OpenAlexClient
+    from sotascope.external.openalex import OpenAlexClient
 
     work = _make_work(db_session, doi="10.1234/seed", title="Seed Paper")
 

@@ -9,11 +9,11 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.external.openalex import OpenAlexClient, parse_work
-from litexplorer.models.base import Base
-from litexplorer.models.cache import ApiCache
-from litexplorer.models.library import Work
-from litexplorer.services.enrichment import EnrichmentService
+from sotascope.external.openalex import OpenAlexClient, parse_work
+from sotascope.models.base import Base
+from sotascope.models.cache import ApiCache
+from sotascope.models.library import Work
+from sotascope.services.enrichment import EnrichmentService
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -8,10 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Work, WorkNote
-from litexplorer.models.project import Project
-from litexplorer.services.extraction import (
+from sotascope.models.extraction import ExtractionColumn, ExtractionSchema
+from sotascope.models.library import Work, WorkNote
+from sotascope.models.project import Project
+from sotascope.services.extraction import (
     assemble_extraction_prompt,
     parse_extraction_response,
     run_extraction_for_work,
@@ -626,11 +626,11 @@ def test_extract_for_work_creates_notes(client, db_session, schema, columns, wor
 
     mock_client = _mock_llm_client(llm_reply)
 
-    with patch("litexplorer.api.extraction.make_llm_client", return_value=mock_client), \
-         patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+    with patch("sotascope.api.extraction.make_llm_client", return_value=mock_client), \
+         patch("sotascope.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
 
         # Set required settings so _build_llm_client succeeds
-        from litexplorer.models.settings import Setting
+        from sotascope.models.settings import Setting
         db_session.merge(Setting(key="llm_provider", value="openai"))
         db_session.merge(Setting(key="llm_model_id", value="gpt-4o"))
         db_session.merge(Setting(key="llm_api_key", value="sk-test"))
@@ -657,7 +657,7 @@ def test_extract_for_work_creates_notes(client, db_session, schema, columns, wor
 
 def test_extract_no_llm_configured(client, db_session, schema, work):
     """Returns 400 when no LLM provider is configured."""
-    from litexplorer.models.settings import Setting
+    from sotascope.models.settings import Setting
     db_session.merge(Setting(key="llm_provider", value=""))
     db_session.merge(Setting(key="llm_model_id", value=""))
     db_session.commit()
@@ -669,7 +669,7 @@ def test_extract_no_llm_configured(client, db_session, schema, work):
 
 def test_extract_no_model_configured(client, db_session, schema, work):
     """Returns 400 when provider is set but model is not."""
-    from litexplorer.models.settings import Setting
+    from sotascope.models.settings import Setting
     db_session.merge(Setting(key="llm_provider", value="openai"))
     db_session.merge(Setting(key="llm_model_id", value=""))
     db_session.commit()
@@ -680,7 +680,7 @@ def test_extract_no_model_configured(client, db_session, schema, work):
 
 
 def test_extract_schema_not_found(client, db_session, work):
-    from litexplorer.models.settings import Setting
+    from sotascope.models.settings import Setting
     db_session.merge(Setting(key="llm_provider", value="openai"))
     db_session.merge(Setting(key="llm_model_id", value="gpt-4o"))
     db_session.commit()
@@ -695,10 +695,10 @@ def test_extract_batch(client, db_session, schema, columns, work):
 
     mock_client = _mock_llm_client(llm_reply)
 
-    with patch("litexplorer.api.extraction.make_llm_client", return_value=mock_client), \
-         patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+    with patch("sotascope.api.extraction.make_llm_client", return_value=mock_client), \
+         patch("sotascope.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
 
-        from litexplorer.models.settings import Setting
+        from sotascope.models.settings import Setting
         db_session.merge(Setting(key="llm_provider", value="openai"))
         db_session.merge(Setting(key="llm_model_id", value="gpt-4o"))
         db_session.merge(Setting(key="llm_api_key", value="sk-test"))
@@ -726,14 +726,14 @@ def test_extract_batch(client, db_session, schema, columns, work):
 
 def test_extract_for_work_409_when_locked(client, db_session, schema, columns, work):
     """Returns 409 if the work already has an active lock."""
-    from litexplorer.services.work_lock import work_lock
+    from sotascope.services.work_lock import work_lock
 
     _setup_llm_settings(db_session)
 
     work_lock.acquire(work.id, "test lock")
     try:
-        with patch("litexplorer.api.extraction.make_llm_client", return_value=MagicMock()), \
-             patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+        with patch("sotascope.api.extraction.make_llm_client", return_value=MagicMock()), \
+             patch("sotascope.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
             resp = client.post(f"/api/extraction/schemas/{schema.id}/extract/{work.id}")
         assert resp.status_code == 409
         assert str(work.id) in resp.json()["detail"]
@@ -743,14 +743,14 @@ def test_extract_for_work_409_when_locked(client, db_session, schema, columns, w
 
 def test_extract_batch_409_when_locked(client, db_session, schema, columns, work):
     """Batch endpoint returns 409 if any requested work is already locked."""
-    from litexplorer.services.work_lock import work_lock
+    from sotascope.services.work_lock import work_lock
 
     _setup_llm_settings(db_session)
 
     work_lock.acquire(work.id, "test lock")
     try:
-        with patch("litexplorer.api.extraction.make_llm_client", return_value=MagicMock()), \
-             patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+        with patch("sotascope.api.extraction.make_llm_client", return_value=MagicMock()), \
+             patch("sotascope.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
             resp = client.post(
                 f"/api/extraction/schemas/{schema.id}/extract",
                 json={"work_ids": [work.id]},
@@ -826,7 +826,7 @@ def test_run_extraction_non_json_response_uses_parsing_method(db_session, schema
 
 def _setup_llm_settings(db_session):
     """Helper: seed the LLM settings needed by _build_llm_client."""
-    from litexplorer.models.settings import Setting
+    from sotascope.models.settings import Setting
     db_session.merge(Setting(key="llm_provider", value="openai"))
     db_session.merge(Setting(key="llm_model_id", value="gpt-4o"))
     db_session.merge(Setting(key="llm_api_key", value="sk-test"))
@@ -1280,8 +1280,8 @@ def test_batch_extraction_with_re_evaluate_edited_via_api(
 
     _setup_llm_settings(db_session)
 
-    with patch("litexplorer.api.extraction.make_llm_client", return_value=mock_client), \
-         patch("litexplorer.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
+    with patch("sotascope.api.extraction.make_llm_client", return_value=mock_client), \
+         patch("sotascope.api.extraction._get_pdf_root", return_value=Path("/tmp/fake")):
         resp = client.post(
             f"/api/extraction/schemas/{schema.id}/extract",
             json={"work_ids": [work.id], "re_evaluate_edited": True},

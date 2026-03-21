@@ -8,12 +8,12 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.external.base import ExternalWork
-from litexplorer.external.openalex import OpenAlexClient, parse_work
-from litexplorer.external.semantic_scholar import SemanticScholarClient
-from litexplorer.models.base import Base
-from litexplorer.models.cache import ApiCache
-from litexplorer.models.library import (
+from sotascope.external.base import ExternalWork
+from sotascope.external.openalex import OpenAlexClient, parse_work
+from sotascope.external.semantic_scholar import SemanticScholarClient
+from sotascope.models.base import Base
+from sotascope.models.cache import ApiCache
+from sotascope.models.library import (
     Author,
     Citation,
     Venue,
@@ -22,7 +22,7 @@ from litexplorer.models.library import (
     WorkAuthor,
     WorkLocation,
 )
-from litexplorer.services.enrichment import EnrichmentService
+from sotascope.services.enrichment import EnrichmentService
 from tests.fixtures.openalex_responses import (
     SAMPLE_REFERENCED_WORK_RAW,
     SAMPLE_STUB_WORK_RAW,
@@ -644,7 +644,7 @@ class TestS2CorpusId:
 
     def test_parse_paper_uses_corpus_id(self):
         """_parse_paper stores corpusId (as string), not the 40-char SHA."""
-        from litexplorer.external.semantic_scholar import _parse_paper
+        from sotascope.external.semantic_scholar import _parse_paper
 
         raw = self._make_s2_response(
             corpus_id=123456789,
@@ -657,7 +657,7 @@ class TestS2CorpusId:
 
     def test_parse_paper_falls_back_to_paper_id_when_no_corpus_id(self):
         """When corpusId is absent, _parse_paper falls back to paperId."""
-        from litexplorer.external.semantic_scholar import _parse_paper
+        from sotascope.external.semantic_scholar import _parse_paper
 
         raw = {
             "paperId": "b" * 40,
@@ -673,7 +673,7 @@ class TestS2CorpusId:
 
     def test_get_paper_by_id_uses_corpus_id_prefix(self):
         """get_paper_by_id auto-prepends CorpusId: for numeric IDs."""
-        from litexplorer.external.semantic_scholar import SemanticScholarClient
+        from sotascope.external.semantic_scholar import SemanticScholarClient
 
         client = SemanticScholarClient()
         with patch.object(client, "_call") as mock_call:
@@ -691,7 +691,7 @@ class TestS2CorpusId:
 
     def test_get_paper_by_id_passes_sha_unchanged(self):
         """40-char SHA IDs are passed through without modification."""
-        from litexplorer.external.semantic_scholar import SemanticScholarClient
+        from sotascope.external.semantic_scholar import SemanticScholarClient
 
         sha = "c" * 40
         client = SemanticScholarClient()

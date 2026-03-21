@@ -16,10 +16,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from litexplorer.models.chat import ChatMessage, ChatSession
-from litexplorer.models.library import Work, WorkPDF
-from litexplorer.models.project import Project
-from litexplorer.models.settings import Setting
+from sotascope.models.chat import ChatMessage, ChatSession
+from sotascope.models.library import Work, WorkPDF
+from sotascope.models.project import Project
+from sotascope.models.settings import Setting
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ def test_chat_with_session_id_auto_persists(client, db_session):
     resp = client.post("/api/chat/sessions/auto", json={"work_id": work.id, "project_id": None})
     session_id = resp.json()["id"]
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "This paper is about X."
         mock_factory.return_value = mock_llm
@@ -465,7 +465,7 @@ def test_chat_without_session_id_no_error(client, db_session):
     work = _make_work(db_session, doi_suffix="no_session")
     _make_pdf(db_session, work.id)
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Reply."
         mock_factory.return_value = mock_llm

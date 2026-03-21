@@ -96,7 +96,7 @@ export default function ProjectsPage() {
           onSubmit={(data) => {
             createMut.mutate(data, {
               onSuccess: (project) => {
-                localStorage.setItem(`litexplorer:project:${project.id}:isNew`, 'true');
+                localStorage.setItem(`sotascope:project:${project.id}:isNew`, 'true');
                 setShowCreate(false);
               },
             });

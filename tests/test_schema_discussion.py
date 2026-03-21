@@ -45,12 +45,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from litexplorer.models.chat import ChatSession  # registers chat_sessions table with Base.metadata
-from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Work
-from litexplorer.models.project import Project
-from litexplorer.models.settings import Setting
-from litexplorer.services.schema_discussion import (
+from sotascope.models.chat import ChatSession  # registers chat_sessions table with Base.metadata
+from sotascope.models.extraction import ExtractionColumn, ExtractionSchema
+from sotascope.models.library import Work
+from sotascope.models.project import Project
+from sotascope.models.settings import Setting
+from sotascope.services.schema_discussion import (
     build_schema_discussion_prompt,
     parse_column_proposals,
 )
@@ -164,7 +164,7 @@ def test_chat_schema_mode_uses_schema_system_prompt_and_no_docs(client, db_sessi
     assert session_resp.status_code == 200
     session_id = session_resp.json()["id"]
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Here is a proposed column."
         mock_factory.return_value = mock_llm
@@ -201,7 +201,7 @@ def test_chat_schema_mode_no_context_id_uses_new_schema_prompt(client, db_sessio
     })
     session_id = session_resp.json()["id"]
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Let's start with some questions."
         mock_factory.return_value = mock_llm
@@ -226,7 +226,7 @@ def test_chat_paper_mode_unaffected_by_schema_routing(client, db_session):
     db_session.add(work)
     db_session.commit()
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "This paper proposes a novel architecture."
         mock_factory.return_value = mock_llm

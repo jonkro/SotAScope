@@ -777,10 +777,10 @@ export default function DiscussionPage() {
 
   // localStorage keys for persisting mode + schema selection.
   const modeKey = !isLibraryMode && projectId != null
-    ? `litexplorer:discuss:project:${projectId}:mode`
+    ? `sotascope:discuss:project:${projectId}:mode`
     : null;
   const contextIdKey = !isLibraryMode && projectId != null
-    ? `litexplorer:discuss:project:${projectId}:context_id`
+    ? `sotascope:discuss:project:${projectId}:context_id`
     : null;
 
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('papers');
@@ -835,7 +835,7 @@ export default function DiscussionPage() {
 
   // localStorage key for persisting paper selection for this project discussion.
   const selKey = !isLibraryMode && projectId != null
-    ? `litexplorer:discuss:project:${projectId}:sel`
+    ? `sotascope:discuss:project:${projectId}:sel`
     : null;
 
   // When the auto-session is restored with messages, we need to honour the saved

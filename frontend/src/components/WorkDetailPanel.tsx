@@ -1692,19 +1692,19 @@ export default function WorkDetailPanel({
       hints={[
         {
           anchorRef: pdfsSectionRef,
-          storageKey: 'litexplorer:onboarding:sidepanel:pdfs',
+          storageKey: 'sotascope:onboarding:sidepanel:pdfs',
           text: 'Attach a PDF or fetch one automatically.',
           placement: 'bottom',
         },
         {
           anchorRef: discussBtnRef,
-          storageKey: 'litexplorer:onboarding:sidepanel:discuss',
+          storageKey: 'sotascope:onboarding:sidepanel:discuss',
           text: 'Discuss this paper with AI.',
           placement: 'bottom',
         },
         {
           anchorRef: topicListRef,
-          storageKey: 'litexplorer:onboarding:sidepanel:topic-list',
+          storageKey: 'sotascope:onboarding:sidepanel:topic-list',
           text: 'Add this paper to a topic list.',
           placement: 'top',
         },

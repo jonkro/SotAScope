@@ -2,9 +2,9 @@
 
 import pytest
 
-from litexplorer.models.cache import ApiCache
-from litexplorer.models.library import Citation, Venue, Work
-from litexplorer.models.project import Project, TopicList, TopicListWork
+from sotascope.models.cache import ApiCache
+from sotascope.models.library import Citation, Venue, Work
+from sotascope.models.project import Project, TopicList, TopicListWork
 
 
 @pytest.fixture()

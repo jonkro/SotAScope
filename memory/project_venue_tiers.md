@@ -8,17 +8,17 @@ Per-project venue tiers implemented (Mar 2026).
 
 **Why:** Different projects may want to classify venues differently (e.g., a CV project treats CVPR as tier 1, but an NLP project doesn't).
 
-**How to apply:** When resolving venue tiers in a project context, always use `resolve_venue_tier()` or `bulk_resolve_venue_tiers()` from `litexplorer/services/venue_tiers.py` rather than reading `Venue.tier` directly.
+**How to apply:** When resolving venue tiers in a project context, always use `resolve_venue_tier()` or `bulk_resolve_venue_tiers()` from `sotascope/services/venue_tiers.py` rather than reading `Venue.tier` directly.
 
 ## Architecture
 
-- `ProjectVenueTier` model in `litexplorer/models/project.py`: `(project_id FK, venue_id FK, tier INTEGER, UNIQUE(project_id, venue_id))`. CASCADE delete on project_id.
+- `ProjectVenueTier` model in `sotascope/models/project.py`: `(project_id FK, venue_id FK, tier INTEGER, UNIQUE(project_id, venue_id))`. CASCADE delete on project_id.
 - Migration in `app.py` `_migrate_schema()`: creates `project_venue_tiers` table if not exists.
-- Service helpers in `litexplorer/services/venue_tiers.py`:
+- Service helpers in `sotascope/services/venue_tiers.py`:
   - `resolve_venue_tier(project_id, venue_id, db) -> int` — single venue
   - `bulk_resolve_venue_tiers(project_id, venue_ids, db) -> dict[int, int]` — batch
-- Pydantic schemas in `litexplorer/schemas/projects.py`: `ProjectVenueTierOut`, `ProjectVenueTierUpdate`
-- API endpoints in `litexplorer/api/projects.py` (prefix `/api/projects`):
+- Pydantic schemas in `sotascope/schemas/projects.py`: `ProjectVenueTierOut`, `ProjectVenueTierUpdate`
+- API endpoints in `sotascope/api/projects.py` (prefix `/api/projects`):
   - `GET /{id}/venue-tiers` — all project-relevant venues with global/local/effective tier
   - `PUT /{id}/venue-tiers/{venue_id}` — upsert local override
   - `DELETE /{id}/venue-tiers/{venue_id}` — delete override (reverts to global)

@@ -2,8 +2,8 @@
 
 import pytest
 
-from litexplorer.models.library import Work, WorkNote
-from litexplorer.models.project import Project, TopicList, TopicListWork
+from sotascope.models.library import Work, WorkNote
+from sotascope.models.project import Project, TopicList, TopicListWork
 
 
 @pytest.fixture()

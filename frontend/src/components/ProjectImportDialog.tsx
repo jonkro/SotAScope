@@ -239,7 +239,7 @@ export function ProjectImportDialog({ onClose }: Props) {
                 <div className="space-y-3">
                   <p className="text-sm text-gray-600">
                     Select a <code className="bg-gray-100 px-1 rounded">.zip</code> archive
-                    exported from LitExplorer.
+                    exported from SotAScope.
                   </p>
                   <input
                     ref={fileRef}

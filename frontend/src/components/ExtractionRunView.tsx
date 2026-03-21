@@ -324,7 +324,7 @@ const DEFAULT_EXTRACTION_COL_WIDTH = 180;
 
 function loadColWidths(schemaId: number): Record<string, number> {
   try {
-    const raw = localStorage.getItem(`litexplorer:schema:${schemaId}:columnWidths`);
+    const raw = localStorage.getItem(`sotascope:schema:${schemaId}:columnWidths`);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -333,7 +333,7 @@ function loadColWidths(schemaId: number): Record<string, number> {
 
 function loadRowHeights(schemaId: number): Record<number, number> {
   try {
-    const raw = localStorage.getItem(`litexplorer:schema:${schemaId}:rowHeights`);
+    const raw = localStorage.getItem(`sotascope:schema:${schemaId}:rowHeights`);
     if (!raw) return {};
     const parsed: Record<string, number> = JSON.parse(raw);
     const out: Record<number, number> = {};
@@ -914,7 +914,7 @@ export default function ExtractionRunView({
           const next = { ...prev, [key]: latestWidth };
           try {
             localStorage.setItem(
-              `litexplorer:schema:${schema.id}:columnWidths`,
+              `sotascope:schema:${schema.id}:columnWidths`,
               JSON.stringify(next),
             );
           } catch { /* quota exceeded */ }
@@ -962,7 +962,7 @@ export default function ExtractionRunView({
           const next = { ...prev, [workId]: latestHeight };
           try {
             localStorage.setItem(
-              `litexplorer:schema:${schema.id}:rowHeights`,
+              `sotascope:schema:${schema.id}:rowHeights`,
               JSON.stringify(next),
             );
           } catch { /* quota exceeded */ }
@@ -1538,13 +1538,13 @@ export default function ExtractionRunView({
         hints={[
           {
             anchorRef: extractBtnRef,
-            storageKey: 'litexplorer:onboarding:extraction-schemas:extract-btn',
+            storageKey: 'sotascope:onboarding:extraction-schemas:extract-btn',
             text: 'Run AI extraction on all selected papers at once.',
             placement: 'bottom',
           },
           {
             anchorRef: showPromptBtnRef,
-            storageKey: 'litexplorer:onboarding:extraction-schemas:show-prompt',
+            storageKey: 'sotascope:onboarding:extraction-schemas:show-prompt',
             text: 'Copy this prompt to use with any external LLM.',
             placement: 'bottom',
           },

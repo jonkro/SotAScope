@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from litexplorer.models.library import Work, WorkPDF
-from litexplorer.models.settings import Setting
+from sotascope.models.library import Work, WorkPDF
+from sotascope.models.settings import Setting
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ def test_chat_happy_path_text_context(client, db_session):
     work = _make_work(db_session)
     _make_pdf(db_session, work.id, filename="paper.pdf", extraction_status="ready")
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "This paper is about X."
         mock_factory.return_value = mock_llm
@@ -108,7 +108,7 @@ def test_chat_pdf_context_anthropic(client, db_session):
 
     fake_pdf_bytes = b"%PDF-1.4 fake content"
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "PDF summary."
         mock_factory.return_value = mock_llm
@@ -190,7 +190,7 @@ def test_chat_paper_no_extracted_text(client, db_session):
     work = _make_work(db_session)
     _make_pdf(db_session, work.id, filename="paper.pdf", extraction_status="pending")
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Some reply."
         mock_factory.return_value = mock_llm
@@ -220,7 +220,7 @@ def test_chat_pdf_file_missing_on_disk(client, db_session):
     work = _make_work(db_session)
     _make_pdf(db_session, work.id, filename="missing.pdf", extraction_status="ready")
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Reply without PDF."
         mock_factory.return_value = mock_llm
@@ -268,7 +268,7 @@ def test_chat_sdk_error_returns_502(client, db_session):
     _seed_llm_settings(db_session)
     work = _make_work(db_session)
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.side_effect = Exception("Rate limit exceeded")
         mock_factory.return_value = mock_llm
@@ -293,7 +293,7 @@ def test_chat_library_mode(client, db_session):
     work = _make_work(db_session, title="Library Paper", year=2021)
     _make_pdf(db_session, work.id, filename="lib.pdf", extraction_status="ready")
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Library reply."
         mock_factory.return_value = mock_llm
@@ -328,7 +328,7 @@ def test_chat_project_mode_multiple_papers(client, db_session):
     _make_pdf(db_session, work1.id, filename="one.pdf", extraction_status="ready")
     _make_pdf(db_session, work2.id, filename="two.pdf", extraction_status="failed")
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Combined reply."
         mock_factory.return_value = mock_llm

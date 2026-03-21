@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from litexplorer.models.settings import Setting
+from sotascope.models.settings import Setting
 
 
 @pytest.fixture()

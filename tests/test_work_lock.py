@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from litexplorer.services.work_lock import _WorkLockRegistry
+from sotascope.services.work_lock import _WorkLockRegistry
 
 
 @pytest.fixture()

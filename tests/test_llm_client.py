@@ -14,15 +14,15 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.api.deps import get_db
-from litexplorer.external.llm_client import (
+from sotascope.api.deps import get_db
+from sotascope.external.llm_client import (
     AnthropicLLMClient,
     ContextDocument,
     OpenAILLMClient,
     make_llm_client,
 )
-from litexplorer.models.base import Base
-from litexplorer.models.settings import Setting
+from sotascope.models.base import Base
+from sotascope.models.settings import Setting
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def db_session():
 
 @pytest.fixture()
 def client(db_session):
-    from litexplorer.app import app
+    from sotascope.app import app
 
     def _override_get_db():
         try:
@@ -100,7 +100,7 @@ def _make_doc(
 
 def test_anthropic_chat_text_context():
     """chat() sends correct system prompt and text content blocks for a text document."""
-    with patch("litexplorer.external.llm_client.anthropic") as mock_mod:
+    with patch("sotascope.external.llm_client.anthropic") as mock_mod:
         mock_instance = MagicMock()
         mock_mod.Anthropic.return_value = mock_instance
         mock_resp = MagicMock()
@@ -137,7 +137,7 @@ def test_anthropic_chat_text_context():
 
 def test_anthropic_chat_pdf_context():
     """chat() adds a document content block with base64 PDF data when pdf_bytes is set."""
-    with patch("litexplorer.external.llm_client.anthropic") as mock_mod:
+    with patch("sotascope.external.llm_client.anthropic") as mock_mod:
         mock_instance = MagicMock()
         mock_mod.Anthropic.return_value = mock_instance
         mock_resp = MagicMock()
@@ -165,7 +165,7 @@ def test_anthropic_chat_pdf_context():
 
 def test_anthropic_chat_no_content():
     """chat() produces a 'No content available' text block when text and pdf_bytes are None."""
-    with patch("litexplorer.external.llm_client.anthropic") as mock_mod:
+    with patch("sotascope.external.llm_client.anthropic") as mock_mod:
         mock_instance = MagicMock()
         mock_mod.Anthropic.return_value = mock_instance
         mock_resp = MagicMock()
@@ -200,9 +200,9 @@ def test_anthropic_list_models():
     }
     mock_http_resp.raise_for_status = MagicMock()
 
-    with patch("litexplorer.external.llm_client.anthropic") as mock_mod:
+    with patch("sotascope.external.llm_client.anthropic") as mock_mod:
         mock_mod.Anthropic.return_value = MagicMock()
-        with patch("litexplorer.external.llm_client.httpx") as mock_httpx:
+        with patch("sotascope.external.llm_client.httpx") as mock_httpx:
             mock_httpx.get.return_value = mock_http_resp
 
             c = AnthropicLLMClient(api_key="test-key", model_id="claude-test")
@@ -222,7 +222,7 @@ def test_anthropic_list_models():
 
 def test_openai_chat_text_context():
     """chat() sends a system message and context prepended to the user message."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_instance = MagicMock()
         mock_mod.OpenAI.return_value = mock_instance
         mock_completion = MagicMock()
@@ -250,7 +250,7 @@ def test_openai_chat_text_context():
 
 def test_openai_chat_pdf_ignored():
     """chat() silently ignores pdf_bytes and uses extracted text instead."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_instance = MagicMock()
         mock_mod.OpenAI.return_value = mock_instance
         mock_completion = MagicMock()
@@ -281,7 +281,7 @@ def test_openai_chat_pdf_ignored():
 
 def test_openai_list_models_cloud_filters_gpt():
     """list_models() for OpenAI cloud (no base_url) returns only 'gpt' model IDs."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_instance = MagicMock()
         mock_mod.OpenAI.return_value = mock_instance
         mock_instance.models.list.return_value = [
@@ -310,8 +310,8 @@ def test_openai_list_models_local_returns_all():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch("litexplorer.external.llm_client.openai") as mock_mod, \
-         patch("litexplorer.external.llm_client.httpx.get", return_value=mock_response) as mock_get:
+    with patch("sotascope.external.llm_client.openai") as mock_mod, \
+         patch("sotascope.external.llm_client.httpx.get", return_value=mock_response) as mock_get:
         mock_mod.OpenAI.return_value = MagicMock()
 
         c = OpenAILLMClient(
@@ -334,8 +334,8 @@ def test_openai_list_models_local_with_key_sends_bearer():
     mock_response.json.return_value = {"data": [{"id": "my-model"}]}
     mock_response.raise_for_status = MagicMock()
 
-    with patch("litexplorer.external.llm_client.openai") as mock_mod, \
-         patch("litexplorer.external.llm_client.httpx.get", return_value=mock_response) as mock_get:
+    with patch("sotascope.external.llm_client.openai") as mock_mod, \
+         patch("sotascope.external.llm_client.httpx.get", return_value=mock_response) as mock_get:
         mock_mod.OpenAI.return_value = MagicMock()
 
         c = OpenAILLMClient(
@@ -359,7 +359,7 @@ def test_openai_list_models_local_with_key_sends_bearer():
 
 def test_openai_base_url_bare_port_gets_v1_appended():
     """Bare Ollama URL without a path gets /v1 appended."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_mod.OpenAI.return_value = MagicMock()
         c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://localhost:11434")
     assert c._base_url == "http://localhost:11434/v1"
@@ -367,7 +367,7 @@ def test_openai_base_url_bare_port_gets_v1_appended():
 
 def test_openai_base_url_already_v1_unchanged():
     """URL ending in /v1 is left unchanged."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_mod.OpenAI.return_value = MagicMock()
         c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://localhost:11434/v1")
     assert c._base_url == "http://localhost:11434/v1"
@@ -375,7 +375,7 @@ def test_openai_base_url_already_v1_unchanged():
 
 def test_openai_base_url_trailing_slash_v1_unchanged():
     """URL ending in /v1/ is left unchanged (no double /v1)."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_mod.OpenAI.return_value = MagicMock()
         c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://localhost:11434/v1/")
     assert c._base_url == "http://localhost:11434/v1/"
@@ -383,7 +383,7 @@ def test_openai_base_url_trailing_slash_v1_unchanged():
 
 def test_openai_base_url_custom_path_unchanged():
     """URL with a meaningful custom path is left unchanged."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_mod.OpenAI.return_value = MagicMock()
         c = OpenAILLMClient(api_key="", model_id="llama3", base_url="http://host:8080/custom/v1")
     assert c._base_url == "http://host:8080/custom/v1"
@@ -391,7 +391,7 @@ def test_openai_base_url_custom_path_unchanged():
 
 def test_openai_base_url_none_no_normalization():
     """None base_url is not modified."""
-    with patch("litexplorer.external.llm_client.openai") as mock_mod:
+    with patch("sotascope.external.llm_client.openai") as mock_mod:
         mock_mod.OpenAI.return_value = MagicMock()
         c = OpenAILLMClient(api_key="sk-test", model_id="gpt-4o", base_url=None)
     assert c._base_url is None
@@ -429,7 +429,7 @@ def test_llm_models_sdk_error_returns_200_with_error(db_session, client):
     db_session.add(Setting(key="llm_base_url", value="", description="test"))
     db_session.commit()
 
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.list_models.side_effect = Exception("Authentication failed")
         mock_factory.return_value = mock_llm

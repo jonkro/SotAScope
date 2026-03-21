@@ -3,9 +3,9 @@ and the health-check endpoint (GET /api/grobid/status).
 
 Mock strategy
 -------------
-* ``litexplorer.external.grobid.GrobidClient`` is patched per-test with a
+* ``sotascope.external.grobid.GrobidClient`` is patched per-test with a
   mock class whose constructor returns a mock instance.  Because the service
-  imports the class with ``from litexplorer.external.grobid import GrobidClient``
+  imports the class with ``from sotascope.external.grobid import GrobidClient``
   *inside* the function, patching the attribute on the source module is the
   correct approach.
 * ``pathlib.Path.exists`` and ``pathlib.Path.read_bytes`` are patched to avoid
@@ -25,14 +25,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import httpx
-from litexplorer.api.deps import get_db
-from litexplorer.external.grobid import GrobidReference
-from litexplorer.models.base import Base
-from litexplorer.models.library import Citation, Venue, VenueAlias, Work, WorkLocation, WorkPDF
-from litexplorer.models.project import Project, TopicList, TopicListWork
-from litexplorer.models.settings import Setting
-from litexplorer.schemas.enrichment import SearchImportCandidate
-from litexplorer.services.enrichment import EnrichmentService
+from sotascope.api.deps import get_db
+from sotascope.external.grobid import GrobidReference
+from sotascope.models.base import Base
+from sotascope.models.library import Citation, Venue, VenueAlias, Work, WorkLocation, WorkPDF
+from sotascope.models.project import Project, TopicList, TopicListWork
+from sotascope.models.settings import Setting
+from sotascope.schemas.enrichment import SearchImportCandidate
+from sotascope.services.enrichment import EnrichmentService
 from tests.fixtures.openalex_responses import SAMPLE_WORK_RAW
 
 
@@ -85,7 +85,7 @@ def mock_cr_client():
 @pytest.fixture()
 def client(db_session, mock_oa_client, mock_cr_client):
     """FastAPI TestClient with in-memory DB + mocked OA/Crossref clients."""
-    from litexplorer.app import app
+    from sotascope.app import app
 
     def _override_get_db():
         try:
@@ -96,8 +96,8 @@ def client(db_session, mock_oa_client, mock_cr_client):
     app.dependency_overrides[get_db] = _override_get_db
 
     with (
-        patch("litexplorer.api.enrichment._get_client") as mock_get_oa,
-        patch("litexplorer.api.enrichment._get_crossref_client") as mock_get_cr,
+        patch("sotascope.api.enrichment._get_client") as mock_get_oa,
+        patch("sotascope.api.enrichment._get_crossref_client") as mock_get_cr,
     ):
         mock_get_oa.return_value = mock_oa_client
         mock_get_cr.return_value = mock_cr_client
@@ -193,7 +193,7 @@ def test_grobid_enrich_with_doi_reference(db_session, client, mock_oa_client):
     mock_oa_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW
 
     with (
-        patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+        patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "read_bytes", return_value=b"fake pdf bytes"),
     ):
@@ -213,7 +213,7 @@ def test_grobid_enrich_with_arxiv_reference(db_session, client):
     refs = [_make_grobid_ref(arxiv_id="1234.5678")]
 
     with (
-        patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+        patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "read_bytes", return_value=b"fake pdf bytes"),
     ):
@@ -245,11 +245,11 @@ def test_grobid_enrich_title_only(db_session, client, mock_oa_client):
     mock_oa_client.get_work_by_doi_raw.return_value = SAMPLE_WORK_RAW
 
     with (
-        patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+        patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "read_bytes", return_value=b"fake pdf bytes"),
         patch(
-            "litexplorer.services.enrichment.EnrichmentService.search_import_candidates",
+            "sotascope.services.enrichment.EnrichmentService.search_import_candidates",
             return_value=[candidate],
         ),
     ):
@@ -269,7 +269,7 @@ def test_grobid_enrich_dedup(db_session, client):
     refs = [_make_grobid_ref(doi="10.1234/existing", title="Already In Library")]
 
     with (
-        patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+        patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "read_bytes", return_value=b"fake pdf bytes"),
     ):
@@ -323,11 +323,11 @@ def test_grobid_enrich_failed_resolution(db_session, client):
     refs = [_make_grobid_ref(title="xkcd qwerty zork nonsense unresolvable 2099")]
 
     with (
-        patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+        patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "read_bytes", return_value=b"fake pdf bytes"),
         patch(
-            "litexplorer.services.enrichment.EnrichmentService.search_import_candidates",
+            "sotascope.services.enrichment.EnrichmentService.search_import_candidates",
             return_value=[],
         ),
     ):
@@ -349,7 +349,7 @@ def test_grobid_status_available(db_session, client):
     mock_instance = MagicMock()
     mock_instance.check_health.return_value = True
 
-    with patch("litexplorer.api.grobid.GrobidClient", MagicMock(return_value=mock_instance)):
+    with patch("sotascope.api.grobid.GrobidClient", MagicMock(return_value=mock_instance)):
         resp = client.get("/api/grobid/status")
 
     assert resp.status_code == 200
@@ -365,7 +365,7 @@ def test_grobid_status_not_available(db_session, client):
     mock_instance = MagicMock()
     mock_instance.check_health.return_value = False
 
-    with patch("litexplorer.api.grobid.GrobidClient", MagicMock(return_value=mock_instance)):
+    with patch("sotascope.api.grobid.GrobidClient", MagicMock(return_value=mock_instance)):
         resp = client.get("/api/grobid/status")
 
     assert resp.status_code == 200
@@ -418,7 +418,7 @@ class TestGrobidResolutionChain:
     def _run(self, svc: EnrichmentService, work_id: int, refs: list, ss_client=None):
         """Invoke enrich_from_grobid with mocked GROBID extraction."""
         with (
-            patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+            patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
             patch.object(Path, "exists", return_value=True),
             patch.object(Path, "read_bytes", return_value=b"fake pdf"),
         ):
@@ -718,7 +718,7 @@ class TestStoreUnresolvedGrobidWork:
 
     def _run_unresolved(self, svc, work_id, refs):
         with (
-            patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+            patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
             patch.object(Path, "exists", return_value=True),
             patch.object(Path, "read_bytes", return_value=b"fake pdf"),
         ):
@@ -774,7 +774,7 @@ class TestStoreUnresolvedGrobidWork:
         svc2 = EnrichmentService(db=db_session, client=mock_oa, crossref_client=mock_cr)
 
         with (
-            patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+            patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
             patch.object(Path, "exists", return_value=True),
             patch.object(Path, "read_bytes", return_value=b"fake pdf"),
         ):
@@ -925,7 +925,7 @@ class TestGrobidCleanup:
         mock_ss = MagicMock()
         mock_ss.search_by_title.return_value = []
         with (
-            patch("litexplorer.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
+            patch("sotascope.external.grobid.GrobidClient", _mock_grobid_cls(refs)),
             patch.object(Path, "exists", return_value=True),
             patch.object(Path, "read_bytes", return_value=b"fake pdf"),
         ):

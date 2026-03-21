@@ -44,7 +44,7 @@ export default function TimelineEnrichBar({ seeds, projectId, onSelectWork }: Ti
   const qc = useQueryClient();
 
   // Collapse/expand — persisted per project
-  const lsKey = `litexplorer:project:${projectId}:enrichmentBarExpanded`;
+  const lsKey = `sotascope:project:${projectId}:enrichmentBarExpanded`;
   const [expanded, setExpanded] = useState(() => {
     try { return localStorage.getItem(lsKey) === 'true'; } catch { return false; }
   });

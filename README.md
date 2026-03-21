@@ -1,8 +1,8 @@
-# LitExplorer
+# SotAScope
 
 A local-first research literature dashboard for mapping the state of the art around a research topic.
 
-You build a library of papers (BibTeX import, DOI / arXiv ID lookup, or search-by-title), group them into topic lists, and LitExplorer fetches the citation graph from OpenAlex, Crossref, and Semantic Scholar. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years. Topic lists in the legend are clickable to toggle their visibility — hiding seeds, updating multi-topic-list color stripes, and removing candidates connected only to hidden lists.
+You build a library of papers (BibTeX import, DOI / arXiv ID lookup, or search-by-title), group them into topic lists, and SotAScope fetches the citation graph from OpenAlex, Crossref, and Semantic Scholar. The main view is a **citation timeline**: seeds (papers you selected) are squares, backward-citation neighbors are circles, forward-citation neighbors are diamonds, all plotted on a log-citation-count y-axis. A sliding window lets you count only citations from the last N years. Topic lists in the legend are clickable to toggle their visibility — hiding seeds, updating multi-topic-list color stripes, and removing candidates connected only to hidden lists.
 
 Neighbor candidates go through a four-step client-side filter pipeline before being rendered: (1) direction toggles (show/hide backward or forward neighbors), (2) the "top venues" filter (tier-1 venues only), (3) active topic-list filter (removes candidates connected only to toggled-off lists), and (4) a **relevance-based visibility cap** of 3 000 dots. When the filtered set exceeds 3 000, only the top candidates by relevance score are shown; the control bar updates to `Showing top K of N candidates (by relevance)`, where K is the number of dots rendered and N is the total size of the candidate pool (union of all reference and cited-by lists, unchanged by filter toggles). The relevance score is `log(1 + citations) + max(0, (year − 2000) / 2)` — highly-cited and recent papers rank first.
 
@@ -42,25 +42,26 @@ The pre-built frontend (`frontend/dist/`) is committed to the repo, so **Node.js
 ```bash
 # 1. Clone
 git clone <repo-url>
-cd LitExplorer
+cd SotAScope
 
 # 2. Python environment (pins Python 3.11)
-conda env create -f environment.yml
-conda activate litexplorer
+conda env create -f environment.yml          # creates env named 'sotascope'
+# To use a different env name: conda env create -f environment.yml --name myenvname
+conda activate sotascope
 pip install -e .
 
 # 3. Run
 # Local-only (laptop/desktop — not accessible from other machines):
-litexplorer
+sotascope
 
 # Shared server (accessible on the network):
-litexplorer --host 0.0.0.0
+sotascope --host 0.0.0.0
 
 # Custom data directory:
-litexplorer --datadir /path/to/data
+sotascope --datadir /path/to/data
 ```
 
-Open `http://localhost:8000` in your browser. The SQLite database and PDFs are created under `~/.litexplorer/` by default. Override with `--datadir /path/to/data` (or set the `LITEXPLORER_DATA_DIR` environment variable).
+Open `http://localhost:8000` in your browser. The SQLite database and PDFs are created under `~/.sotascope/` by default. Override with `--datadir /path/to/data` (or set the `SOTASCOPE_DATA_DIR` environment variable).
 
 No root or sudo rights are required.
 
@@ -71,9 +72,9 @@ No root or sudo rights are required.
 Same install steps as above. For the server to keep running after you disconnect, run uvicorn inside a `tmux` or `screen` session:
 
 ```bash
-tmux new -s litexplorer
-conda activate litexplorer
-litexplorer --host 0.0.0.0
+tmux new -s sotascope
+conda activate sotascope
+sotascope --host 0.0.0.0
 # Detach with Ctrl-b d
 ```
 
@@ -81,33 +82,33 @@ The app listens on `0.0.0.0:8000`. Put a reverse proxy (nginx, Caddy) in front i
 
 #### Optional: run as a systemd service
 
-If you want the process to start automatically on boot and restart on failure, a systemd unit file is included. Edit `litexplorer.service` and replace the two `/path/to/LitExplorer` placeholders with the absolute path to your clone, then:
+If you want the process to start automatically on boot and restart on failure, a systemd unit file is included. Edit `sotascope.service` and replace the two `/path/to/SotAScope` placeholders with the absolute path to your clone, then:
 
 ```bash
 cp env.example env
-# Edit env — set LITEXPLORER_BIN to the output of: conda run -n litexplorer which litexplorer
+# Edit env — set SOTASCOPE_BIN to the output of: conda run -n sotascope which sotascope
 # Set any other options you need (data directory, proxy, contact email)
 
-sudo cp litexplorer.service /etc/systemd/system/
+sudo cp sotascope.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now litexplorer
+sudo systemctl enable --now sotascope
 ```
 
 Check it started:
 
 ```bash
-sudo systemctl status litexplorer
-journalctl -u litexplorer -f
+sudo systemctl status sotascope
+journalctl -u sotascope -f
 ```
 
 #### Updating
 
 ```bash
 git pull
-conda run -n litexplorer pip install -e .
+conda run -n sotascope pip install -e .
 # Restart however you started it:
-#   tmux: kill and relaunch litexplorer
-#   systemd: sudo systemctl restart litexplorer
+#   tmux: kill and relaunch sotascope
+#   systemd: sudo systemctl restart sotascope
 ```
 
 Schema migrations run automatically at startup.
@@ -123,11 +124,11 @@ Most configuration is done through the **Settings page** in the UI (`/settings`)
 | `api_contact_email` | E-mail sent to OpenAlex and Crossref for polite-pool access (better rate limits). Equivalent to the env vars below; the UI value takes precedence. |
 | `pdf_storage_path` | Where PDFs are stored. Defaults to `{data_dir}/pdfs/`. On a server, point this to a persistent directory outside the repo. |
 | `ssl_verify` | Set to `false` to disable SSL certificate verification for external API calls. Useful when behind a corporate proxy that uses a custom CA. Default: `true` (verification enabled). |
-| `s2_api_key` | Semantic Scholar API key (optional). S2 enforces 1 req/s regardless, but without a key the quota is shared across all users on the same IP — 429 errors are common on shared/university networks. An API key gives you a dedicated quota. Apply at https://www.semanticscholar.org/product/api. LitExplorer throttles to ~1.1 req/s (a small margin above the 1 req/s limit). |
+| `s2_api_key` | Semantic Scholar API key (optional). S2 enforces 1 req/s regardless, but without a key the quota is shared across all users on the same IP — 429 errors are common on shared/university networks. An API key gives you a dedicated quota. Apply at https://www.semanticscholar.org/product/api. SotAScope throttles to ~1.1 req/s (a small margin above the 1 req/s limit). |
 | `llm_provider` | LLM provider: `anthropic` or `openai`. Leave blank to disable LLM features. |
 | `llm_api_key` | API key for the selected provider. Optional when `llm_base_url` points to a local server. |
 | `llm_model_id` | Model to use (e.g. `claude-sonnet-4-6`, `gpt-4o`). The Settings page loads available models from the provider API and shows a dropdown. |
-| `llm_base_url` | Override the provider's default API endpoint. Use this to point to a local inference server (e.g. `http://localhost:11434/v1` for Ollama). If you omit the `/v1` suffix (e.g. enter `http://localhost:11434`), LitExplorer appends it automatically. |
+| `llm_base_url` | Override the provider's default API endpoint. Use this to point to a local inference server (e.g. `http://localhost:11434/v1` for Ollama). If you omit the `/v1` suffix (e.g. enter `http://localhost:11434`), SotAScope appends it automatically. |
 | `grobid_url` | GROBID service URL (e.g. `http://localhost:8070`). Empty = disabled. See [GROBID (optional)](#grobid-optional) below. |
 
 ### GROBID (optional)
@@ -140,13 +141,13 @@ docker run -d --name grobid -p 8070:8070 grobid/grobid:0.8.2-crf
 
 Then set the GROBID URL in Settings to `http://localhost:8070`. A "Extract refs (GROBID)" button appears in the paper detail panel when a PDF is uploaded and GROBID is reachable. Each extracted reference is resolved via a 4-step chain: DOI lookup → arXiv ID lookup (OpenAlex then Semantic Scholar) → S2 title search with first-author/year verification → stored as an unresolved stub with title, authors, year, URL (from `<ptr target>`), and venue name (from `<monogr>`, when an `<analytic>` is present), displayed with an "unresolved" badge for manual resolution.
 
-Environment variables (all prefixed `LITEXPLORER_`) can be set in a shell or in the `env` file (see `env.example`):
+Environment variables (all prefixed `SOTASCOPE_`) can be set in a shell or in the `env` file (see `env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `LITEXPLORER_DATA_DIR` | `~/.litexplorer` | Root for the SQLite DB and default PDF storage |
-| `LITEXPLORER_OPENALEX_API_KEY` | — | Polite-pool e-mail for OpenAlex |
-| `LITEXPLORER_CROSSREF_MAILTO` | — | Polite-pool e-mail for Crossref |
+| `SOTASCOPE_DATA_DIR` | `~/.sotascope` | Root for the SQLite DB and default PDF storage |
+| `SOTASCOPE_OPENALEX_API_KEY` | — | Polite-pool e-mail for OpenAlex |
+| `SOTASCOPE_CROSSREF_MAILTO` | — | Polite-pool e-mail for Crossref |
 
 ---
 
@@ -158,7 +159,7 @@ Works can be exported as BibTeX from the library (all works) or from within a pr
 
 ### Project save (.zip)
 
-A project — including topic lists, extraction schemas, extraction results, per-project venue tier overrides, chat sessions, and project-scoped work notes — can be saved as a `.zip` archive via the **Save project (.zip)** item in the Export dropdown. The manifest references works by DOI or arXiv ID (never by DB row ID), making archives portable across LitExplorer instances. Only seed papers are included; candidates are rediscovered automatically on import via the normal enrichment pipeline.
+A project — including topic lists, extraction schemas, extraction results, per-project venue tier overrides, chat sessions, and project-scoped work notes — can be saved as a `.zip` archive via the **Save project (.zip)** item in the Export dropdown. The manifest references works by DOI or arXiv ID (never by DB row ID), making archives portable across SotAScope instances. Only seed papers are included; candidates are rediscovered automatically on import via the normal enrichment pipeline.
 
 Check **Include paper content (PDFs / extracted text)** in the save dialog to also bundle uploaded PDFs and their extracted `.txt` files into the archive under `files/{work_id}/`. This makes the archive larger but self-contained; the importer will restore the files and create `WorkPDF` rows automatically. The checkbox is unchecked by default.
 
@@ -205,9 +206,9 @@ python tests/fixtures/generate_fixtures.py
 ## Project structure
 
 ```
-litexplorer/          Python package (FastAPI app, models, API routes, services)
+sotascope/          Python package (FastAPI app, models, API routes, services)
   app.py              Lifespan: migrations, backfills, startup normalization
-  config.py           Pydantic settings (LITEXPLORER_ env prefix)
+  config.py           Pydantic settings (SOTASCOPE_ env prefix)
   models/             SQLAlchemy ORM models
   api/                FastAPI routers
   services/           Business logic (enrichment, PDF extraction)
@@ -217,5 +218,5 @@ frontend/
   dist/               Pre-built frontend — served by FastAPI (committed to repo)
 tests/                pytest suite
 env.example           Template for the env file (copy to env and fill in values)
-litexplorer.service   Optional systemd unit file for server deployment
+sotascope.service   Optional systemd unit file for server deployment
 ```

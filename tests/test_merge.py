@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from litexplorer.models.library import Work, WorkNote, WorkPDF
-from litexplorer.models.settings import Setting
+from sotascope.models.library import Work, WorkNote, WorkPDF
+from sotascope.models.settings import Setting
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +322,7 @@ def test_chat_sends_correct_text_after_merge(client, db_session, tmp_path):
     assert resp.status_code == 200, resp.text
 
     # Now chat with target — the .txt should be found at target's directory
-    with patch("litexplorer.api.llm.make_llm_client") as mock_factory:
+    with patch("sotascope.api.llm.make_llm_client") as mock_factory:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "Reply."
         mock_factory.return_value = mock_llm

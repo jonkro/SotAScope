@@ -6,8 +6,8 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.models.base import Base
-from litexplorer.api.deps import get_db
+from sotascope.models.base import Base
+from sotascope.api.deps import get_db
 
 
 @pytest.fixture()
@@ -42,7 +42,7 @@ def db_session():
 @pytest.fixture()
 def client(db_session):
     """Yield a FastAPI TestClient wired to the in-memory DB session."""
-    from litexplorer.app import app
+    from sotascope.app import app
 
     def _override_get_db():
         try:

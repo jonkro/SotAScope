@@ -8,9 +8,9 @@ import zipfile
 
 import pytest
 
-from litexplorer.models.chat import ChatMessage, ChatSession
-from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import (
+from sotascope.models.chat import ChatMessage, ChatSession
+from sotascope.models.extraction import ExtractionColumn, ExtractionSchema
+from sotascope.models.library import (
     Author,
     Citation,
     Venue,
@@ -19,13 +19,13 @@ from litexplorer.models.library import (
     WorkAuthor,
     WorkNote,
 )
-from litexplorer.models.project import (
+from sotascope.models.project import (
     Project,
     ProjectVenueTier,
     TopicList,
     TopicListWork,
 )
-from litexplorer.services.project_export import _work_ref, export_project
+from sotascope.services.project_export import _work_ref, export_project
 
 
 # ---------------------------------------------------------------------------

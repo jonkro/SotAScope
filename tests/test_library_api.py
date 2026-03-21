@@ -272,7 +272,7 @@ def test_work_author_link_unlink(client):
 # ---------------------------------------------------------------------------
 
 def test_citation_neighbors(client, db_session):
-    from litexplorer.models.library import Citation, Work
+    from sotascope.models.library import Citation, Work
 
     w1 = Work(title="Seed Paper", doi="10.1/seed", publication_year=2020)
     w2 = Work(title="Citing Paper", doi="10.1/citing", publication_year=2023)
@@ -287,14 +287,16 @@ def test_citation_neighbors(client, db_session):
     # Forward citations of w1 — papers citing w1
     r = client.get(f"/api/works/{w1.id}/citations/forward")
     assert r.status_code == 200
-    assert len(r.json()) == 1
-    assert r.json()[0]["title"] == "Citing Paper"
+    data = r.json()
+    assert data["total_count"] == 1
+    assert data["items"][0]["title"] == "Citing Paper"
 
     # Backward citations of w1 — papers w1 references
     r = client.get(f"/api/works/{w1.id}/citations/backward")
     assert r.status_code == 200
-    assert len(r.json()) == 1
-    assert r.json()[0]["title"] == "Referenced Paper"
+    data = r.json()
+    assert data["total_count"] == 1
+    assert data["items"][0]["title"] == "Referenced Paper"
 
 
 # ---------------------------------------------------------------------------

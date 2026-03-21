@@ -15,7 +15,8 @@ def test_create_and_list_projects(client):
     project = r.json()
     assert project["name"] == "My Research"
     assert project["owner"] == "alice"
-    assert project["topic_lists"] == []
+    assert len(project["topic_lists"]) == 1
+    assert project["topic_lists"][0]["name"] == "Main"
 
     r = client.post("/api/projects", json={"name": "Side Project"})
     assert r.status_code == 201
@@ -37,8 +38,10 @@ def test_get_project_detail(client):
     assert r.status_code == 200
     detail = r.json()
     assert detail["name"] == "P1"
-    assert len(detail["topic_lists"]) == 1
-    assert detail["topic_lists"][0]["name"] == "Core"
+    assert len(detail["topic_lists"]) == 2
+    names = {tl["name"] for tl in detail["topic_lists"]}
+    assert "Core" in names
+    assert "Main" in names
 
 
 def test_update_project(client):
@@ -106,10 +109,10 @@ def test_topic_list_crud(client):
     assert tl["color"] == "#3b82f6"
     assert tl["works"] == []
 
-    # List
+    # List (includes auto-created "Main" + "Routing Protocols")
     r = client.get(f"/api/projects/{pid}/topic-lists")
     assert r.status_code == 200
-    assert len(r.json()) == 1
+    assert len(r.json()) == 2
 
     # Get detail
     r = client.get(f"/api/projects/{pid}/topic-lists/{tlid}")
@@ -129,7 +132,8 @@ def test_topic_list_crud(client):
     assert r.status_code == 204
 
     r = client.get(f"/api/projects/{pid}/topic-lists")
-    assert len(r.json()) == 0
+    assert len(r.json()) == 1  # only auto-created "Main" remains
+    assert r.json()[0]["name"] == "Main"
 
 
 def test_topic_list_not_found(client):

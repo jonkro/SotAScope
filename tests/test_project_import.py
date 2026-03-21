@@ -27,18 +27,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from litexplorer.models.chat import ChatMessage, ChatSession
-from litexplorer.models.extraction import ExtractionColumn, ExtractionSchema
-from litexplorer.models.library import Citation, Venue, VenueAlias, Work, WorkNote, WorkPDF
-from litexplorer.models.project import (
+from sotascope.models.chat import ChatMessage, ChatSession
+from sotascope.models.extraction import ExtractionColumn, ExtractionSchema
+from sotascope.models.library import Citation, Venue, VenueAlias, Work, WorkNote, WorkPDF
+from sotascope.models.project import (
     Project,
     ProjectVenueTier,
     TopicList,
     TopicListWork,
 )
-from litexplorer.services.project_export import export_project
-from litexplorer.services.project_import import import_project, resolve_import
-from litexplorer.schemas.project_merge import MergeDecisions
+from sotascope.services.project_export import export_project
+from sotascope.services.project_import import import_project, resolve_import
+from sotascope.schemas.project_merge import MergeDecisions
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +280,7 @@ class TestRoundTrip:
         db_session.flush()
 
         # Extraction result
-        from litexplorer.services.extraction import _truncate_note_type
+        from sotascope.services.extraction import _truncate_note_type
         db_session.add(WorkNote(
             work_id=w1.id, project_id=p.id,
             content="yes",
@@ -364,7 +364,7 @@ class TestRoundTrip:
         assert cols[0].allowed_values == ["yes", "no"]
 
         # Extraction results (WorkNotes)
-        from litexplorer.services.extraction import _truncate_note_type
+        from sotascope.services.extraction import _truncate_note_type
         answer_type = _truncate_note_type("TestSchema / ColA")
         answer_note = db_session.query(WorkNote).filter_by(
             work_id=w1_id, project_id=new_project.id, note_type=answer_type
@@ -1058,7 +1058,7 @@ class TestPDFFileExportImport:
         ))
         db_session.commit()
 
-        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+        with patch("sotascope.api.settings.get_setting_value", return_value=str(pdf_root)):
             buf = export_project(project.id, db_session, include_files=True)
 
         zip_bytes = buf.read()
@@ -1095,7 +1095,7 @@ class TestPDFFileExportImport:
         ))
         db_session.commit()
 
-        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+        with patch("sotascope.api.settings.get_setting_value", return_value=str(pdf_root)):
             buf = export_project(project.id, db_session, include_files=True)
 
         zip_bytes = buf.read()
@@ -1160,7 +1160,7 @@ class TestPDFFileExportImport:
         zip_bytes = buf.read()
 
         pdf_root = tmp_path / "pdfs"
-        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+        with patch("sotascope.api.settings.get_setting_value", return_value=str(pdf_root)):
             result, seed_ids = import_project(zip_bytes, db_session)
 
         assert result.works_matched == 1  # work already existed
@@ -1208,7 +1208,7 @@ class TestPDFFileExportImport:
         zip_bytes = buf.read()
 
         pdf_root = tmp_path / "pdfs"
-        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+        with patch("sotascope.api.settings.get_setting_value", return_value=str(pdf_root)):
             import_project(zip_bytes, db_session)
             # Second import — project name collision creates temp project, but PDF import
             # still runs on the same work row; no duplicate WorkPDF should be created.
@@ -1250,7 +1250,7 @@ class TestPDFFileExportImport:
         zip_bytes = buf.read()
 
         pdf_root = tmp_path / "pdfs"
-        with patch("litexplorer.api.settings.get_setting_value", return_value=str(pdf_root)):
+        with patch("sotascope.api.settings.get_setting_value", return_value=str(pdf_root)):
             import_project(zip_bytes, db_session)
 
         pdf_row = db_session.query(WorkPDF).filter_by(

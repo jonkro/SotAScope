@@ -1,7 +1,7 @@
 /**
  * Parses an LLM message string into alternating plain-text and column-proposal
  * segments. Mirrors the multi-strategy parser in
- * litexplorer/services/schema_discussion.py.
+ * sotascope/services/schema_discussion.py.
  *
  * Strategies tried in order:
  * 1. ```column-proposal fenced blocks (canonical format)

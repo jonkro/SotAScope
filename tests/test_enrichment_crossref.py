@@ -9,13 +9,13 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.api.deps import get_db
-from litexplorer.external.crossref import CrossrefClient
-from litexplorer.external.openalex import OpenAlexClient
-from litexplorer.models.base import Base
-from litexplorer.models.cache import ApiCache
-from litexplorer.models.library import Venue, VenueAlias, Work
-from litexplorer.services.enrichment import EnrichmentService
+from sotascope.api.deps import get_db
+from sotascope.external.crossref import CrossrefClient
+from sotascope.external.openalex import OpenAlexClient
+from sotascope.models.base import Base
+from sotascope.models.cache import ApiCache
+from sotascope.models.library import Venue, VenueAlias, Work
+from sotascope.services.enrichment import EnrichmentService
 from tests.fixtures.crossref_responses import (
     SAMPLE_CROSSREF_JOURNAL_WORK,
     SAMPLE_CROSSREF_WORK,
@@ -301,7 +301,7 @@ class TestISSNVenueMatching:
 @pytest.fixture()
 def api_client(db_session, mock_oa_client, mock_cr_client):
     """TestClient with both OpenAlex and Crossref clients mocked."""
-    from litexplorer.app import app
+    from sotascope.app import app
 
     def _override_get_db():
         try:
@@ -311,8 +311,8 @@ def api_client(db_session, mock_oa_client, mock_cr_client):
 
     app.dependency_overrides[get_db] = _override_get_db
 
-    with patch("litexplorer.api.enrichment._get_client") as mock_get_oa, \
-         patch("litexplorer.api.enrichment._get_crossref_client") as mock_get_cr:
+    with patch("sotascope.api.enrichment._get_client") as mock_get_oa, \
+         patch("sotascope.api.enrichment._get_crossref_client") as mock_get_cr:
         mock_get_oa.return_value = mock_oa_client
         mock_get_cr.return_value = mock_cr_client
         with TestClient(app, raise_server_exceptions=False) as c:

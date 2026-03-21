@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from litexplorer.models.library import Author, Venue, VenueAlias, Work, WorkAuthor, WorkLocation
-from litexplorer.models.project import Project, TopicList, TopicListWork
-from litexplorer.services.bibtex_export import _bibtex_key, _generate_entry, works_to_bibtex
+from sotascope.models.library import Author, Venue, VenueAlias, Work, WorkAuthor, WorkLocation
+from sotascope.models.project import Project, TopicList, TopicListWork
+from sotascope.services.bibtex_export import _bibtex_key, _generate_entry, works_to_bibtex
 
 
 # ---------------------------------------------------------------------------

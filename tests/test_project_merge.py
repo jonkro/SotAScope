@@ -5,10 +5,10 @@ this file is run in isolation (see CLAUDE.md "Table isolation pitfall").
 """
 
 # --- ensure tables are created in the in-memory DB ---
-from litexplorer.models.chat import ChatSession  # noqa: F401
-from litexplorer.models.extraction import ExtractionSchema  # noqa: F401
-from litexplorer.models.library import Citation, Venue, Work, WorkNote  # noqa: F401
-from litexplorer.models.project import (
+from sotascope.models.chat import ChatSession  # noqa: F401
+from sotascope.models.extraction import ExtractionSchema  # noqa: F401
+from sotascope.models.library import Citation, Venue, Work, WorkNote  # noqa: F401
+from sotascope.models.project import (
     Project,
     ProjectIgnoredWork,
     ProjectVenueTier,
@@ -19,8 +19,8 @@ from litexplorer.models.project import (
 import pytest
 from sqlalchemy import func, select
 
-from litexplorer.services.project_merge import execute_merge, merge_preview
-from litexplorer.schemas.project_merge import MergeDecisions, SchemaDecision
+from sotascope.services.project_merge import execute_merge, merge_preview
+from sotascope.schemas.project_merge import MergeDecisions, SchemaDecision
 
 
 # ---------------------------------------------------------------------------

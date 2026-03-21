@@ -1,4 +1,4 @@
-name: litexplorer
+name: sotascope
 channels:
   - defaults
 dependencies:

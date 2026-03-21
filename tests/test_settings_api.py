@@ -8,9 +8,9 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.api.deps import get_db
-from litexplorer.models.base import Base
-from litexplorer.models.settings import Setting
+from sotascope.api.deps import get_db
+from sotascope.models.base import Base
+from sotascope.models.settings import Setting
 
 
 @pytest.fixture()
@@ -39,7 +39,7 @@ def db_session():
 
 @pytest.fixture()
 def client(db_session):
-    from litexplorer.app import app
+    from sotascope.app import app
 
     def _override_get_db():
         try:
@@ -60,7 +60,7 @@ def client(db_session):
 
 def test_seed_default_settings_creates_ssl_verify():
     """_seed_default_settings() should create a ssl_verify row with value 'true'."""
-    from litexplorer.app import _seed_default_settings
+    from sotascope.app import _seed_default_settings
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -70,7 +70,7 @@ def test_seed_default_settings_creates_ssl_verify():
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
 
-    with patch("litexplorer.app.SessionLocal", Session):
+    with patch("sotascope.app.SessionLocal", Session):
         _seed_default_settings()
 
     session = Session()
@@ -88,7 +88,7 @@ def test_seed_default_settings_creates_ssl_verify():
 
 def test_seed_default_settings_idempotent():
     """Calling _seed_default_settings() twice should not create duplicate rows."""
-    from litexplorer.app import _seed_default_settings
+    from sotascope.app import _seed_default_settings
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -98,7 +98,7 @@ def test_seed_default_settings_idempotent():
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
 
-    with patch("litexplorer.app.SessionLocal", Session):
+    with patch("sotascope.app.SessionLocal", Session):
         _seed_default_settings()
         _seed_default_settings()  # second call should be a no-op
 
@@ -208,7 +208,7 @@ def test_update_nonexistent_setting_returns_404(db_session, client):
 
 def test_get_ssl_verify_reads_true(db_session):
     """_get_ssl_verify returns True when setting value is 'true'."""
-    from litexplorer.api.enrichment import _get_ssl_verify
+    from sotascope.api.enrichment import _get_ssl_verify
 
     db_session.add(Setting(key="ssl_verify", value="true", description="test"))
     db_session.commit()
@@ -218,7 +218,7 @@ def test_get_ssl_verify_reads_true(db_session):
 
 def test_get_ssl_verify_reads_false(db_session):
     """_get_ssl_verify returns False when setting value is 'false'."""
-    from litexplorer.api.enrichment import _get_ssl_verify
+    from sotascope.api.enrichment import _get_ssl_verify
 
     db_session.add(Setting(key="ssl_verify", value="false", description="test"))
     db_session.commit()
@@ -228,14 +228,14 @@ def test_get_ssl_verify_reads_false(db_session):
 
 def test_get_ssl_verify_defaults_true_when_missing(db_session):
     """_get_ssl_verify returns True when the setting row does not exist."""
-    from litexplorer.api.enrichment import _get_ssl_verify
+    from sotascope.api.enrichment import _get_ssl_verify
 
     assert _get_ssl_verify(db_session) is True
 
 
 def test_get_ssl_verify_defaults_true_when_empty(db_session):
     """_get_ssl_verify returns True when the setting value is an empty string."""
-    from litexplorer.api.enrichment import _get_ssl_verify
+    from sotascope.api.enrichment import _get_ssl_verify
 
     db_session.add(Setting(key="ssl_verify", value="", description="test"))
     db_session.commit()

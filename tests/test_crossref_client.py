@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from litexplorer.external.crossref import CrossrefClient, parse_crossref_work
+from sotascope.external.crossref import CrossrefClient, parse_crossref_work
 from tests.fixtures.crossref_responses import (
     SAMPLE_CROSSREF_JOURNAL_WORK,
     SAMPLE_CROSSREF_MINIMAL_WORK,

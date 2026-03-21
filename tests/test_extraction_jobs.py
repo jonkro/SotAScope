@@ -6,9 +6,9 @@ import time
 
 import pytest
 
-from litexplorer.models.extraction import ExtractionSchema
-from litexplorer.models.project import Project
-from litexplorer.services.extraction_jobs import _ExtractionJobRegistry
+from sotascope.models.extraction import ExtractionSchema
+from sotascope.models.project import Project
+from sotascope.services.extraction_jobs import _ExtractionJobRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ def test_recent_jobs_not_pruned(registry):
 
 def test_job_status_endpoint_returns_correct_shape(client, db_session, schema):
     """GET /api/extraction/jobs/{job_id} returns expected response shape."""
-    from litexplorer.services.extraction_jobs import extraction_jobs
+    from sotascope.services.extraction_jobs import extraction_jobs
 
     job_id = extraction_jobs.create_job(schema.id, [1, 2, 3])
     extraction_jobs.update_work_status(job_id, 1, "done")
@@ -211,7 +211,7 @@ def test_job_status_endpoint_404_unknown(client):
 
 def test_job_status_progress_counts(client, db_session, schema):
     """Progress counts (completed/failed) computed correctly from work statuses."""
-    from litexplorer.services.extraction_jobs import extraction_jobs
+    from sotascope.services.extraction_jobs import extraction_jobs
 
     job_id = extraction_jobs.create_job(schema.id, [10, 11, 12, 13, 14])
     extraction_jobs.update_work_status(job_id, 10, "done")
@@ -230,7 +230,7 @@ def test_job_status_progress_counts(client, db_session, schema):
 
 def test_job_status_running_job(client, db_session, schema):
     """A job that has not yet been mark_completed shows status 'running'."""
-    from litexplorer.services.extraction_jobs import extraction_jobs
+    from sotascope.services.extraction_jobs import extraction_jobs
 
     job_id = extraction_jobs.create_job(schema.id, [1])
     resp = client.get(f"/api/extraction/jobs/{job_id}")

@@ -1,0 +1,518 @@
+"""Project export service — produces a self-contained .zip archive.
+
+The archive contains:
+  manifest.json  — structured JSON with all project data (works, topic lists,
+                   extraction schemas + results, venue overrides, chat sessions,
+                   project-scoped work notes, citation edges between seeds).
+  seeds.bib      — BibTeX entries for all seed works.
+  files/{id}/    — PDFs and extracted .txt files (only when include_files=True).
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import logging
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from sotascope.models.chat import ChatSession
+from sotascope.models.extraction import ExtractionSchema
+from sotascope.models.library import (
+    Author,
+    Citation,
+    Venue,
+    VenueAlias,
+    Work,
+    WorkAuthor,
+    WorkLocation,
+    WorkNote,
+    WorkPDF,
+)
+from sotascope.models.project import (
+    Project,
+    ProjectVenueTier,
+    TopicList,
+    TopicListWork,
+)
+from sotascope.services.bibtex_export import _bibtex_key, works_to_bibtex
+from sotascope.services.extraction import _truncate_note_type
+
+
+# ---------------------------------------------------------------------------
+# Stable work reference helpers
+# ---------------------------------------------------------------------------
+
+
+def _work_ref(work: Work) -> str:
+    """Return a portable stable reference string for *work*.
+
+    Preference order: DOI → arXiv ID → OpenAlex ID → internal DB id (last
+    resort, not portable across instances).
+    """
+    if work.doi:
+        return f"doi:{work.doi}"
+    if work.arxiv_id:
+        return f"arxiv:{work.arxiv_id}"
+    if work.openalex_id:
+        return f"openalex:{work.openalex_id}"
+    return f"id:{work.id}"
+
+
+def _venue_preferred_name(venue: Venue) -> str:
+    """Return the preferred display name for *venue*."""
+    if venue.aliases:
+        return venue.aliases[0].alias
+    return venue.name
+
+
+# ---------------------------------------------------------------------------
+# Main export function
+# ---------------------------------------------------------------------------
+
+
+def export_project(
+    project_id: int,
+    db: Session,
+    include_files: bool = False,
+) -> io.BytesIO:
+    """Build a .zip export archive for the given project.
+
+    Args:
+        project_id: DB primary key of the project to export.
+        db: SQLAlchemy session.  All relationships are loaded eagerly inside
+            this function — the caller does not need to pre-load anything.
+        include_files: When True, include PDFs and extracted text files in the
+            archive under ``files/{work_id}/``.  The entire archive is built
+            in memory (io.BytesIO), so for very large projects with many PDFs
+            a streaming approach would be needed instead.
+
+    Returns:
+        A :class:`io.BytesIO` buffer positioned at offset 0, containing the
+        ZIP archive.
+
+    Raises:
+        ValueError: If the project does not exist.
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise ValueError(f"Project {project_id} not found")
+
+    # ------------------------------------------------------------------
+    # 1. Collect seed works (unique across all topic lists)
+    # ------------------------------------------------------------------
+    seed_ids_stmt = (
+        select(TopicListWork.work_id)
+        .join(TopicList, TopicList.id == TopicListWork.topic_list_id)
+        .where(TopicList.project_id == project_id)
+        .distinct()
+    )
+    seed_ids: list[int] = list(db.scalars(seed_ids_stmt).all())
+
+    if seed_ids:
+        works_stmt = (
+            select(Work)
+            .where(Work.id.in_(seed_ids))
+            .options(
+                selectinload(Work.authors).selectinload(WorkAuthor.author),
+                selectinload(Work.venue).selectinload(Venue.aliases),
+                selectinload(Work.locations),
+            )
+            .order_by(Work.publication_year, Work.title)
+        )
+        seed_works: list[Work] = list(db.scalars(works_stmt).all())
+    else:
+        seed_works = []
+
+    seed_work_map: dict[int, Work] = {w.id: w for w in seed_works}
+
+    # ------------------------------------------------------------------
+    # 2. Works manifest entries
+    # ------------------------------------------------------------------
+    works_manifest: list[dict[str, Any]] = [
+        {
+            "doi": w.doi,
+            "arxiv_id": w.arxiv_id,
+            "openalex_id": w.openalex_id,
+            "title": w.title,
+            "year": w.publication_year,
+            "bibtex_key": _bibtex_key(w),
+        }
+        for w in seed_works
+    ]
+
+    # ------------------------------------------------------------------
+    # 3. Topic lists
+    # ------------------------------------------------------------------
+    topic_lists_stmt = (
+        select(TopicList)
+        .where(TopicList.project_id == project_id)
+        .options(selectinload(TopicList.work_associations))
+    )
+    topic_lists: list[TopicList] = list(db.scalars(topic_lists_stmt).all())
+
+    topic_lists_manifest: list[dict[str, Any]] = []
+    for tl in topic_lists:
+        work_refs = []
+        for assoc in tl.work_associations:
+            w = seed_work_map.get(assoc.work_id)
+            if w:
+                work_refs.append(_work_ref(w))
+        topic_lists_manifest.append(
+            {"name": tl.name, "color": tl.color, "works": work_refs}
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Extraction schemas + results
+    # ------------------------------------------------------------------
+    schemas_stmt = (
+        select(ExtractionSchema)
+        .where(ExtractionSchema.project_id == project_id)
+        .options(selectinload(ExtractionSchema.columns))
+    )
+    schemas: list[ExtractionSchema] = list(db.scalars(schemas_stmt).all())
+
+    schemas_manifest: list[dict[str, Any]] = []
+    for schema in schemas:
+        columns = sorted(schema.columns, key=lambda c: c.sort_order)
+
+        # Build note-type maps for answer + reasoning
+        answer_type_to_col: dict[str, Any] = {}
+        reasoning_type_to_col: dict[str, Any] = {}
+        for col in columns:
+            at = _truncate_note_type(f"{schema.title} / {col.name}")
+            rt = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+            answer_type_to_col[at] = col
+            reasoning_type_to_col[rt] = col
+
+        all_note_types = list(answer_type_to_col.keys()) + list(reasoning_type_to_col.keys())
+
+        # Fetch all non-proposal notes for this schema + seed works
+        if seed_ids and all_note_types:
+            notes_stmt = select(WorkNote).where(
+                WorkNote.work_id.in_(seed_ids),
+                WorkNote.note_type.in_(all_note_types),
+                WorkNote.project_id == project_id,
+                WorkNote.provenance != "ai_proposal",
+            )
+            notes: list[WorkNote] = list(db.scalars(notes_stmt).all())
+        else:
+            notes = []
+
+        # Group notes: (work_id, col_id) → {answer: note, reasoning: note}
+        cell_map: dict[tuple[int, int], dict[str, WorkNote]] = {}
+        for note in notes:
+            if note.note_type in answer_type_to_col:
+                col = answer_type_to_col[note.note_type]
+                cell_map.setdefault((note.work_id, col.id), {})["answer"] = note
+            elif note.note_type in reasoning_type_to_col:
+                col = reasoning_type_to_col[note.note_type]
+                cell_map.setdefault((note.work_id, col.id), {})["reasoning"] = note
+
+        results: list[dict[str, Any]] = []
+        for (work_id, col_id), data in cell_map.items():
+            if "answer" not in data:
+                continue
+            w = seed_work_map.get(work_id)
+            if w is None:
+                continue
+            col = next((c for c in columns if c.id == col_id), None)
+            if col is None:
+                continue
+            answer_note = data["answer"]
+            reasoning_note = data.get("reasoning")
+            results.append(
+                {
+                    "work_ref": _work_ref(w),
+                    "column_name": col.name,
+                    "answer": answer_note.content,
+                    "reasoning": reasoning_note.content if reasoning_note else None,
+                    "provenance": answer_note.provenance,
+                }
+            )
+
+        # Convert selected_work_ids DB IDs → stable work refs for portability
+        selected_work_refs: list[str] | None = None
+        if schema.selected_work_ids is not None:
+            selected_work_refs = []
+            for wid in schema.selected_work_ids:
+                w = seed_work_map.get(wid)
+                if w is not None:
+                    selected_work_refs.append(_work_ref(w))
+
+        schemas_manifest.append(
+            {
+                "title": schema.title,
+                "description": schema.description,
+                "is_promoted": schema.is_promoted,
+                "selected_work_refs": selected_work_refs,
+                "columns": [
+                    {
+                        "name": c.name,
+                        "prompt": c.prompt,
+                        "description": c.description,
+                        "allowed_values": c.allowed_values,
+                        "sort_order": c.sort_order,
+                    }
+                    for c in columns
+                ],
+                "results": results,
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Venue tier snapshot (format_version=2)
+    #
+    # Collect every venue visible in the project — seeds AND citation
+    # neighbours (backward + forward) — and export the *effective* tier
+    # (project-local override if one exists, otherwise the global Venue.tier).
+    # Works with venue_id IS NULL are silently skipped.
+    # ------------------------------------------------------------------
+
+    # All work IDs visible in the project: seeds + citation neighbours
+    if seed_ids:
+        neighbour_ids_stmt = (
+            select(Citation.citing_work_id)
+            .where(Citation.cited_work_id.in_(seed_ids))
+            .union(
+                select(Citation.cited_work_id)
+                .where(Citation.citing_work_id.in_(seed_ids))
+            )
+        )
+        neighbour_ids: set[int] = set(db.scalars(neighbour_ids_stmt).all())
+        all_work_ids: set[int] = set(seed_ids) | neighbour_ids
+    else:
+        all_work_ids = set()
+
+    # Distinct venue IDs from those works, excluding NULL
+    venue_ids_in_scope: set[int] = set()
+    if all_work_ids:
+        vids_stmt = (
+            select(Work.venue_id)
+            .where(Work.id.in_(all_work_ids), Work.venue_id.is_not(None))
+            .distinct()
+        )
+        venue_ids_in_scope = set(db.scalars(vids_stmt).all())
+
+    # Project-local tier overrides (fast lookup)
+    project_tier_map: dict[int, int] = {}
+    if venue_ids_in_scope:
+        for override in db.scalars(
+            select(ProjectVenueTier).where(
+                ProjectVenueTier.project_id == project_id,
+                ProjectVenueTier.venue_id.in_(venue_ids_in_scope),
+            )
+        ).all():
+            project_tier_map[override.venue_id] = override.tier
+
+    # Build the manifest entries
+    venue_tiers_manifest: list[dict[str, Any]] = []
+    if venue_ids_in_scope:
+        for venue in db.scalars(
+            select(Venue)
+            .where(Venue.id.in_(venue_ids_in_scope))
+            .options(selectinload(Venue.aliases))
+        ).all():
+            effective_tier = project_tier_map.get(venue.id, venue.tier)
+            preferred_name = _venue_preferred_name(venue)
+            # Exclude the preferred alias from the aliases list to avoid
+            # duplication (venue_name already carries it for identification).
+            other_aliases = [
+                a.alias for a in venue.aliases if a.alias != preferred_name
+            ]
+            venue_tiers_manifest.append(
+                {
+                    "venue_openalex_id": venue.openalex_id,
+                    "venue_issn": venue.issn,
+                    "venue_name": preferred_name,
+                    "aliases": other_aliases,
+                    "tier": effective_tier,
+                }
+            )
+
+    # ------------------------------------------------------------------
+    # 6. Citation edges between seed works
+    # ------------------------------------------------------------------
+    citation_manifest: list[dict[str, Any]] = []
+    if len(seed_ids) >= 2:
+        cit_stmt = select(Citation).where(
+            Citation.citing_work_id.in_(seed_ids),
+            Citation.cited_work_id.in_(seed_ids),
+        )
+        for cit in db.scalars(cit_stmt).all():
+            citing_w = seed_work_map.get(cit.citing_work_id)
+            cited_w = seed_work_map.get(cit.cited_work_id)
+            if citing_w and cited_w:
+                citation_manifest.append(
+                    {
+                        "citing": _work_ref(citing_w),
+                        "cited": _work_ref(cited_w),
+                        "source": cit.source,
+                    }
+                )
+
+    # ------------------------------------------------------------------
+    # 7. Chat sessions (project-scoped)
+    # ------------------------------------------------------------------
+    sessions_stmt = (
+        select(ChatSession)
+        .where(ChatSession.project_id == project_id)
+        .options(selectinload(ChatSession.messages))
+    )
+    sessions: list[ChatSession] = list(db.scalars(sessions_stmt).all())
+
+    chat_sessions_manifest: list[dict[str, Any]] = []
+    for session in sessions:
+        chat_sessions_manifest.append(
+            {
+                "context_type": session.context_type,
+                "context_id": session.context_id,
+                "title": session.title,
+                "is_auto": session.is_auto,
+                "messages": [
+                    {"role": m.role, "content": m.content}
+                    for m in session.messages
+                ],
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 8. Project-scoped work notes
+    # ------------------------------------------------------------------
+    work_notes_stmt = select(WorkNote).where(
+        WorkNote.project_id == project_id,
+        WorkNote.work_id.in_(seed_ids) if seed_ids else WorkNote.work_id.in_([]),
+    )
+    # Exclude extraction result notes (those have schema-prefixed note_types)
+    # and ai_proposal notes — we export user / ai / ai_reviewed notes only.
+    work_notes_stmt = work_notes_stmt.where(
+        WorkNote.provenance != "ai_proposal",
+    )
+    project_notes: list[WorkNote] = list(db.scalars(work_notes_stmt).all()) if seed_ids else []
+
+    # Build a set of note_types used by extraction schemas so we can exclude them
+    extraction_note_types: set[str] = set()
+    for schema in schemas:
+        for col in schema.columns:
+            extraction_note_types.add(_truncate_note_type(f"{schema.title} / {col.name}"))
+            extraction_note_types.add(
+                _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+            )
+            extraction_note_types.add(_truncate_note_type(f"{schema.title} / _parse_error"))
+
+    work_notes_manifest: list[dict[str, Any]] = []
+    for note in project_notes:
+        if note.note_type in extraction_note_types:
+            continue  # extraction results are already included in schemas_manifest
+        w = seed_work_map.get(note.work_id)
+        if w is None:
+            continue
+        work_notes_manifest.append(
+            {
+                "work_ref": _work_ref(w),
+                "content": note.content,
+                "note_type": note.note_type,
+                "provenance": note.provenance,
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 9. Collect PDF / text files (only when include_files=True)
+    # ------------------------------------------------------------------
+    # files_to_zip: list of (disk_path, zip_path) pairs to add to the archive.
+    # files_manifest: list of manifest entries referencing each work's files.
+    files_to_zip: list[tuple[Path, str]] = []
+    files_manifest: list[dict[str, Any]] = []
+
+    if include_files and seed_ids:
+        from sotascope.api.settings import get_setting_value
+        from sotascope.config import settings as _settings
+
+        custom_root = get_setting_value(db, "pdf_storage_path")
+        pdf_root = Path(custom_root) if custom_root else _settings.pdf_dir
+
+        pdfs_stmt = select(WorkPDF).where(WorkPDF.work_id.in_(seed_ids))
+        work_pdfs: list[WorkPDF] = list(db.scalars(pdfs_stmt).all())
+
+        # Group PDFs by work_id, collecting file paths that actually exist on disk
+        for pdf in work_pdfs:
+            pdf_path = pdf_root / str(pdf.work_id) / pdf.filename
+            if not pdf_path.exists():
+                logger.warning("export: PDF not found on disk, skipping: %s", pdf_path)
+                continue
+
+            zip_pdf_path = f"files/{pdf.work_id}/{pdf.filename}"
+            files_to_zip.append((pdf_path, zip_pdf_path))
+
+            # Companion extracted-text file (same stem, .txt extension)
+            if pdf.extraction_status == "ready":
+                stem = Path(pdf.filename).stem
+                txt_path = pdf_root / str(pdf.work_id) / f"{stem}.txt"
+                if txt_path.exists():
+                    files_to_zip.append((txt_path, f"files/{pdf.work_id}/{stem}.txt"))
+
+        # Build the manifest "files" list keyed by stable work reference
+        # Group collected files by work_id so we emit one entry per work
+        filenames_by_work: dict[int, list[str]] = {}
+        for disk_path, zip_path in files_to_zip:
+            # zip_path is "files/{work_id}/{filename}"
+            parts = zip_path.split("/")
+            wid = int(parts[1])
+            fname = parts[2]
+            filenames_by_work.setdefault(wid, []).append(fname)
+
+        for wid, fnames in filenames_by_work.items():
+            w = seed_work_map.get(wid)
+            if w:
+                files_manifest.append(
+                    {
+                        "work_id": wid,
+                        "doi": w.doi,
+                        "arxiv_id": w.arxiv_id,
+                        "filenames": fnames,
+                    }
+                )
+
+    # ------------------------------------------------------------------
+    # 10. Assemble manifest
+    # ------------------------------------------------------------------
+    manifest: dict[str, Any] = {
+        "format_version": 2,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "project": {
+            "name": project.name,
+            "description": project.description,
+        },
+        "works": works_manifest,
+        "topic_lists": topic_lists_manifest,
+        "extraction_schemas": schemas_manifest,
+        "venue_tiers": venue_tiers_manifest,
+        "citations": citation_manifest,
+        "chat_sessions": chat_sessions_manifest,
+        "work_notes": work_notes_manifest,
+        "files": files_manifest,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Build BibTeX
+    # ------------------------------------------------------------------
+    bibtex_content = works_to_bibtex(seed_works)
+
+    # ------------------------------------------------------------------
+    # 12. Package into ZIP
+    # ------------------------------------------------------------------
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        zf.writestr("seeds.bib", bibtex_content)
+        for disk_path, zip_path in files_to_zip:
+            zf.write(str(disk_path), zip_path)
+    buf.seek(0)
+    return buf

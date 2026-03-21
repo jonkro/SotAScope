@@ -3,7 +3,7 @@ import { Outlet, Link } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { useSettings } from '../hooks/useSettings';
 
-const EMAIL_DISMISS_KEY = 'litexplorer:emailWarningDismissed';
+const EMAIL_DISMISS_KEY = 'sotascope:emailWarningDismissed';
 
 function EmailWarningBanner() {
   const { data: settings } = useSettings();

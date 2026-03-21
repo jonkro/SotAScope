@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from litexplorer.api.works import _get_pdf_root
+from sotascope.api.works import _get_pdf_root
 
 
 @pytest.fixture()
@@ -19,7 +19,7 @@ def pdf_storage_dir(tmp_path, monkeypatch):
     def _mock_get_pdf_root(db):
         return storage
 
-    monkeypatch.setattr("litexplorer.api.works._get_pdf_root", _mock_get_pdf_root)
+    monkeypatch.setattr("sotascope.api.works._get_pdf_root", _mock_get_pdf_root)
     return storage
 
 

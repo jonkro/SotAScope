@@ -7,9 +7,9 @@ Covers:
 - Venue list scoped to project-relevant venues
 """
 
-from litexplorer.models.library import Citation, Venue, Work
-from litexplorer.models.project import Project, ProjectVenueTier, TopicList, TopicListWork
-from litexplorer.services.venue_tiers import bulk_resolve_venue_tiers, resolve_venue_tier
+from sotascope.models.library import Citation, Venue, Work
+from sotascope.models.project import Project, ProjectVenueTier, TopicList, TopicListWork
+from sotascope.services.venue_tiers import bulk_resolve_venue_tiers, resolve_venue_tier
 
 
 # ---------------------------------------------------------------------------

@@ -48,7 +48,7 @@ interface ProjectViewSettings {
 
 function loadProjectSettings(projectId: number): ProjectViewSettings {
   try {
-    const raw = localStorage.getItem(`litexplorer:project:${projectId}:view`);
+    const raw = localStorage.getItem(`sotascope:project:${projectId}:view`);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -212,7 +212,7 @@ export default function ProjectDetailPage() {
       startYear, candidateFilter, hops,
       inactiveTopicListIds: [...inactiveTopicListIds],
     };
-    localStorage.setItem(`litexplorer:project:${projectId}:view`, JSON.stringify(settings));
+    localStorage.setItem(`sotascope:project:${projectId}:view`, JSON.stringify(settings));
   }, [projectId, activeTab, citationsSinceYears, showBackward, showForward, startYear, candidateFilter, hops, inactiveTopicListIds]);
 
 
@@ -245,7 +245,7 @@ export default function ProjectDetailPage() {
 
   // True only if this project was just created in this browser session
   const [isNewProject] = useState(
-    () => !!localStorage.getItem(`litexplorer:project:${projectId}:isNew`),
+    () => !!localStorage.getItem(`sotascope:project:${projectId}:isNew`),
   );
 
   // Sync state to URL params (replace, not push)
@@ -1091,21 +1091,21 @@ export default function ProjectDetailPage() {
         hints={[
           {
             anchorRef: importBtnRef,
-            storageKey: 'litexplorer:onboarding:project-view:import-paper',
+            storageKey: 'sotascope:onboarding:project-view:import-paper',
             text: 'Start by importing papers via DOI, arXiv ID, or title search.',
             placement: 'bottom',
           },
           // Hint #2: only shown for freshly-created projects that have a "Main" list
           ...(isNewProject ? [{
             anchorRef: topicListsTabRef,
-            storageKey: 'litexplorer:onboarding:project-view:topic-lists-tab',
+            storageKey: 'sotascope:onboarding:project-view:topic-lists-tab',
             text: "Organize your papers into topic lists. We created 'Main' for you — rename it anytime.",
             placement: 'bottom' as const,
-            onDismiss: () => localStorage.removeItem(`litexplorer:project:${projectId}:isNew`),
+            onDismiss: () => localStorage.removeItem(`sotascope:project:${projectId}:isNew`),
           }] : []),
           {
             anchorRef: analyzeDropdownRef,
-            storageKey: 'litexplorer:onboarding:project-view:analyze',
+            storageKey: 'sotascope:onboarding:project-view:analyze',
             text: 'Use Analyze to explore citations, discuss papers with AI, or design extraction schemas.',
             placement: 'bottom',
           },
@@ -1117,13 +1117,13 @@ export default function ProjectDetailPage() {
           hints={[
             {
               anchorRef: timelineSvgRef,
-              storageKey: 'litexplorer:onboarding:timeline:shapes',
+              storageKey: 'sotascope:onboarding:timeline:shapes',
               text: 'Squares are your papers. Circles and diamonds are cited and citing papers.',
               placement: 'top',
             },
             {
               anchorRef: timelineControlsRef,
-              storageKey: 'litexplorer:onboarding:timeline:direction-toggles',
+              storageKey: 'sotascope:onboarding:timeline:direction-toggles',
               text: 'Toggle backward and forward citations to focus your view.',
               placement: 'bottom',
             },

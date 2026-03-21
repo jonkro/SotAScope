@@ -3,7 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from litexplorer.external.semantic_scholar import SemanticScholarClient
+from sotascope.external.semantic_scholar import SemanticScholarClient
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,11 +11,11 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from litexplorer.api.deps import get_db
-from litexplorer.external.crossref import CrossrefClient
-from litexplorer.external.openalex import OpenAlexClient
-from litexplorer.models.base import Base
-from litexplorer.models.library import Work
+from sotascope.api.deps import get_db
+from sotascope.external.crossref import CrossrefClient
+from sotascope.external.openalex import OpenAlexClient
+from sotascope.models.base import Base
+from sotascope.models.library import Work
 from tests.fixtures.openalex_responses import (
     SAMPLE_REFERENCED_WORK_RAW,
     SAMPLE_STUB_WORK_RAW,
@@ -62,7 +62,7 @@ def mock_cr_client():
 @pytest.fixture()
 def client(db_session, mock_oa_client, mock_cr_client):
     """TestClient with mocked OpenAlex + Crossref clients."""
-    from litexplorer.app import app
+    from sotascope.app import app
 
     def _override_get_db():
         try:
@@ -72,8 +72,8 @@ def client(db_session, mock_oa_client, mock_cr_client):
 
     app.dependency_overrides[get_db] = _override_get_db
 
-    with patch("litexplorer.api.enrichment._get_client") as mock_get_client, \
-         patch("litexplorer.api.enrichment._get_crossref_client") as mock_get_cr:
+    with patch("sotascope.api.enrichment._get_client") as mock_get_client, \
+         patch("sotascope.api.enrichment._get_crossref_client") as mock_get_cr:
         mock_get_client.return_value = mock_oa_client
         mock_get_cr.return_value = mock_cr_client
         with TestClient(app, raise_server_exceptions=False) as c:
@@ -103,7 +103,7 @@ class TestEnrichDOI:
 
     def test_no_email_still_proceeds(self, db_session, mock_oa_client, mock_cr_client):
         """Proceeds without polite pool when no email is configured (no 503)."""
-        from litexplorer.app import app
+        from sotascope.app import app
 
         def _override_get_db():
             try:
@@ -115,8 +115,8 @@ class TestEnrichDOI:
 
         mock_oa_client.get_work_by_doi_raw.return_value = None
 
-        with patch("litexplorer.api.enrichment._get_client", return_value=mock_oa_client), \
-             patch("litexplorer.api.enrichment._get_crossref_client", return_value=mock_cr_client):
+        with patch("sotascope.api.enrichment._get_client", return_value=mock_oa_client), \
+             patch("sotascope.api.enrichment._get_crossref_client", return_value=mock_cr_client):
             with TestClient(app, raise_server_exceptions=False) as c:
                 resp = c.post("/api/enrich/doi", json={"doi": "10.1145/test"})
                 # Should get 404 (not found) rather than 503 (service unavailable)
@@ -304,7 +304,7 @@ class TestEnrichDOIArxivRouting:
         mock_ss = MagicMock(spec=SemanticScholarClient)
         mock_ss.get_paper.return_value = None
 
-        with patch("litexplorer.api.enrichment._get_ss_client", return_value=mock_ss):
+        with patch("sotascope.api.enrichment._get_ss_client", return_value=mock_ss):
             resp = client.post("/api/enrich/doi", json={"doi": "9999.99999"})
 
         assert resp.status_code == 404
@@ -312,7 +312,7 @@ class TestEnrichDOIArxivRouting:
 
     def test_arxiv_s2_fallback_when_oa_misses(self, client, mock_oa_client, db_session):
         """When OA returns nothing, the S2 fallback is tried and can succeed."""
-        from litexplorer.external.base import ExternalWork
+        from sotascope.external.base import ExternalWork
 
         mock_oa_client.get_work_by_arxiv_id_raw.return_value = None
         s2_paper = ExternalWork(
@@ -326,7 +326,7 @@ class TestEnrichDOIArxivRouting:
         mock_ss = MagicMock(spec=SemanticScholarClient)
         mock_ss.get_paper.return_value = s2_paper
 
-        with patch("litexplorer.api.enrichment._get_ss_client", return_value=mock_ss):
+        with patch("sotascope.api.enrichment._get_ss_client", return_value=mock_ss):
             resp = client.post("/api/enrich/doi", json={"doi": "2301.12345"})
 
         assert resp.status_code == 200
@@ -340,7 +340,7 @@ class TestEnrichDOIArxivRouting:
 # normalize_identifier — unit tests
 # ---------------------------------------------------------------------------
 
-from litexplorer.services.enrichment import normalize_identifier  # noqa: E402
+from sotascope.services.enrichment import normalize_identifier  # noqa: E402
 
 
 class TestNormalizeIdentifier:
