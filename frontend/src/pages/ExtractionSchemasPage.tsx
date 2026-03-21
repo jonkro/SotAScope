@@ -279,7 +279,7 @@ function SchemaEditor({ schemaId, projectId, onBack, initialTab }: SchemaEditorP
   const nextSortOrder = sortedColumns.length;
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 min-h-0">
+    <div className="flex flex-col h-screen overflow-hidden min-w-0">
       <PageHeader
         leftContent={
           <nav className="flex items-center gap-2">
@@ -328,7 +328,7 @@ function SchemaEditor({ schemaId, projectId, onBack, initialTab }: SchemaEditorP
       </div>
 
       {activeTab === 'schema' ? (
-        <div className="p-6 max-w-2xl space-y-6 overflow-y-auto">
+        <div className="flex-1 p-6 max-w-2xl space-y-6 overflow-y-auto">
           {/* Metadata */}
           <div className="space-y-4">
             <div>
