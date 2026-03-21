@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useQueries } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import ConfirmDialog from './ConfirmDialog';
 import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from './WorkDetailPanel';
@@ -16,7 +17,7 @@ import {
   useSaveExtractionSelection,
 } from '../hooks/useExtraction';
 import { useTimeline } from '../hooks/useTimeline';
-import { getExtractionPromptPreview } from '../api';
+import { getExtractionPromptPreview, fetchWorkPDFs } from '../api';
 import type { ExtractionColumn, ExtractionSchema, ExtractionCellResult } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -149,15 +150,16 @@ function ExtractionCell({
     );
   }
 
-  // Empty cell: show sparkle + pencil icons
+  // Empty cell: show sparkle (AI) + pencil (manual) icons
+  // noText papers: sparkle hidden, pencil always enabled (manual fill only)
   if (!cell) {
     return (
       <td
         className="px-3 py-2 text-center align-top border-r border-gray-100 last:border-r-0"
         style={cellHeight !== undefined ? { height: cellHeight, overflow: 'hidden' } : undefined}
       >
-        {!noText && (
-          <div className="flex items-center justify-center gap-2">
+        <div className="flex items-center justify-center gap-2">
+          {!noText && (
             <button
               onClick={() => onExtractSingle(workId)}
               disabled={isRunningGlobal}
@@ -166,19 +168,19 @@ function ExtractionCell({
             >
               ✦
             </button>
-            <button
-              onClick={() => {
-                setEditValue(hasAllowedValues ? column.allowed_values![0] : '');
-                setEditing(true);
-              }}
-              disabled={isRunningGlobal}
-              title="Fill manually"
-              className="text-xs text-gray-400 hover:text-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              ✎
-            </button>
-          </div>
-        )}
+          )}
+          <button
+            onClick={() => {
+              setEditValue(hasAllowedValues ? column.allowed_values![0] : '');
+              setEditing(true);
+            }}
+            disabled={noText ? false : isRunningGlobal}
+            title={noText ? 'Fill manually (upload a PDF to enable AI extraction)' : 'Fill manually'}
+            className="text-xs text-gray-400 hover:text-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ✎
+          </button>
+        </div>
       </td>
     );
   }
@@ -358,29 +360,32 @@ export default function ExtractionRunView({
     [topicLists],
   );
 
-  // PDF availability: track which seeds have extraction_status='ready' PDF
-  const [seedPdfsLoaded, setSeedPdfsLoaded] = useState(false);
-  const [seedsWithText, setSeedsWithText] = useState<Set<number>>(new Set());
+  // PDF availability via React Query — auto-updates when PDFs are uploaded/deleted
+  const pdfQueriesResult = useQueries({
+    queries: seeds.map((s) => ({
+      queryKey: ['works', s.id, 'pdfs'] as const,
+      queryFn: () => fetchWorkPDFs(s.id),
+      staleTime: 60_000,
+    })),
+  });
 
-  useEffect(() => {
-    if (seeds.length === 0) return;
-    setSeedPdfsLoaded(false);
-    Promise.all(
-      seeds.map((s) =>
-        fetch(`/api/works/${s.id}/pdfs`)
-          .then((r) => (r.ok ? r.json() : []))
-          .then((pdfs: WorkPDFOut[]) => ({
-            id: s.id,
-            hasText: pdfs.some((p) => p.extraction_status === 'ready'),
-          }))
-          .catch(() => ({ id: s.id, hasText: false })),
-      ),
-    ).then((results) => {
-      const withText = new Set(results.filter((r) => r.hasText).map((r) => r.id));
-      setSeedsWithText(withText);
-      setSeedPdfsLoaded(true);
+  const seedPdfsLoaded =
+    seeds.length === 0 || pdfQueriesResult.every((q) => q.isFetched || q.isError);
+
+  // Stable key: changes only when any PDF query fetches new data
+  const pdfDataKey = pdfQueriesResult.map((q) => q.dataUpdatedAt).join(',');
+
+  const seedsWithText = useMemo(() => {
+    const set = new Set<number>();
+    pdfQueriesResult.forEach((q, i) => {
+      const pdfs: WorkPDFOut[] = q.data ?? [];
+      if (pdfs.some((p) => p.extraction_status === 'ready')) {
+        set.add(seeds[i].id);
+      }
     });
-  }, [seeds.length]); // re-run only when seed count changes
+    return set;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfDataKey, seeds]);
 
   // Paper detail side panel
   const [panelWorkId, setPanelWorkId] = useState<number | null>(null);
@@ -436,7 +441,7 @@ export default function ExtractionRunView({
     return [...selected, ...unselectedWithText, ...noText];
   }, [filteredSeeds, selectedIds, seedsWithText, readOnlyPaperSelection]);
 
-  // Seeds that have (or will have) extracted text — the "selectable" set
+  // Seeds with extracted text — used for export fallback and extract count
   const selectableIds = useMemo(
     () => seeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id),
     [seeds, seedsWithText],
@@ -480,6 +485,12 @@ export default function ExtractionRunView({
   const [promptPreview, setPromptPreview] = useState<{ system_text: string; user_message: string } | null>(null);
   const [promptPreviewLoading, setPromptPreviewLoading] = useState(false);
 
+  // Subset of selected papers that actually have extracted text — these are the ones AI can process
+  const extractableSelectedIds = useMemo(
+    () => Array.from(selectedIds).filter((id) => seedsWithText.has(id)),
+    [selectedIds, seedsWithText],
+  );
+
   const runBatch = useRunBatchExtraction(schema.id);
   const runSingle = useRunSingleExtraction(schema.id);
   const jobQuery = useExtractionJob(activeJobId);
@@ -522,7 +533,7 @@ export default function ExtractionRunView({
     if (hasExistingNotes) {
       setShowConfirm(true);
     } else {
-      doExtract(Array.from(selectedIds), reEvaluateEdited);
+      doExtract(extractableSelectedIds, reEvaluateEdited);
     }
   };
 
@@ -563,7 +574,6 @@ export default function ExtractionRunView({
   }, []);
 
   const toggleId = (id: number) => {
-    if (!seedsWithText.has(id)) return; // no text — not selectable
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -574,7 +584,7 @@ export default function ExtractionRunView({
   };
 
   const selectAll = () => {
-    setSelectedIds(new Set(filteredSeeds.filter((s) => seedsWithText.has(s.id)).map((s) => s.id)));
+    setSelectedIds(new Set(filteredSeeds.map((s) => s.id)));
     markDirty();
   };
   const deselectAll = () => {
@@ -589,16 +599,16 @@ export default function ExtractionRunView({
     for (const tl of topicLists) {
       const el = tlCheckboxRefs.current.get(tl.id);
       if (!el) continue;
-      const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id) && seedsWithText.has(s.id));
+      const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id));
       const selectedCount = tlSeeds.filter((s) => selectedIds.has(s.id)).length;
       el.indeterminate = selectedCount > 0 && selectedCount < tlSeeds.length;
     }
-  }, [selectedIds, topicLists, seeds, seedsWithText]);
+  }, [selectedIds, topicLists, seeds]);
 
   const handleBulkTopicListToggle = (tlId: number) => {
     setSelectedIds((prev) => {
       const tlSeedIds = seeds
-        .filter((s) => s.topic_list_ids.includes(tlId) && seedsWithText.has(s.id))
+        .filter((s) => s.topic_list_ids.includes(tlId))
         .map((s) => s.id);
       const anySelected = tlSeedIds.some((id) => prev.has(id));
       const next = new Set(prev);
@@ -754,6 +764,7 @@ export default function ExtractionRunView({
 
   const selectableCount = seeds.filter((s) => seedsWithText.has(s.id)).length;
   const selectedCount = selectedIds.size;
+  const extractableCount = extractableSelectedIds.length;
   const isDone =
     !isExtracting && extractProgress !== null && extractProgress.done === extractProgress.total;
 
@@ -820,10 +831,10 @@ export default function ExtractionRunView({
             Deselect all
           </button>
           <span className="text-xs text-gray-500">
-            {selectedCount} of {selectableCount} selected
+            {selectedCount} of {seeds.length} selected
             {seedPdfsLoaded && selectableCount < seeds.length && (
               <span className="ml-1 text-gray-400">
-                ({seeds.length - selectableCount} without extracted text)
+                ({selectableCount} with text)
               </span>
             )}
           </span>
@@ -906,10 +917,14 @@ export default function ExtractionRunView({
           </button>
           <button
             onClick={handleExtractClick}
-            disabled={selectedCount === 0 || isExtracting}
+            disabled={extractableCount === 0 || isExtracting}
             className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isExtracting ? 'Extracting…' : `Extract ${selectedCount > 0 ? selectedCount : ''} paper${selectedCount !== 1 ? 's' : ''} →`}
+            {isExtracting
+              ? 'Extracting…'
+              : extractableCount < selectedCount
+                ? `Extract ${extractableCount} of ${selectedCount} paper${selectedCount !== 1 ? 's' : ''} →`
+                : `Extract ${selectedCount} paper${selectedCount !== 1 ? 's' : ''} →`}
           </button>
           <div className="w-px h-5 bg-gray-200 shrink-0" />
           <button
@@ -928,7 +943,7 @@ export default function ExtractionRunView({
         <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-2 flex flex-wrap gap-x-4 gap-y-1.5 items-center">
           <span className="text-[11px] text-gray-500 font-medium">Topic lists:</span>
           {topicLists.map((tl) => {
-            const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id) && seedsWithText.has(s.id));
+            const tlSeeds = seeds.filter((s) => s.topic_list_ids.includes(tl.id));
             const selectedCount = tlSeeds.filter((s) => selectedIds.has(s.id)).length;
             const allSelected = tlSeeds.length > 0 && selectedCount === tlSeeds.length;
             return (
@@ -987,10 +1002,7 @@ export default function ExtractionRunView({
                 <th className="px-3 py-2 text-left border-b border-r border-gray-200 sticky top-0 bg-gray-50 z-10">
                   <input
                     type="checkbox"
-                    checked={
-                      filteredSeeds.some((s) => seedsWithText.has(s.id)) &&
-                      filteredSeeds.filter((s) => seedsWithText.has(s.id)).every((s) => selectedIds.has(s.id))
-                    }
+                    checked={filteredSeeds.length > 0 && filteredSeeds.every((s) => selectedIds.has(s.id))}
                     onChange={(e) => (e.target.checked ? selectAll() : deselectAll())}
                     className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
                   />
@@ -1075,9 +1087,7 @@ export default function ExtractionRunView({
                 ref={(el) => { if (el) trRefs.current.set(seed.id, el); else trRefs.current.delete(seed.id); }}
                 style={rowH !== undefined ? { height: rowH } : undefined}
                 className={
-                  noText
-                    ? 'bg-gray-50 opacity-50'
-                    : (readOnlyPaperSelection || selectedIds.has(seed.id))
+                  (readOnlyPaperSelection || selectedIds.has(seed.id))
                     ? 'bg-white'
                     : 'bg-gray-50 opacity-60'
                 }
@@ -1088,15 +1098,12 @@ export default function ExtractionRunView({
                     className="px-3 py-2 text-center align-top border-r border-gray-100"
                     style={rowH !== undefined ? { height: rowH, overflow: 'hidden' } : undefined}
                   >
-                    <span title={noText ? 'No extracted text — upload and extract a PDF first' : undefined}>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(seed.id)}
-                        disabled={noText}
-                        onChange={() => toggleId(seed.id)}
-                        className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer disabled:cursor-not-allowed"
-                      />
-                    </span>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(seed.id)}
+                      onChange={() => toggleId(seed.id)}
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 cursor-pointer"
+                    />
                   </td>
                 )}
                 {/* Title td — sticky, holds the row-resize handle */}
@@ -1227,7 +1234,7 @@ export default function ExtractionRunView({
           confirmLabel="Extract"
           onConfirm={() => {
             setShowConfirm(false);
-            doExtract(Array.from(selectedIds), reEvaluateEdited);
+            doExtract(extractableSelectedIds, reEvaluateEdited);
           }}
           onCancel={() => setShowConfirm(false)}
         />

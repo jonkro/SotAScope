@@ -279,6 +279,13 @@ frontend/src/
     │                           #   Collapse state persisted in localStorage per project:
     │                           #     litexplorer:project:{id}:enrichmentBarExpanded (default false)
     ├── ExtractionRunView.tsx   # Standalone; readOnlyPaperSelection prop for promoted tabs
+    │                           #   Paper selection: ALL project seeds are selectable regardless of PDF.
+    │                           #   Default first-load selection = seeds with extracted text only.
+    │                           #   AI extraction (sparkle ✦) requires a PDF with extracted text;
+    │                           #   papers without text show only the manual-fill pencil (✎) button.
+    │                           #   "Extract X of N papers →" counts only selected papers WITH text.
+    │                           #   PDF availability tracked via useQueries(['works', id, 'pdfs'])
+    │                           #   so buttons update automatically when PDFs are uploaded.
     ├── ImportDialog.tsx        # 3-tab import (DOI / arXiv, BibTeX, Search by title); first tab
     │                           #   auto-detects input type (10. prefix = DOI, else arXiv ID);
     │                           #   optional post-import topic list assignment via projectTopicLists prop
