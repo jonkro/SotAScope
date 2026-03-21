@@ -17,8 +17,8 @@ import {
   useSaveExtractionSelection,
 } from '../hooks/useExtraction';
 import { useTimeline } from '../hooks/useTimeline';
-import { getExtractionPromptPreview, fetchWorkPDFs } from '../api';
-import type { ExtractionColumn, ExtractionSchema, ExtractionCellResult } from '../types';
+import { getExtractionPromptPreview, fetchWorkPDFs, pasteExtraction } from '../api';
+import type { ExtractionColumn, ExtractionSchema, ExtractionCellResult, PasteExtractionResult } from '../types';
 
 // ---------------------------------------------------------------------------
 // Provenance badge
@@ -32,7 +32,9 @@ function ProvenanceBadge({ provenance }: { provenance: string }) {
         ? 'bg-green-100 text-green-700'
         : provenance === 'ai_proposal'
           ? 'bg-amber-100 text-amber-700'
-          : 'bg-blue-100 text-blue-700';
+          : provenance === 'external_ai'
+            ? 'bg-sky-100 text-sky-700'
+            : 'bg-blue-100 text-blue-700';
   const label =
     provenance === 'ai_reviewed'
       ? 'reviewed'
@@ -40,7 +42,9 @@ function ProvenanceBadge({ provenance }: { provenance: string }) {
         ? 'user'
         : provenance === 'ai_proposal'
           ? 'proposal'
-          : 'ai';
+          : provenance === 'external_ai'
+            ? 'ext. ai'
+            : 'ai';
   return (
     <span className={`inline-block px-1.5 py-0.5 text-[10px] rounded font-medium leading-none ${cls}`}>
       {label}
@@ -60,6 +64,7 @@ interface ExtractionCellProps {
   isRunningGlobal: boolean;
   noText?: boolean;
   onExtractSingle: (workId: number) => void;
+  onPasteJson: (workId: number) => void;
   cellHeight?: number;
 }
 
@@ -71,6 +76,7 @@ function ExtractionCell({
   isRunningGlobal,
   noText = false,
   onExtractSingle,
+  onPasteJson,
   cellHeight,
 }: ExtractionCellProps) {
   const [editing, setEditing] = useState(false);
@@ -150,8 +156,8 @@ function ExtractionCell({
     );
   }
 
-  // Empty cell: show sparkle (AI) + pencil (manual) icons
-  // noText papers: sparkle hidden, pencil always enabled (manual fill only)
+  // Empty cell: show sparkle (AI) + pencil (manual) + clipboard (paste) icons
+  // noText papers: sparkle hidden, pencil and clipboard always enabled
   if (!cell) {
     return (
       <td
@@ -179,6 +185,13 @@ function ExtractionCell({
             className="text-xs text-gray-400 hover:text-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             ✎
+          </button>
+          <button
+            onClick={() => onPasteJson(workId)}
+            title="Paste extraction JSON"
+            className="text-xs text-gray-400 hover:text-sky-600"
+          >
+            📋
           </button>
         </div>
       </td>
@@ -226,6 +239,15 @@ function ExtractionCell({
         >
           ✎
         </button>
+        {(answer_note.provenance === 'ai' || answer_note.provenance === 'external_ai') && (
+          <button
+            onClick={() => onPasteJson(workId)}
+            title="Paste extraction JSON"
+            className="text-[10px] text-sky-500 hover:text-sky-700 leading-none"
+          >
+            📋
+          </button>
+        )}
         {proposal && (
           <button
             onClick={() => setShowProposal((v) => !v)}
@@ -321,6 +343,230 @@ function loadRowHeights(schemaId: number): Record<number, number> {
   } catch {
     return {};
   }
+}
+
+// ---------------------------------------------------------------------------
+// Paste JSON dialog
+// ---------------------------------------------------------------------------
+
+interface PasteJsonDialogProps {
+  schema: ExtractionSchema;
+  workId: number;
+  workTitle: string;
+  existingCells: Map<string, ExtractionCellResult>;
+  sortedColumns: ExtractionColumn[];
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+function PasteJsonDialog({
+  schema,
+  workId,
+  workTitle,
+  existingCells,
+  sortedColumns,
+  onClose,
+  onSuccess,
+}: PasteJsonDialogProps) {
+  const [jsonText, setJsonText] = useState('');
+  const [preview, setPreview] = useState<{
+    filled: string[];
+    skipped: string[];
+    notFound: string[];
+  } | null>(null);
+  const [parseError, setParseError] = useState('');
+  const [parsed, setParsed] = useState<object | null>(null);
+  const [isPasting, setIsPasting] = useState(false);
+  const [successMsg, setSuccessMsg] = useState('');
+
+  const handlePreview = () => {
+    setParseError('');
+    setPreview(null);
+    setParsed(null);
+
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(jsonText.trim()) as Record<string, unknown>;
+    } catch {
+      setParseError('Invalid JSON — check for missing commas or unmatched brackets.');
+      return;
+    }
+
+    setParsed(data);
+
+    // Unwrap optional "columns" wrapper
+    const colData: Record<string, unknown> =
+      Object.keys(data).length === 1 &&
+      'columns' in data &&
+      typeof data['columns'] === 'object' &&
+      data['columns'] !== null
+        ? (data['columns'] as Record<string, unknown>)
+        : data;
+
+    const colNameMap = new Map(sortedColumns.map((c) => [c.name.trim().toLowerCase(), c]));
+
+    const filled: string[] = [];
+    const skipped: string[] = [];
+    const notFound: string[] = [];
+
+    for (const rawName of Object.keys(colData)) {
+      const col = colNameMap.get(rawName.trim().toLowerCase());
+      if (!col) {
+        notFound.push(rawName);
+        continue;
+      }
+      const existing = existingCells.get(`${workId}:${col.id}`);
+      if (
+        existing &&
+        (existing.answer_note.provenance === 'user' ||
+          existing.answer_note.provenance === 'ai_reviewed')
+      ) {
+        skipped.push(col.name);
+      } else {
+        filled.push(col.name);
+      }
+    }
+
+    setPreview({ filled, skipped, notFound });
+  };
+
+  const handleConfirm = async () => {
+    if (!parsed) return;
+    setIsPasting(true);
+    try {
+      const result: PasteExtractionResult = await pasteExtraction(schema.id, workId, parsed);
+      const parts = [`${result.filled.length} filled`];
+      if (result.skipped.length) parts.push(`${result.skipped.length} skipped`);
+      if (result.not_found.length) parts.push(`${result.not_found.length} not found`);
+      setSuccessMsg(`Done: ${parts.join(', ')}`);
+      onSuccess();
+      setTimeout(onClose, 1500);
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : 'Paste failed');
+    } finally {
+      setIsPasting(false);
+    }
+  };
+
+  const canConfirm =
+    !!parsed && !isPasting && !successMsg && (preview === null || preview.filled.length > 0);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between shrink-0">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">Paste extraction JSON</h3>
+            <p className="text-xs text-gray-500 mt-0.5 truncate max-w-lg" title={workTitle}>
+              {workTitle}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-700 text-lg leading-none ml-4"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <p className="text-xs text-gray-500">
+            Paste the JSON returned by an external LLM. Accepted formats:
+            {' '}
+            <code className="bg-gray-100 px-1 rounded font-mono">
+              {'{"columns": {"Col": {"answer": "...", "reasoning": "..."}}}'}
+            </code>
+            {' '}or flat{' '}
+            <code className="bg-gray-100 px-1 rounded font-mono">
+              {'{"Col": {"answer": "..."}}'}
+            </code>.
+            Column names are matched case-insensitively. Cells with user or reviewed values are
+            not overwritten.
+          </p>
+
+          <textarea
+            value={jsonText}
+            onChange={(e) => {
+              setJsonText(e.target.value);
+              setPreview(null);
+              setParseError('');
+              setParsed(null);
+            }}
+            rows={10}
+            placeholder={'{\n  "columns": {\n    "Column Name": {\n      "answer": "...",\n      "reasoning": "..."\n    }\n  }\n}'}
+            className="w-full text-xs font-mono border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y"
+          />
+
+          {parseError && <p className="text-xs text-red-600">{parseError}</p>}
+
+          {preview && (
+            <div className="space-y-1.5 text-xs border border-gray-200 rounded p-3 bg-gray-50">
+              {preview.filled.length > 0 && (
+                <div>
+                  <span className="font-medium text-green-700">
+                    Will fill ({preview.filled.length}):
+                  </span>{' '}
+                  <span className="text-gray-700">{preview.filled.join(', ')}</span>
+                </div>
+              )}
+              {preview.skipped.length > 0 && (
+                <div>
+                  <span className="font-medium text-amber-700">
+                    Skipped — has user/reviewed value ({preview.skipped.length}):
+                  </span>{' '}
+                  <span className="text-gray-700">{preview.skipped.join(', ')}</span>
+                </div>
+              )}
+              {preview.notFound.length > 0 && (
+                <div>
+                  <span className="font-medium text-red-600">
+                    Not matched to any column ({preview.notFound.length}):
+                  </span>{' '}
+                  <span className="text-gray-700">{preview.notFound.join(', ')}</span>
+                </div>
+              )}
+              {preview.filled.length === 0 && preview.skipped.length === 0 && (
+                <p className="text-gray-500 italic">
+                  No column names matched the schema. Check that JSON keys match column names.
+                </p>
+              )}
+            </div>
+          )}
+
+          {successMsg && <p className="text-xs text-green-700 font-medium">{successMsg}</p>}
+        </div>
+
+        <div className="px-5 py-4 border-t border-gray-200 flex justify-end gap-2 shrink-0">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handlePreview}
+            disabled={!jsonText.trim()}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Preview
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={!canConfirm}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isPasting ? 'Pasting…' : 'Confirm'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +683,7 @@ export default function ExtractionRunView({
     const unselectedWithText = filteredSeeds.filter(
       (s) => !selectedIds.has(s.id) && seedsWithText.has(s.id),
     );
-    const noText = filteredSeeds.filter((s) => !seedsWithText.has(s.id));
+    const noText = filteredSeeds.filter((s) => !selectedIds.has(s.id) && !seedsWithText.has(s.id));
     return [...selected, ...unselectedWithText, ...noText];
   }, [filteredSeeds, selectedIds, seedsWithText, readOnlyPaperSelection]);
 
@@ -479,6 +725,15 @@ export default function ExtractionRunView({
   const [extractErrors, setExtractErrors] = useState<{ workId: number; msg: string }[]>([]);
   const [showConfirm, setShowConfirm] = useState(false);
   const [reEvaluateEdited, setReEvaluateEdited] = useState(false);
+
+  // Paste JSON dialog state
+  const [pasteTarget, setPasteTarget] = useState<{ workId: number; title: string } | null>(null);
+
+  const handlePasteJson = useCallback((workId: number) => {
+    const seed = seeds.find((s) => s.id === workId);
+    if (!seed) return;
+    setPasteTarget({ workId, title: seed.title });
+  }, [seeds]);
 
   // Prompt preview state
   const [showPromptPreview, setShowPromptPreview] = useState(false);
@@ -1160,6 +1415,7 @@ export default function ExtractionRunView({
                     isRunningGlobal={isExtracting}
                     noText={noText}
                     onExtractSingle={handleExtractSingle}
+                    onPasteJson={handlePasteJson}
                     cellHeight={rowH}
                   />
                 ))}
@@ -1224,6 +1480,19 @@ export default function ExtractionRunView({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Paste JSON dialog */}
+      {pasteTarget && (
+        <PasteJsonDialog
+          schema={schema}
+          workId={pasteTarget.workId}
+          workTitle={pasteTarget.title}
+          existingCells={cellsMap}
+          sortedColumns={sortedColumns}
+          onClose={() => setPasteTarget(null)}
+          onSuccess={refetchResults}
+        />
       )}
 
       {/* Re-extraction confirmation */}

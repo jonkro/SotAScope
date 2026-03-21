@@ -175,10 +175,13 @@ litexplorer/
 │   │                     #   key="grobid_references:{work_id}" exists = extraction was run (set by
 │   │                     #   enrich_from_grobid() when raw extraction completes, regardless of resolve).
 │   │                     #   TimelineNeighborWork (citations_by_year: list[dict] | None)
-│   ├── notes.py          # provenance values: "user" | "ai" | "ai_reviewed" | "ai_proposal"
+│   ├── notes.py          # provenance values: "user" | "ai" | "ai_reviewed" | "ai_proposal" | "external_ai"
+│   │                     #   "external_ai" = filled from externally-generated JSON; behaves like "ai"
+│   │                     #   for re-extraction (overwritten on next run, NOT protected like user/ai_reviewed)
 │   ├── extraction.py     # ExtractionBatchRequest (re_evaluate_edited: bool = False),
 │   │                     #   ExtractionCellResult (+ proposal: optional ai_proposal note);
-│   │                     #   extract endpoints return 202 {job_id, message} (not sync result)
+│   │                     #   extract endpoints return 202 {job_id, message} (not sync result);
+│   │                     #   PasteExtractionRequest/Result for external JSON import
 │   └── ...               # Other schema files are straightforward
 ├── api/
 │   ├── works.py          # /api/works — CRUD, BibTeX import, citations, merge, duplicates,
@@ -190,6 +193,9 @@ litexplorer/
 │   │                     #   GET /schemas/{id}/export?format=csv|latex
 │   │                     #   GET /schemas/{id}/preview-prompt, GET /schemas/{id}/summary
 │   │                     #   POST /schemas/from-discussion, POST /schemas/{id}/columns/from-proposal
+│   │                     #   POST /schemas/{id}/paste/{work_id} → PasteExtractionResult (synchronous);
+│   │                     #     accepts {"columns": {...}} or flat {"Col Name": {...}}; provenance="external_ai";
+│   │                     #     overwrites ai/external_ai, skips user/ai_reviewed cells
 │   ├── chat.py           # /api/chat — session CRUD; PATCH /sessions/{id} (update context_id)
 │   ├── llm.py            # /api/llm — model listing, POST /chat (auto-saves turns to session)
 │   └── ...               # timeline, notes, settings, filesystem, grobid, projects, venues, fields

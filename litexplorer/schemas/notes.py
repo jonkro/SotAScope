@@ -15,6 +15,8 @@ class WorkNoteUpdate(BaseModel):
     content: str | None = None
     note_type: str | None = None
     is_outdated: bool | None = None
+    # Valid provenance values: "user" | "ai" | "ai_reviewed" | "ai_proposal" | "external_ai"
+    # "external_ai" = filled from externally-generated JSON; behaves like "ai" for re-extraction.
     provenance: str | None = None  # explicit override (e.g. "ai_reviewed")
 
 

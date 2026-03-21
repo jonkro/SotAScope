@@ -678,8 +678,8 @@ def run_extraction_for_work(
                 )
             continue
 
-        # Column has an "ai" note or no note — extract normally.
-        if existing:  # provenance == "ai"
+        # Column has an "ai" or "external_ai" note or no note — extract normally.
+        if existing:  # provenance == "ai" or "external_ai"
             db.delete(existing)
             old_reasoning = db.scalars(
                 select(WorkNote)

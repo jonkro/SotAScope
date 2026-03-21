@@ -809,6 +809,18 @@ export function createColumnFromProposal(
   });
 }
 
+/** Paste extraction results from externally-generated JSON for a single work. */
+export function pasteExtraction(
+  schemaId: number,
+  workId: number,
+  data: object,
+): Promise<import('./types').PasteExtractionResult> {
+  return apiFetch(`/api/extraction/schemas/${schemaId}/paste/${workId}`, {
+    method: 'POST',
+    body: JSON.stringify({ data }),
+  });
+}
+
 /** Create an extraction schema materialised from a schema design discussion. */
 export function createSchemaFromDiscussion(
   title: string,

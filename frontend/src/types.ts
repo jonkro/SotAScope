@@ -579,6 +579,12 @@ export interface ExtractionResultsResponse {
   cells: ExtractionCellResult[];
 }
 
+export interface PasteExtractionResult {
+  filled: string[];
+  skipped: { column: string; reason: string }[];
+  not_found: string[];
+}
+
 // ---- Async background operations ----
 
 /** Returned by enrichment endpoints that now run as background tasks (202 Accepted) */

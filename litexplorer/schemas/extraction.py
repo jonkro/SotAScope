@@ -144,3 +144,27 @@ class ExtractionResultsResponse(BaseModel):
 
 class ExtractionManualFillRequest(BaseModel):
     content: str
+
+
+# ---------------------------------------------------------------------------
+# Paste extraction (external JSON import)
+# ---------------------------------------------------------------------------
+
+
+class PasteExtractionRequest(BaseModel):
+    """Raw JSON pasted by the user from an external LLM run.
+
+    Accepted formats:
+    - ``{"columns": {"Col Name": {"answer": "...", "reasoning": "..."}}}``
+    - ``{"Col Name": {"answer": "...", "reasoning": "..."}}`` (flat, no wrapper)
+    """
+
+    data: dict
+
+
+class PasteExtractionResult(BaseModel):
+    """Result of a paste-extraction operation."""
+
+    filled: list[str]       # column names that were written
+    skipped: list[dict]     # [{"column": name, "reason": "has user/reviewed value"}]
+    not_found: list[str]    # column names in JSON that didn't match any schema column

@@ -26,6 +26,8 @@ from litexplorer.schemas.extraction import (
     ExtractionSchemaOut,
     ExtractionSchemaUpdate,
     ExtractionWorkResult,
+    PasteExtractionRequest,
+    PasteExtractionResult,
 )
 from litexplorer.schemas.notes import WorkNoteOut
 from litexplorer.services.extraction_jobs import extraction_jobs
@@ -615,6 +617,145 @@ def extract_batch(
         "job_id": job_id,
         "message": f"Extraction started for {n} work{'s' if n != 1 else ''}",
     }
+
+
+# ---------------------------------------------------------------------------
+# Paste extraction (external JSON import)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/schemas/{schema_id}/paste/{work_id}",
+    response_model=PasteExtractionResult,
+    status_code=200,
+)
+def paste_extraction(
+    schema_id: int,
+    work_id: int,
+    body: PasteExtractionRequest,
+    db: Session = Depends(get_db),
+):
+    """Import extraction results from externally-generated JSON.
+
+    Accepts JSON in two formats::
+
+        {"columns": {"Col Name": {"answer": "...", "reasoning": "..."}}}
+        {"Col Name": {"answer": "...", "reasoning": "..."}}  # flat, no wrapper
+
+    Column names are matched case-insensitively (whitespace-trimmed).
+
+    Conflict policy:
+    - ``ai`` / ``external_ai`` notes: overwritten silently.
+    - ``user`` / ``ai_reviewed`` notes: skipped; column name added to ``skipped``.
+
+    Returns the lists of filled, skipped, and not-found column names.
+    """
+    from litexplorer.models.library import Work, WorkNote
+    from litexplorer.services.extraction import _truncate_note_type
+
+    schema = db.get(ExtractionSchema, schema_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Extraction schema not found")
+
+    work = db.get(Work, work_id)
+    if work is None:
+        raise HTTPException(status_code=404, detail="Work not found")
+
+    # Unwrap the optional "columns" wrapper.
+    raw: dict = body.data
+    if (
+        len(raw) == 1
+        and "columns" in raw
+        and isinstance(raw["columns"], dict)
+    ):
+        col_data: dict = raw["columns"]
+    else:
+        col_data = raw
+
+    # Build a case-insensitive column name → ExtractionColumn map.
+    columns = sorted(schema.columns, key=lambda c: c.sort_order)
+    col_name_map: dict[str, ExtractionColumn] = {
+        c.name.strip().lower(): c for c in columns
+    }
+
+    filled: list[str] = []
+    skipped: list[dict] = []
+    not_found: list[str] = []
+
+    for raw_name, cell in col_data.items():
+        if not isinstance(raw_name, str):
+            continue
+        lookup_key = raw_name.strip().lower()
+        col = col_name_map.get(lookup_key)
+        if col is None:
+            not_found.append(raw_name)
+            continue
+
+        if not isinstance(cell, dict):
+            answer = str(cell) if cell is not None else ""
+            reasoning = ""
+        else:
+            answer = str(cell.get("answer", "")).strip()
+            reasoning = str(cell.get("reasoning", "")).strip()
+
+        answer_note_type = _truncate_note_type(f"{schema.title} / {col.name}")
+        reasoning_note_type = _truncate_note_type(f"{schema.title} / {col.name} / reasoning")
+
+        # Check for an existing non-proposal note on the answer slot.
+        existing = db.scalars(
+            select(WorkNote)
+            .where(
+                WorkNote.work_id == work_id,
+                WorkNote.note_type == answer_note_type,
+                WorkNote.project_id == schema.project_id,
+                WorkNote.provenance != "ai_proposal",
+            )
+            .limit(1)
+        ).one_or_none()
+
+        if existing and existing.provenance in ("user", "ai_reviewed"):
+            skipped.append({"column": col.name, "reason": "has user/reviewed value"})
+            continue
+
+        # Overwrite existing ai / external_ai notes.
+        if existing:
+            db.delete(existing)
+            old_reasoning = db.scalars(
+                select(WorkNote)
+                .where(
+                    WorkNote.work_id == work_id,
+                    WorkNote.note_type == reasoning_note_type,
+                    WorkNote.project_id == schema.project_id,
+                    WorkNote.provenance != "ai_proposal",
+                )
+                .limit(1)
+            ).one_or_none()
+            if old_reasoning:
+                db.delete(old_reasoning)
+
+        db.flush()
+
+        db.add(WorkNote(
+            work_id=work_id,
+            project_id=schema.project_id,
+            content=answer,
+            note_type=answer_note_type,
+            provenance="external_ai",
+            model_id=None,
+        ))
+        db.add(WorkNote(
+            work_id=work_id,
+            project_id=schema.project_id,
+            content=reasoning if reasoning else "(no reasoning provided)",
+            note_type=reasoning_note_type,
+            provenance="external_ai",
+            model_id=None,
+        ))
+
+        filled.append(col.name)
+
+    db.commit()
+    return PasteExtractionResult(filled=filled, skipped=skipped, not_found=not_found)
 
 
 # ---------------------------------------------------------------------------
