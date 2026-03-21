@@ -93,7 +93,12 @@ export default function ProjectsPage() {
         <ProjectFormDialog
           onCancel={() => setShowCreate(false)}
           onSubmit={(data) => {
-            createMut.mutate(data, { onSuccess: () => setShowCreate(false) });
+            createMut.mutate(data, {
+              onSuccess: (project) => {
+                localStorage.setItem(`litexplorer:project:${project.id}:isNew`, 'true');
+                setShowCreate(false);
+              },
+            });
           }}
         />
       )}

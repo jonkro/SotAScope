@@ -240,6 +240,13 @@ export default function ProjectDetailPage() {
   const importBtnRef = useRef<HTMLButtonElement>(null);
   const topicListsTabRef = useRef<HTMLButtonElement>(null);
   const analyzeDropdownRef = useRef<HTMLDivElement>(null);
+  const timelineSvgRef = useRef<HTMLDivElement>(null);
+  const timelineControlsRef = useRef<HTMLDivElement>(null);
+
+  // True only if this project was just created in this browser session
+  const [isNewProject] = useState(
+    () => !!localStorage.getItem(`litexplorer:project:${projectId}:isNew`),
+  );
 
   // Sync state to URL params (replace, not push)
   useEffect(() => {
@@ -579,7 +586,7 @@ export default function ProjectDetailPage() {
             onClick={() => setShowProjectImport(true)}
             className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
           >
-            Import paper
+            Import works
           </button>
           <ShareButton />
         </PageHeader>
@@ -663,26 +670,28 @@ export default function ProjectDetailPage() {
             {timeline && (
               <TimelineEnrichBar seeds={timeline.seeds} projectId={projectId} onSelectWork={setSelectedWorkId} />
             )}
-            <TimelineControls
-              citationsSinceYears={citationsSinceYears}
-              onCitationsSinceYearsChange={setCitationsSinceYears}
-              showBackward={showBackward}
-              onShowBackwardChange={setShowBackward}
-              showForward={showForward}
-              onShowForwardChange={setShowForward}
-              startYear={startYear}
-              onStartYearChange={setStartYear}
-              minYear={yearRange.min}
-              maxYear={yearRange.max}
-              totalNeighbors={timeline?.neighbors.length ?? 0}
-              filteredNeighbors={visibilityResult.filtered.length}
-              hiddenByRelevance={visibilityResult.hiddenCount}
-              candidateFilter={candidateFilter}
-              onCandidateFilterChange={setCandidateFilter}
-              hops={hops}
-              onHopsChange={setHops}
-            />
-            <div className="flex-1 min-h-[320px]">
+            <div ref={timelineControlsRef}>
+              <TimelineControls
+                citationsSinceYears={citationsSinceYears}
+                onCitationsSinceYearsChange={setCitationsSinceYears}
+                showBackward={showBackward}
+                onShowBackwardChange={setShowBackward}
+                showForward={showForward}
+                onShowForwardChange={setShowForward}
+                startYear={startYear}
+                onStartYearChange={setStartYear}
+                minYear={yearRange.min}
+                maxYear={yearRange.max}
+                totalNeighbors={timeline?.neighbors.length ?? 0}
+                filteredNeighbors={visibilityResult.filtered.length}
+                hiddenByRelevance={visibilityResult.hiddenCount}
+                candidateFilter={candidateFilter}
+                onCandidateFilterChange={setCandidateFilter}
+                hops={hops}
+                onHopsChange={setHops}
+              />
+            </div>
+            <div ref={timelineSvgRef} className="flex-1 min-h-[320px]">
               <CitationTimeline
                 seeds={filteredSeeds}
                 neighbors={visibilityResult.filtered}
@@ -1086,12 +1095,14 @@ export default function ProjectDetailPage() {
             text: 'Start by importing papers via DOI, arXiv ID, or title search.',
             placement: 'bottom',
           },
-          {
+          // Hint #2: only shown for freshly-created projects that have a "Main" list
+          ...(isNewProject ? [{
             anchorRef: topicListsTabRef,
             storageKey: 'litexplorer:onboarding:project-view:topic-lists-tab',
             text: "Organize your papers into topic lists. We created 'Main' for you — rename it anytime.",
-            placement: 'bottom',
-          },
+            placement: 'bottom' as const,
+            onDismiss: () => localStorage.removeItem(`litexplorer:project:${projectId}:isNew`),
+          }] : []),
           {
             anchorRef: analyzeDropdownRef,
             storageKey: 'litexplorer:onboarding:project-view:analyze',
@@ -1100,6 +1111,25 @@ export default function ProjectDetailPage() {
           },
         ]}
       />
+      {/* Timeline-specific hints: shown only when at least one seed exists */}
+      {(timeline?.seeds.length ?? 0) > 0 && (
+        <OnboardingHintSequence
+          hints={[
+            {
+              anchorRef: timelineSvgRef,
+              storageKey: 'litexplorer:onboarding:timeline:shapes',
+              text: 'Squares are your papers. Circles and diamonds are cited and citing papers.',
+              placement: 'top',
+            },
+            {
+              anchorRef: timelineControlsRef,
+              storageKey: 'litexplorer:onboarding:timeline:direction-toggles',
+              text: 'Toggle backward and forward citations to focus your view.',
+              placement: 'bottom',
+            },
+          ]}
+        />
+      )}
     </div>
   );
 }

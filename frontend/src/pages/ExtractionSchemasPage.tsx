@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ExtractionRunView from '../components/ExtractionRunView';
 import { ShareButton } from '../components/ShareButton';
+import { OnboardingHintSequence } from '../components/OnboardingHint';
 import {
   useExtractionSchemas,
   useExtractionSchema,
@@ -692,6 +693,9 @@ export default function ExtractionSchemasPage() {
 
   const togglePromotion = useToggleExtractionSchemaPromotion();
 
+  // Ref for onboarding hint anchored to the "New Table Schema" button
+  const newSchemaBtnRef = useRef<HTMLButtonElement>(null);
+
   // Sync view to URL params (replace, not push)
   useEffect(() => {
     if (view.kind === 'editor') {
@@ -744,6 +748,7 @@ export default function ExtractionSchemasPage() {
         }
       >
         <button
+          ref={newSchemaBtnRef}
           onClick={() => setView({ kind: 'new' })}
           className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
         >
@@ -795,6 +800,17 @@ export default function ExtractionSchemasPage() {
           onCancel={() => setDeleteSchemaId(null)}
         />
       )}
+
+      <OnboardingHintSequence
+        hints={[
+          {
+            anchorRef: newSchemaBtnRef,
+            storageKey: 'litexplorer:onboarding:extraction-schemas:new-schema',
+            text: 'Define columns of information to extract from your papers.',
+            placement: 'bottom',
+          },
+        ]}
+      />
     </div>
   );
 }

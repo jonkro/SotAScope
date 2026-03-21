@@ -125,7 +125,7 @@ Rules that apply to all page headers:
 2. **Red text only** for destructive actions (e.g., Delete on project cards). Never in the top menu bar.
 3. **Dropdowns** styled identically to outline buttons with a small `▾` indicator. Built as the local `DropdownMenu` component in `ProjectDetailPage.tsx`; close on outside `mousedown`.
 4. **Button sizing**: `py-1.5 px-3 text-sm` (≈ 32 px tall). The share icon button is `h-8 w-8` (square, same height).
-5. **`ProjectDetailPage` header**: breadcrumb (`← Projects / {name}`) on the left using `PageHeader leftContent`; three action dropdowns (Project, Analyze, Export) + "Import paper" primary + link icon on the right.
+5. **`ProjectDetailPage` header**: breadcrumb (`← Projects / {name}`) on the left using `PageHeader leftContent`; three action dropdowns (Project, Analyze, Export) + "Import works" primary + link icon on the right.
 6. **AI-action buttons** use indigo outline style: `border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50`. Apply this to any button that triggers an LLM call: extraction runs ("Extract N papers →"), AI refinement ("Refine with AI"), and AI-oriented navigation dropdowns ("Analyze"). This distinguishes them from the blue primary button (structural/save actions) and plain outline buttons (navigation/filter/export actions). The `DropdownMenu` component in `ProjectDetailPage.tsx` accepts an `accent` prop to switch to this style.
 
 ### Onboarding hints
@@ -133,12 +133,29 @@ Rules that apply to all page headers:
 - **`OnboardingHint`** (`components/OnboardingHint.tsx`): tooltip-style overlay anchored to a DOM element via a ref. Renders into `document.body` via `createPortal`. Props: `anchorRef` (`{ current: HTMLElement | null }`), `text`, `storageKey`, `placement` (`top|bottom|left|right`, default `bottom`), optional `onDismiss` callback.
   - Standalone use: checks `localStorage.getItem(storageKey)` on mount; renders nothing if already dismissed. On dismiss, writes `true` to `localStorage` and calls `onDismiss` if provided.
   - A semi-transparent backdrop (`rgba(0,0,0,0.08)`) covers the viewport and dismisses the hint on click.
-- **`OnboardingHintSequence`** (`components/OnboardingHint.tsx`): manages a list of `SequenceHint` configs and shows them one at a time. On mount it finds the first hint whose `storageKey` is not set in `localStorage` and shows it. When dismissed (the hint writes `localStorage` and calls `onDismiss`), the sequence advances to the next undismissed hint. Renders nothing once all hints are dismissed.
+- **`OnboardingHintSequence`** (`components/OnboardingHint.tsx`): manages a list of `SequenceHint` configs and shows them one at a time. On mount it finds the first hint whose `storageKey` is not set in `localStorage` and shows it. When dismissed (the hint writes `localStorage` and calls `onDismiss`), the sequence advances to the next undismissed hint. Hints whose anchor element is not mounted are auto-skipped after 150 ms (without marking them dismissed). Each `SequenceHint` accepts an optional `onDismiss` callback called after the hint's storageKey is written. Renders nothing once all hints are dismissed.
 - **`localStorage` key pattern**: `litexplorer:onboarding:{scope}:{hint-id}`, e.g. `litexplorer:onboarding:project-view:import-paper`.
-- **`ProjectDetailPage` hints** (shown on first visit to a project, in sequence):
-  1. Anchored to "Import paper" button → "Start by importing papers via DOI, arXiv ID, or title search."
-  2. Anchored to "Topic Lists" tab → "Organize your papers into topic lists. We created 'Main' for you — rename it anytime."
-  3. Anchored to "Analyze" dropdown → "Use Analyze to explore citations, discuss papers with AI, or design extraction schemas."
+- **`ProjectDetailPage` hints** (two separate sequences on first visit):
+  - Project-view sequence:
+    1. Anchored to "Import works" button → "Start by importing papers via DOI, arXiv ID, or title search."
+    2. Anchored to "Topic Lists" tab → "Organize your papers into topic lists. We created 'Main' for you — rename it anytime." — **only shown for freshly-created projects** (`litexplorer:project:{id}:isNew` key set by `ProjectsPage` on creation, cleared by this hint's `onDismiss`).
+    3. Anchored to "Analyze" dropdown → "Use Analyze to explore citations, discuss papers with AI, or design extraction schemas."
+  - Timeline sequence (shown only when `timeline.seeds.length > 0`):
+    1. Anchored to the CitationTimeline SVG container → "Squares are your papers. Circles and diamonds are cited and citing papers."
+    2. Anchored to the TimelineControls bar → "Toggle backward and forward citations to focus your view."
+- **`ExtractionSchemasPage` hints** (list view, sequence):
+  1. Anchored to "New Table Schema" button → "Define columns of information to extract from your papers." (storageKey: `litexplorer:onboarding:extraction-schemas:new-schema`)
+- **`ExtractionRunView` hints** (shown in schema editor extract/review tab, sequence):
+  1. Anchored to "Extract N papers →" button → "Run AI extraction on all selected papers at once."
+  2. Anchored to "Show prompt" button → "Copy this prompt to use with any external LLM."
+  - Only rendered when `readOnlyPaperSelection=false`.
+- **`WorkDetailPanel` hints** (side panel, sequence, shown on first time panel is opened):
+  1. Anchored to PDFs section → "Attach a PDF or fetch one automatically." (placement: bottom)
+  2. Anchored to "Discuss" button → "Discuss this paper with AI." (placement: bottom)
+  3. Anchored to "Add to topic list" controls → "Add this paper to a topic list." (placement: top) — auto-skipped if no addable lists.
+- **Side panel default-open sections**: `pdfs: true` and `actions: true` in `DEFAULT_FOLD_STATE` (already open by default; no behavior change).
+- **BibTeX import**: The BibTeX tab has been **removed from `ImportDialog.tsx`** UI. The backend endpoint (`POST /api/works/import/bibtex`) still exists. Only the DOI/arXiv and Search by Title tabs remain.
+- **"Import works" rename**: The primary action button in `ProjectDetailPage` header is now "Import works" (was "Import paper"). The dialog title was already "Import Works".
 
 ---
 
@@ -312,7 +329,7 @@ frontend/src/
     │                           #   "Extract X of N papers →" counts only selected papers WITH text.
     │                           #   PDF availability tracked via useQueries(['works', id, 'pdfs'])
     │                           #   so buttons update automatically when PDFs are uploaded.
-    ├── ImportDialog.tsx        # 3-tab import (DOI / arXiv, BibTeX, Search by title); first tab
+    ├── ImportDialog.tsx        # 2-tab import (DOI / arXiv, Search by title); BibTeX tab removed from UI
     │                           #   auto-detects input type (10. prefix = DOI, else arXiv ID);
     │                           #   optional post-import topic list assignment via projectTopicLists prop
     ├── ColumnProposalCard.tsx  # LLM column proposal states; UserCancelledError exported for silent cancel

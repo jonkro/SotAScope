@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { enrichDOI, enrichDOIBatch, importBibtex, resolveDOIBatch, searchImportCandidates } from '../api';
-import type { DOIResolutionResult, SearchImportCandidate, TopicListOut, WorkOut } from '../types';
-import DOIResolutionDialog from './DOIResolutionDialog';
+import { enrichDOI, enrichDOIBatch, searchImportCandidates } from '../api';
+import type { SearchImportCandidate, TopicListOut, WorkOut } from '../types';
 import SearchImportCandidateDialog from './SearchImportCandidateDialog';
 
-type Tab = 'doi' | 'bibtex' | 'search';
+type Tab = 'doi' | 'search';
 
 function formatError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -40,11 +39,7 @@ interface Props {
 export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicList }: Props) {
   const [tab, setTab] = useState<Tab>('doi');
   const [doiInput, setDoiInput] = useState('');
-  const [bibtexInput, setBibtexInput] = useState('');
   const [result, setResult] = useState<string | null>(null);
-  const [doiResolutionResults, setDoiResolutionResults] = useState<DOIResolutionResult[] | null>(null);
-  const [isResolving, setIsResolving] = useState(false);
-
   // Search tab state
   const [searchTitle, setSearchTitle] = useState('');
   const [searchAuthors, setSearchAuthors] = useState('');
@@ -55,8 +50,6 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
   // Project context: assign step
   const [showAssign, setShowAssign] = useState(false);
   const [assignWorkIds, setAssignWorkIds] = useState<number[]>([]);
-  // Work IDs waiting for DOI resolution to complete (BibTeX flow)
-  const [pendingBibtexWorkIds, setPendingBibtexWorkIds] = useState<number[] | null>(null);
   const [selectedTopicListIds, setSelectedTopicListIds] = useState<Set<number>>(new Set());
 
   const qc = useQueryClient();
@@ -101,56 +94,6 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
     onError: (err) => setResult(formatError(err)),
   });
 
-  const bibtexMutation = useMutation({
-    mutationFn: () => {
-      if (!bibtexInput.trim()) throw new Error('Paste BibTeX content');
-      return importBibtex(bibtexInput);
-    },
-    onSuccess: async (data) => {
-      let msg = `Imported ${data.imported} works, skipped ${data.skipped}`;
-      qc.invalidateQueries({ queryKey: ['works'] });
-
-      const importedIds = data.works.map((w) => w.id);
-
-      if (data.needs_doi_resolution.length > 0) {
-        setIsResolving(true);
-        setResult(msg + '\nResolving DOIs...');
-        try {
-          const results = await resolveDOIBatch(data.needs_doi_resolution);
-          const autoResolved = results.filter((r) => r.auto_resolved_doi);
-          const needsConfirm = results.filter((r) => r.candidates.length > 0 && !r.auto_resolved_doi);
-
-          msg += `\n${autoResolved.length} DOIs auto-resolved`;
-          if (needsConfirm.length > 0) {
-            msg += `, ${needsConfirm.length} need confirmation`;
-          }
-          setResult(msg);
-          qc.invalidateQueries({ queryKey: ['works'] });
-
-          if (needsConfirm.length > 0) {
-            // Save work IDs to assign after the DOI resolution dialog closes
-            if (inProjectContext && importedIds.length > 0) {
-              setPendingBibtexWorkIds(importedIds);
-            }
-            setDoiResolutionResults(results);
-          } else {
-            maybeTransitionToAssign(importedIds);
-          }
-        } catch (err) {
-          msg += `\nDOI resolution error: ${formatError(err)}`;
-          setResult(msg);
-          maybeTransitionToAssign(importedIds);
-        } finally {
-          setIsResolving(false);
-        }
-      } else {
-        setResult(msg);
-        maybeTransitionToAssign(importedIds);
-      }
-    },
-    onError: (err) => setResult(formatError(err)),
-  });
-
   const searchMutation = useMutation({
     mutationFn: () => {
       if (!searchTitle.trim()) throw new Error('Enter a title');
@@ -168,7 +111,7 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
     onError: (err) => setResult(formatError(err)),
   });
 
-  const isPending = doiMutation.isPending || bibtexMutation.isPending || isResolving || searchMutation.isPending;
+  const isPending = doiMutation.isPending || searchMutation.isPending;
 
   function switchTab(t: Tab) {
     setTab(t);
@@ -270,14 +213,6 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                   DOI / arXiv
                 </button>
                 <button
-                  onClick={() => switchTab('bibtex')}
-                  className={`px-4 py-2 text-sm font-medium border-b-2 ${
-                    tab === 'bibtex' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  BibTeX
-                </button>
-                <button
                   onClick={() => switchTab('search')}
                   className={`px-4 py-2 text-sm font-medium border-b-2 ${
                     tab === 'search' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -315,26 +250,6 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                   </div>
                 )}
 
-                {tab === 'bibtex' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">BibTeX content</label>
-                    <textarea
-                      rows={8}
-                      value={bibtexInput}
-                      onChange={(e) => setBibtexInput(e.target.value)}
-                      placeholder="@article{key, ...}"
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
-                    />
-                    <button
-                      onClick={() => bibtexMutation.mutate()}
-                      disabled={isPending}
-                      className="mt-3 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
-                    >
-                      {bibtexMutation.isPending ? 'Importing...' : isResolving ? 'Resolving DOIs...' : 'Import'}
-                    </button>
-                  </div>
-                )}
-
                 {tab === 'search' && (
                   <div className="space-y-3">
                     <div>
@@ -346,7 +261,7 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                         value={searchTitle}
                         onChange={(e) => setSearchTitle(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter' && searchTitle.trim()) searchMutation.mutate(); }}
-                        placeholder="e.g. Attention Is All You Need"
+                        placeholder="e.g. Deep Residual Learning for Image Recognition"
                         className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
                       />
                     </div>
@@ -358,7 +273,7 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                         type="text"
                         value={searchAuthors}
                         onChange={(e) => setSearchAuthors(e.target.value)}
-                        placeholder="e.g. Vaswani Shazeer"
+                        placeholder="e.g. He Zhang Ren Sun"
                         className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
                       />
                     </div>
@@ -370,7 +285,7 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
                         type="number"
                         value={searchYear}
                         onChange={(e) => setSearchYear(e.target.value)}
-                        placeholder="e.g. 2017"
+                        placeholder="e.g. 2016"
                         min={1900}
                         max={2100}
                         className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
@@ -401,22 +316,6 @@ export default function ImportDialog({ onClose, projectTopicLists, onAddToTopicL
           )}
         </div>
       </div>
-
-      {doiResolutionResults && (
-        <DOIResolutionDialog
-          results={doiResolutionResults}
-          onClose={() => {
-            setDoiResolutionResults(null);
-            qc.invalidateQueries({ queryKey: ['works'] });
-            // If there are pending work IDs (BibTeX flow), transition to assign step now
-            if (pendingBibtexWorkIds) {
-              const ids = pendingBibtexWorkIds;
-              setPendingBibtexWorkIds(null);
-              maybeTransitionToAssign(ids);
-            }
-          }}
-        />
-      )}
 
       {searchCandidates !== null && (
         <SearchImportCandidateDialog

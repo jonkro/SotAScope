@@ -11,6 +11,7 @@ import { serveWorkPDFUrl, workPDFTextUrl, getDOIInfo, fetchGrobidStatus, enrichF
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 import ConfirmDialog from './ConfirmDialog';
+import { OnboardingHintSequence } from './OnboardingHint';
 
 /* ------------------------------------------------------------------ */
 /* Fold state                                                          */
@@ -423,6 +424,11 @@ export default function WorkDetailPanel({
   const [fetchPDFMsg, setFetchPDFMsg] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pdfToRemove, setPdfToRemove] = useState<{ id: number; filename: string } | null>(null);
+
+  // Refs for onboarding hints
+  const pdfsSectionRef = useRef<HTMLDivElement>(null);
+  const discussBtnRef = useRef<HTMLButtonElement>(null);
+  const topicListRef = useRef<HTMLDivElement>(null);
 
   const notesQuery = useWorkNotes(workId, projectId);
   const createNote = useCreateWorkNote(workId);
@@ -1088,6 +1094,7 @@ export default function WorkDetailPanel({
         </CollapsibleSection>
 
         {/* PDFs (collapsible, default open) */}
+        <div ref={pdfsSectionRef}>
         <CollapsibleSection
           sectionKey="pdfs"
           title="PDFs"
@@ -1274,6 +1281,7 @@ export default function WorkDetailPanel({
             </p>
           )}
         </CollapsibleSection>
+        </div>{/* end pdfsSectionRef wrapper */}
 
         {/* Actions (collapsible, default open) */}
         <CollapsibleSection
@@ -1292,6 +1300,7 @@ export default function WorkDetailPanel({
           )}
           <div className="flex flex-wrap gap-2">
             <button
+              ref={discussBtnRef}
               onClick={() => navigate(projectId != null ? `/works/${workId}/discuss?from=project&projectId=${projectId}` : `/works/${workId}/discuss?from=library`)}
               className="px-2 py-1 text-xs border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50"
             >
@@ -1477,7 +1486,7 @@ export default function WorkDetailPanel({
 
           {/* Add to topic list (only lists the work is NOT on) */}
           {addableLists.length > 0 && onAddToList && (
-            <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+            <div ref={topicListRef} className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
               <span className="text-xs text-gray-500 w-full">Add to topic list:</span>
               {addableLists.map((tl) => (
                 <button
@@ -1678,6 +1687,29 @@ export default function WorkDetailPanel({
         }}
       />
     )}
+
+    <OnboardingHintSequence
+      hints={[
+        {
+          anchorRef: pdfsSectionRef,
+          storageKey: 'litexplorer:onboarding:sidepanel:pdfs',
+          text: 'Attach a PDF or fetch one automatically.',
+          placement: 'bottom',
+        },
+        {
+          anchorRef: discussBtnRef,
+          storageKey: 'litexplorer:onboarding:sidepanel:discuss',
+          text: 'Discuss this paper with AI.',
+          placement: 'bottom',
+        },
+        {
+          anchorRef: topicListRef,
+          storageKey: 'litexplorer:onboarding:sidepanel:topic-list',
+          text: 'Add this paper to a topic list.',
+          placement: 'top',
+        },
+      ]}
+    />
     </>
   );
 }

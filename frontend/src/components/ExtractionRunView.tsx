@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import ConfirmDialog from './ConfirmDialog';
+import { OnboardingHintSequence } from './OnboardingHint';
 import WorkDetailPanel, { DEFAULT_FOLD_STATE, type PanelFoldState } from './WorkDetailPanel';
 import type { WorkPDFOut } from '../types';
 import {
@@ -637,6 +638,10 @@ export default function ExtractionRunView({
   const [panelWorkId, setPanelWorkId] = useState<number | null>(null);
   const [panelFoldState, setPanelFoldState] = useState<PanelFoldState>(DEFAULT_FOLD_STATE);
 
+  // Refs for onboarding hints
+  const showPromptBtnRef = useRef<HTMLButtonElement>(null);
+  const extractBtnRef = useRef<HTMLButtonElement>(null);
+
   // Work selection state
   const [searchQ, setSearchQ] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -1163,6 +1168,7 @@ export default function ExtractionRunView({
             </span>
           </label>
           <button
+            ref={showPromptBtnRef}
             onClick={handleShowPrompt}
             disabled={seeds.length === 0 || isExtracting}
             className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1171,6 +1177,7 @@ export default function ExtractionRunView({
             Show prompt
           </button>
           <button
+            ref={extractBtnRef}
             onClick={handleExtractClick}
             disabled={extractableCount === 0 || isExtracting}
             className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1522,6 +1529,26 @@ export default function ExtractionRunView({
         topicLists={topicLists}
         foldState={panelFoldState}
         onFoldChange={setPanelFoldState}
+      />
+    )}
+
+    {/* Onboarding hints for the extraction view (only when not read-only) */}
+    {!readOnlyPaperSelection && (
+      <OnboardingHintSequence
+        hints={[
+          {
+            anchorRef: extractBtnRef,
+            storageKey: 'litexplorer:onboarding:extraction-schemas:extract-btn',
+            text: 'Run AI extraction on all selected papers at once.',
+            placement: 'bottom',
+          },
+          {
+            anchorRef: showPromptBtnRef,
+            storageKey: 'litexplorer:onboarding:extraction-schemas:show-prompt',
+            text: 'Copy this prompt to use with any external LLM.',
+            placement: 'bottom',
+          },
+        ]}
       />
     )}
     </div>
