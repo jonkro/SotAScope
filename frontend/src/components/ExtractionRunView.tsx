@@ -621,13 +621,12 @@ export default function ExtractionRunView({
     colWidths[key] ?? DEFAULT_COL_WIDTHS[key] ?? DEFAULT_EXTRACTION_COL_WIDTH;
 
   const handleColResizeStart = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>, key: string, currentWidth: number) => {
+    (e: React.PointerEvent<Element>, key: string, currentWidth: number) => {
       e.preventDefault();
-      // setPointerCapture routes all subsequent pointer events to this element
-      // even when the pointer leaves it — more reliable than document listeners,
-      // and the only approach that works consistently in Safari for thead cells.
-      const el = e.currentTarget;
-      el.setPointerCapture(e.pointerId);
+      // Use document-level listeners rather than setPointerCapture on the handle
+      // element. setPointerCapture is unreliable for elements inside position:sticky
+      // containers in Safari, and inside overflow:hidden containers in Chrome —
+      // attaching to document bypasses both issues.
 
       const startX = e.clientX;
       const startWidth = currentWidth;
@@ -652,14 +651,14 @@ export default function ExtractionRunView({
           return next;
         });
         document.body.style.cursor = '';
-        el.removeEventListener('pointermove', onMove);
-        el.removeEventListener('pointerup', onEnd);
-        el.removeEventListener('pointercancel', onEnd);
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onEnd);
+        document.removeEventListener('pointercancel', onEnd);
       };
 
-      el.addEventListener('pointermove', onMove);
-      el.addEventListener('pointerup', onEnd);
-      el.addEventListener('pointercancel', onEnd);
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onEnd);
+      document.addEventListener('pointercancel', onEnd);
     },
     [schema.id],
   );
@@ -673,8 +672,9 @@ export default function ExtractionRunView({
   const handleRowResizeStart = useCallback(
     (e: React.PointerEvent<HTMLDivElement>, workId: number, currentHeight: number) => {
       e.preventDefault();
-      const el = e.currentTarget;
-      el.setPointerCapture(e.pointerId);
+      // Same document-level listener pattern as handleColResizeStart —
+      // pointer capture on the handle element is clipped by overflow:hidden on
+      // the parent <td> in Chrome, causing pointermove events to stop firing.
 
       const startY = e.clientY;
       const startHeight = currentHeight;
@@ -699,14 +699,14 @@ export default function ExtractionRunView({
           return next;
         });
         document.body.style.cursor = '';
-        el.removeEventListener('pointermove', onMove);
-        el.removeEventListener('pointerup', onEnd);
-        el.removeEventListener('pointercancel', onEnd);
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onEnd);
+        document.removeEventListener('pointercancel', onEnd);
       };
 
-      el.addEventListener('pointermove', onMove);
-      el.addEventListener('pointerup', onEnd);
-      el.addEventListener('pointercancel', onEnd);
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onEnd);
+      document.addEventListener('pointercancel', onEnd);
     },
     [schema.id],
   );
@@ -980,11 +980,11 @@ export default function ExtractionRunView({
               <col key={col.id} style={{ width: getColW(`col_${col.id}`) }} />
             ))}
           </colgroup>
-          <thead className="bg-gray-50 sticky top-0 z-10">
+          <thead className="bg-gray-50">
             <tr>
               {/* Checkbox column — hidden in read-only mode */}
               {!readOnlyPaperSelection && (
-                <th className="px-3 py-2 text-left border-b border-r border-gray-200">
+                <th className="px-3 py-2 text-left border-b border-r border-gray-200 sticky top-0 bg-gray-50 z-10">
                   <input
                     type="checkbox"
                     checked={
@@ -996,34 +996,55 @@ export default function ExtractionRunView({
                   />
                 </th>
               )}
-              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky left-0 bg-gray-50 z-20">
+              {/* Safari WebKit bug: pointer events do not fire inside a sticky <thead>
+                  section element. Fix: move sticky positioning from <thead> to
+                  individual <th> cells — Safari handles sticky <th>/<td> correctly
+                  (same reason the row resize handle inside sticky <td> works fine).
+                  The th-level onPointerDown fallback with edge detection provides
+                  defense-in-depth; stopPropagation on handle divs prevents Chrome
+                  from double-firing when the handle captures the event first. */}
+              <th
+                className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky top-0 left-0 bg-gray-50 z-20"
+                onPointerDown={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  if (r.right - e.clientX <= 8) handleColResizeStart(e, 'title', getColW('title'));
+                }}
+              >
                 {/* -mx-3 -my-2 px-3 py-2: expands wrapper to cover the full cell box
                     (content + padding), so right-0 on the handle aligns with the
-                    cell's right border. Safari needs this relative div because
-                    position:sticky does not reliably establish a containing block
-                    for absolute children in WebKit. */}
+                    cell's right border. */}
                 <div className="relative -mx-3 -my-2 px-3 py-2">
                   <span className="block pr-2 truncate">Paper</span>
                   <div
-                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                    onPointerDown={(e) => handleColResizeStart(e, 'title', getColW('title'))}
+                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none touch-none"
+                    onPointerDown={(e) => { e.stopPropagation(); handleColResizeStart(e, 'title', getColW('title')); }}
                   />
                 </div>
               </th>
-              <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200">
+              <th
+                className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 sticky top-0 bg-gray-50 z-10"
+                onPointerDown={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  if (r.right - e.clientX <= 8) handleColResizeStart(e, 'year', getColW('year'));
+                }}
+              >
                 <div className="relative -mx-3 -my-2 px-3 py-2">
                   <span className="block pr-2 truncate">Year</span>
                   <div
-                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                    onPointerDown={(e) => handleColResizeStart(e, 'year', getColW('year'))}
+                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none touch-none"
+                    onPointerDown={(e) => { e.stopPropagation(); handleColResizeStart(e, 'year', getColW('year')); }}
                   />
                 </div>
               </th>
               {sortedColumns.map((col) => (
                 <th
                   key={col.id}
-                  className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0"
+                  className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b border-r border-gray-200 last:border-r-0 sticky top-0 bg-gray-50 z-10"
                   title={col.prompt}
+                  onPointerDown={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    if (r.right - e.clientX <= 8) handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`));
+                  }}
                 >
                   <div className="relative -mx-3 -my-2 px-3 py-2">
                     <span className="block pr-2 truncate">
@@ -1035,8 +1056,8 @@ export default function ExtractionRunView({
                       )}
                     </span>
                     <div
-                      className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none"
-                      onPointerDown={(e) => handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`))}
+                      className="absolute inset-y-0 right-0 w-2 cursor-col-resize hover:bg-indigo-200/60 select-none touch-none"
+                      onPointerDown={(e) => { e.stopPropagation(); handleColResizeStart(e, `col_${col.id}`, getColW(`col_${col.id}`)); }}
                     />
                   </div>
                 </th>
@@ -1109,7 +1130,7 @@ export default function ExtractionRunView({
                   </div>
                   {/* Row resize handle at bottom of title cell */}
                   <div
-                    className="absolute bottom-0 left-0 right-0 h-1.5 cursor-row-resize hover:bg-indigo-200/60 select-none z-10"
+                    className="absolute bottom-0 left-0 right-0 h-1.5 cursor-row-resize hover:bg-indigo-200/60 select-none touch-none z-10"
                     onPointerDown={(e) => {
                       const current = rowH ?? trRefs.current.get(seed.id)?.offsetHeight ?? 60;
                       handleRowResizeStart(e, seed.id, current);
