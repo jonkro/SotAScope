@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 const TOOLTIP_WIDTH = 240;
@@ -150,6 +150,8 @@ interface SequenceHint {
   text: string;
   storageKey: string;
   placement?: 'top' | 'bottom' | 'left' | 'right';
+  /** Called after the hint is dismissed (after storageKey is written). */
+  onDismiss?: () => void;
 }
 
 export function OnboardingHintSequence({ hints }: { hints: SequenceHint[] }) {
@@ -157,11 +159,37 @@ export function OnboardingHintSequence({ hints }: { hints: SequenceHint[] }) {
     hints.findIndex((h) => !localStorage.getItem(h.storageKey)),
   );
 
+  // Stable reference to the current hint for the effect below
+  const currentHintRef = useRef<SequenceHint | null>(null);
+  currentHintRef.current =
+    currentIdx >= 0 && currentIdx < hints.length ? hints[currentIdx] : null;
+
+  // Auto-skip to the next hint if the current anchor element is not mounted.
+  // Waits 150 ms for the DOM to settle before skipping.
+  useEffect(() => {
+    const hint = currentHintRef.current;
+    if (!hint || hint.anchorRef.current) return;
+    const id = window.setTimeout(() => {
+      if (!currentHintRef.current?.anchorRef.current) {
+        setCurrentIdx((prev) => {
+          const next = hints.findIndex(
+            (h, i) => i > prev && !localStorage.getItem(h.storageKey),
+          );
+          return next === -1 ? hints.length : next;
+        });
+      }
+    }, 150);
+    return () => clearTimeout(id);
+  // Re-run when currentIdx changes so a newly-skipped hint triggers another check
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentIdx]);
+
   if (currentIdx < 0 || currentIdx >= hints.length) return null;
 
   const hint = hints[currentIdx];
 
   const handleDismiss = () => {
+    hint.onDismiss?.();
     const next = hints.findIndex(
       (h, i) => i > currentIdx && !localStorage.getItem(h.storageKey),
     );
