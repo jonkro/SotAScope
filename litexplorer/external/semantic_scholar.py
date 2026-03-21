@@ -161,18 +161,21 @@ class SemanticScholarClient:
         """
         return self.get_paper(_to_s2_paper_id(paper_id))
 
-    def search_by_title(self, query: str, limit: int = 5) -> list[dict]:
+    def search_by_title(self, query: str, limit: int = 5, year: int | None = None) -> list[dict]:
         """Search for papers by title (or combined bibliographic query).
 
         Returns raw Semantic Scholar paper dicts including paperId, corpusId,
         externalIds, title, year, and authors.  Returns an empty list on 400/404/429.
+
+        When *year* is provided it is passed as the ``year`` query parameter so
+        that S2 restricts results to that publication year.  The year is NOT
+        included in the free-text query string.
         """
         fields = "paperId,corpusId,externalIds,title,year,authors"
-        resp = self._call(
-            "GET",
-            "/paper/search",
-            params={"query": query, "fields": fields, "limit": limit},
-        )
+        params: dict = {"query": query, "fields": fields, "limit": limit}
+        if year is not None:
+            params["year"] = year
+        resp = self._call("GET", "/paper/search", params=params)
         if resp.status_code in (400, 404):
             return []
         resp.raise_for_status()

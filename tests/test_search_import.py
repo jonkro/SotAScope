@@ -202,6 +202,41 @@ class TestSearchImportCandidates:
         assert resp.status_code == 200, resp.text
         assert len(resp.json()["candidates"]) == 1
 
+    def test_year_passed_as_filter_not_in_query_crossref(self, client, mock_cr_client):
+        """Year must be passed as a separate keyword argument to search_works,
+        NOT concatenated into the free-text query string."""
+        mock_cr_client.search_works.return_value = [_CROSSREF_ITEM]
+
+        client.post(
+            "/api/enrich/search-import/candidates",
+            json={"title": "Attention Is All You Need", "year": 2017},
+        )
+
+        call_kwargs = mock_cr_client.search_works.call_args
+        # First positional arg is the query string — must NOT contain "2017"
+        query_arg = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("query", "")
+        assert "2017" not in query_arg, f"Year leaked into query string: {query_arg!r}"
+        # year= kwarg must be set correctly
+        assert call_kwargs.kwargs.get("year") == 2017
+
+    def test_year_passed_as_filter_not_in_query_ss_fallback(
+        self, client, mock_cr_client, mock_ss_client
+    ):
+        """Year must be passed as a separate keyword argument to search_by_title
+        when S2 fallback is used, NOT concatenated into the query string."""
+        mock_cr_client.search_works.return_value = []
+        mock_ss_client.search_by_title.return_value = [_SS_ITEM]
+
+        client.post(
+            "/api/enrich/search-import/candidates",
+            json={"title": "Attention Is All You Need", "year": 2017},
+        )
+
+        call_kwargs = mock_ss_client.search_by_title.call_args
+        query_arg = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("query", "")
+        assert "2017" not in query_arg, f"Year leaked into query string: {query_arg!r}"
+        assert call_kwargs.kwargs.get("year") == 2017
+
 
 # ---------------------------------------------------------------------------
 # POST /api/enrich/search-import/confirm

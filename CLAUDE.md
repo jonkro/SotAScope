@@ -26,6 +26,7 @@ Two distinct layers:
 
 ### 2. Project layer (per project)
 - A project contains one or more **topic lists**. Each topic list is a named, color-coded set of "selected" papers (seeds).
+- **Auto-created "Main" topic list**: when a new project is created via `POST /api/projects`, a topic list named "Main" (color `#3b82f6`) is automatically created in the same request. This is handled in `api/projects.py` `create_project()` via a `db.flush()` + `TopicList` insert before the final commit.
 - The project stores which papers belong to which topic list, and **ignored works** (excluded from timeline).
 - Multiple projects can coexist and share the same library.
 - **Project editing**: name, description, and owner are editable from the projects overview page (`ProjectsPage`) via an "Edit" button on each project card. Opens `ProjectFormDialog` in edit mode; calls `PATCH /api/projects/{id}`.
@@ -68,6 +69,13 @@ For arXiv ID import, the resolution chain is:
 1. OpenAlex lookup by arXiv ID (filter `ids.arxiv`)
 2. If OpenAlex has no match: Semantic Scholar lookup (`GET /paper/ARXIV:{id}`)
 3. Store with `arxiv_id` as the primary key; DOI and openalex_id populated if the source provides them.
+
+### Search-by-title import
+`POST /api/enrich/search-import/candidates` accepts `{title, authors?, year?}`. The `year` field is passed as a **proper filter parameter** to each API — it is NOT concatenated into the free-text query string:
+- **Crossref**: `filter=from-pub-date:{year},until-pub-date:{year}` added to the `/works` request; `query.bibliographic` contains only title + authors.
+- **Semantic Scholar** (fallback): `year={year}` query parameter added to `/paper/search`; the `query` param contains only title + authors.
+
+The `ImportDialog` search tab has three separate fields (title, authors, year); the frontend sends them as separate JSON fields in the request body.
 
 ### DOI resolution
 For works without a DOI, the system can auto-resolve via Crossref fuzzy search (score >= 80, ratio to 2nd candidate >= 1.5, marks `doi_auto_resolved = true`) or present candidates for manual confirmation. Batch resolution is supported.
@@ -119,6 +127,18 @@ Rules that apply to all page headers:
 4. **Button sizing**: `py-1.5 px-3 text-sm` (≈ 32 px tall). The share icon button is `h-8 w-8` (square, same height).
 5. **`ProjectDetailPage` header**: breadcrumb (`← Projects / {name}`) on the left using `PageHeader leftContent`; three action dropdowns (Project, Analyze, Export) + "Import paper" primary + link icon on the right.
 6. **AI-action buttons** use indigo outline style: `border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50`. Apply this to any button that triggers an LLM call: extraction runs ("Extract N papers →"), AI refinement ("Refine with AI"), and AI-oriented navigation dropdowns ("Analyze"). This distinguishes them from the blue primary button (structural/save actions) and plain outline buttons (navigation/filter/export actions). The `DropdownMenu` component in `ProjectDetailPage.tsx` accepts an `accent` prop to switch to this style.
+
+### Onboarding hints
+
+- **`OnboardingHint`** (`components/OnboardingHint.tsx`): tooltip-style overlay anchored to a DOM element via a ref. Renders into `document.body` via `createPortal`. Props: `anchorRef` (`{ current: HTMLElement | null }`), `text`, `storageKey`, `placement` (`top|bottom|left|right`, default `bottom`), optional `onDismiss` callback.
+  - Standalone use: checks `localStorage.getItem(storageKey)` on mount; renders nothing if already dismissed. On dismiss, writes `true` to `localStorage` and calls `onDismiss` if provided.
+  - A semi-transparent backdrop (`rgba(0,0,0,0.08)`) covers the viewport and dismisses the hint on click.
+- **`OnboardingHintSequence`** (`components/OnboardingHint.tsx`): manages a list of `SequenceHint` configs and shows them one at a time. On mount it finds the first hint whose `storageKey` is not set in `localStorage` and shows it. When dismissed (the hint writes `localStorage` and calls `onDismiss`), the sequence advances to the next undismissed hint. Renders nothing once all hints are dismissed.
+- **`localStorage` key pattern**: `litexplorer:onboarding:{scope}:{hint-id}`, e.g. `litexplorer:onboarding:project-view:import-paper`.
+- **`ProjectDetailPage` hints** (shown on first visit to a project, in sequence):
+  1. Anchored to "Import paper" button → "Start by importing papers via DOI, arXiv ID, or title search."
+  2. Anchored to "Topic Lists" tab → "Organize your papers into topic lists. We created 'Main' for you — rename it anytime."
+  3. Anchored to "Analyze" dropdown → "Use Analyze to explore citations, discuss papers with AI, or design extraction schemas."
 
 ---
 

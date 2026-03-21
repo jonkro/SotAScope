@@ -911,16 +911,15 @@ class EnrichmentService:
         The Semantic Scholar fallback is used when Crossref returns zero results.
         Candidates are returned with source label and a relevance score.
         """
-        # Build combined query string
+        # Build free-text query from title and authors only; year is passed as a
+        # separate filter parameter to each API so it is not treated as a keyword.
         parts: list[str] = [title]
         if authors:
             parts.append(authors)
-        if year:
-            parts.append(str(year))
         query = " ".join(parts)
 
         # ---- Crossref search ------------------------------------------------
-        crossref_items = crossref_client.search_works(query, rows=max_results)
+        crossref_items = crossref_client.search_works(query, rows=max_results, year=year)
         crossref_candidates = self._parse_crossref_search_candidates(crossref_items)
 
         if crossref_candidates:
@@ -930,7 +929,7 @@ class EnrichmentService:
         if ss_client is None:
             return []
 
-        ss_items = ss_client.search_by_title(query, limit=max_results)
+        ss_items = ss_client.search_by_title(query, limit=max_results, year=year)
         return self._parse_ss_search_candidates(ss_items)[:max_results]
 
     @staticmethod

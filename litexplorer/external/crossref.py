@@ -134,12 +134,18 @@ class CrossrefClient:
         data = resp.json()
         return data.get("message")
 
-    def search_works(self, query: str, rows: int = 5) -> list[dict]:
-        """Fuzzy bibliographic search. Returns raw item dicts including 'score'."""
-        resp = self._http.get(
-            "/works",
-            params={"query.bibliographic": query, "rows": rows},
-        )
+    def search_works(self, query: str, rows: int = 5, year: int | None = None) -> list[dict]:
+        """Fuzzy bibliographic search. Returns raw item dicts including 'score'.
+
+        When *year* is provided it is applied as a Crossref date filter
+        (``filter=from-pub-date:{year},until-pub-date:{year}``) so that only
+        works published in that year are returned.  The year is NOT included
+        in the free-text query string.
+        """
+        params: dict = {"query.bibliographic": query, "rows": rows}
+        if year is not None:
+            params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
+        resp = self._http.get("/works", params=params)
         resp.raise_for_status()
         data = resp.json()
         message = data.get("message", {})
