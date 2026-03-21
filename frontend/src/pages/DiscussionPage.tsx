@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useWork } from '../hooks/useWorks';
+import { useProject } from '../hooks/useProjects';
 import { useTimeline } from '../hooks/useTimeline';
 import { useWorkPDFs } from '../hooks/useWorkPDFs';
 import { useSettings, useLLMModels } from '../hooks/useSettings';
@@ -669,10 +670,15 @@ export default function DiscussionPage() {
   const projectId = projectIdParam != null ? Number(projectIdParam) : null;
 
   // Query params for pre-selecting discussion focus (?focus=new-schema or ?focus=schema&schemaId=X)
+  // and back-navigation (?from=project|schemas|library, ?projectId=X for library-mode with project context)
   const [searchParams] = useSearchParams();
   const focusParam = searchParams.get('focus');
   const schemaIdParam = searchParams.get('schemaId');
   const hasQueryFocus = focusParam != null && !isLibraryMode;
+  const fromParam = searchParams.get('from');
+  const fromProjectIdParam = searchParams.get('projectId');
+  // In library mode the projectId comes from ?projectId=; in project mode it's from useParams
+  const fromProjectId = fromProjectIdParam != null ? Number(fromProjectIdParam) : projectId;
 
   // Settings
   const { data: settings = [] } = useSettings();
@@ -686,6 +692,9 @@ export default function DiscussionPage() {
   const canFetchModels = !!llmProvider && (!!sm['llm_api_key'] || !!sm['llm_base_url']);
   useLLMModels(canFetchModels);
   const llmNotConfigured = !llmProvider || !llmModelId;
+
+  // Project data for breadcrumb label (fetched from cache when available; no extra network round-trip in project mode)
+  const { data: fromProject } = useProject(fromProjectId ?? null);
 
   // Library mode: single work + its PDFs
   const { data: singleWork } = useWork(workId);
@@ -1370,10 +1379,25 @@ export default function DiscussionPage() {
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 shrink-0">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate(isLibraryMode ? '/library' : `/projects/${projectId}`)}
+            onClick={() => {
+              if (fromParam === 'schemas') {
+                const base = `/projects/${fromProjectId}?tab=extract`;
+                navigate(schemaIdParam ? `${base}&schema=${schemaIdParam}` : base);
+              } else if (fromParam === 'project') {
+                navigate(`/projects/${fromProjectId}`);
+              } else if (fromParam === 'library') {
+                navigate('/library');
+              } else {
+                navigate(isLibraryMode ? '/library' : `/projects/${projectId}`);
+              }
+            }}
             className="text-sm text-gray-500 hover:text-gray-700"
           >
-            ← Back
+            {fromParam === 'schemas'
+              ? `← Projects / ${fromProject?.name ?? 'Project'} / Extraction Schemas`
+              : fromParam === 'project' || (!fromParam && !isLibraryMode)
+                ? `← Projects / ${fromProject?.name ?? 'Project'}`
+                : '← Library'}
           </button>
           <h1 className="text-sm font-semibold text-gray-900">
             {isLibraryMode

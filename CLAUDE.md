@@ -251,7 +251,13 @@ frontend/src/
 │   ├── ProjectDetailPage.tsx    # Timeline + Topic Lists + Notes + Venue Tiers tabs + pinned schema tabs
 │   ├── ExtractionSchemasPage.tsx # Schema editor + ExtractionRunView; ?schema= URL param
 │   ├── DiscussionPage.tsx       # LLM chat; context_type drives schema-design vs. paper mode;
-│   │                            #   proposal parser produces ColumnProposalCards
+│   │                            #   proposal parser produces ColumnProposalCards.
+│   │                            #   Reads ?from=project|schemas|library for back-navigation:
+│   │                            #     from=project → /projects/{id}
+│   │                            #     from=schemas → /projects/{id}?tab=extract (+ &schema={id} if schemaId present)
+│   │                            #     from=library → /library
+│   │                            #   Library-mode entries (/works/{id}/discuss) pass ?projectId={id} so
+│   │                            #   the back button can return to the correct project.
 │   ├── LibraryPage.tsx
 │   ├── VenuesPage.tsx
 │   └── SettingsPage.tsx

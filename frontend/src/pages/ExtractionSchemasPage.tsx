@@ -302,7 +302,7 @@ function SchemaEditor({ schemaId, projectId, onBack, initialTab }: SchemaEditorP
         }
       >
         <button
-          onClick={() => navigate(`/projects/${projectId}/discuss?focus=schema&schemaId=${schemaId}`)}
+          onClick={() => navigate(`/projects/${projectId}/discuss?focus=schema&schemaId=${schemaId}&from=schemas`)}
           className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50"
         >
           Refine with AI
@@ -569,7 +569,7 @@ function NewSchemaForm({ projectId, onCreated, onCancel }: NewSchemaFormProps) {
             {createSchema.isPending ? 'Creating…' : 'Create Schema'}
           </button>
           <button
-            onClick={() => navigate(`/projects/${projectId}/discuss?focus=new-schema`)}
+            onClick={() => navigate(`/projects/${projectId}/discuss?focus=new-schema&from=schemas`)}
             className="px-3 py-2 text-sm border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50"
           >
             Design with AI

@@ -555,7 +555,7 @@ export default function ProjectDetailPage() {
             label="Analyze"
             accent={true}
             items={[
-              { label: 'Discuss', onClick: () => navigate(`/projects/${projectId}/discuss`) },
+              { label: 'Discuss', onClick: () => navigate(`/projects/${projectId}/discuss?from=project`) },
               { label: 'Extraction tables', onClick: () => navigate(`/projects/${projectId}/extraction`) },
             ]}
           />
