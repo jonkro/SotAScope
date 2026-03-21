@@ -17,6 +17,7 @@ import TimelineEnrichBar from '../components/TimelineEnrichBar';
 import ExtractionRunView from '../components/ExtractionRunView';
 import ProjectVenueTiersTab from '../components/ProjectVenueTiersTab';
 import { ShareButton } from '../components/ShareButton';
+import { OnboardingHintSequence } from '../components/OnboardingHint';
 import {
   useProject, useCreateTopicList, useUpdateTopicList, useDeleteTopicList, useAddWorkToTopicList,
   useAddIgnoredWork, useRemoveIgnoredWork, useRemoveWorkFromTopicList, useTopicList,
@@ -234,6 +235,11 @@ export default function ProjectDetailPage() {
     }
     return null;
   });
+
+  // Refs for onboarding hints
+  const importBtnRef = useRef<HTMLButtonElement>(null);
+  const topicListsTabRef = useRef<HTMLButtonElement>(null);
+  const analyzeDropdownRef = useRef<HTMLDivElement>(null);
 
   // Sync state to URL params (replace, not push)
   useEffect(() => {
@@ -551,14 +557,16 @@ export default function ProjectDetailPage() {
               { label: 'Merge', onClick: () => setShowMergeDialog(true) },
             ]}
           />
-          <DropdownMenu
-            label="Analyze"
-            accent={true}
-            items={[
-              { label: 'Discuss', onClick: () => navigate(`/projects/${projectId}/discuss?from=project`) },
-              { label: 'Extraction tables', onClick: () => navigate(`/projects/${projectId}/extraction`) },
-            ]}
-          />
+          <div ref={analyzeDropdownRef}>
+            <DropdownMenu
+              label="Analyze"
+              accent={true}
+              items={[
+                { label: 'Discuss', onClick: () => navigate(`/projects/${projectId}/discuss?from=project`) },
+                { label: 'Extraction tables', onClick: () => navigate(`/projects/${projectId}/extraction`) },
+              ]}
+            />
+          </div>
           <DropdownMenu
             label="Export"
             items={[
@@ -567,6 +575,7 @@ export default function ProjectDetailPage() {
             ]}
           />
           <button
+            ref={importBtnRef}
             onClick={() => setShowProjectImport(true)}
             className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700"
           >
@@ -592,6 +601,7 @@ export default function ProjectDetailPage() {
             Timeline
           </button>
           <button
+            ref={topicListsTabRef}
             onClick={() => { setActiveTab('lists'); setSelectedWorkId(null); }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
               activeTab === 'lists'
@@ -1067,6 +1077,29 @@ export default function ProjectDetailPage() {
           onClose={() => setShowProjectExport(false)}
         />
       )}
+
+      <OnboardingHintSequence
+        hints={[
+          {
+            anchorRef: importBtnRef,
+            storageKey: 'litexplorer:onboarding:project-view:import-paper',
+            text: 'Start by importing papers via DOI, arXiv ID, or title search.',
+            placement: 'bottom',
+          },
+          {
+            anchorRef: topicListsTabRef,
+            storageKey: 'litexplorer:onboarding:project-view:topic-lists-tab',
+            text: "Organize your papers into topic lists. We created 'Main' for you — rename it anytime.",
+            placement: 'bottom',
+          },
+          {
+            anchorRef: analyzeDropdownRef,
+            storageKey: 'litexplorer:onboarding:project-view:analyze',
+            text: 'Use Analyze to explore citations, discuss papers with AI, or design extraction schemas.',
+            placement: 'bottom',
+          },
+        ]}
+      />
     </div>
   );
 }

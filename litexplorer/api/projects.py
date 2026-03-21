@@ -158,6 +158,9 @@ def _project_detail(project: Project) -> ProjectDetail:
 def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
     project = Project(**body.model_dump())
     db.add(project)
+    db.flush()  # get project.id before adding topic list
+    main_list = TopicList(project_id=project.id, name="Main", color="#3b82f6")
+    db.add(main_list)
     db.commit()
     db.refresh(project)
     return _project_detail(project)
