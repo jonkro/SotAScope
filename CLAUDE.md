@@ -28,6 +28,7 @@ Two distinct layers:
 - A project contains one or more **topic lists**. Each topic list is a named, color-coded set of "selected" papers (seeds).
 - The project stores which papers belong to which topic list, and **ignored works** (excluded from timeline).
 - Multiple projects can coexist and share the same library.
+- **Project editing**: name, description, and owner are editable from the projects overview page (`ProjectsPage`) via an "Edit" button on each project card. Opens `ProjectFormDialog` in edit mode; calls `PATCH /api/projects/{id}`.
 - **Extraction table tabs**: Schemas can be promoted to their own top-level tabs in the project view. Promotion state is stored in `localStorage` per project (`litexplorer:project:{id}:promotedSchemas`), not in the database — it is a per-browser preference. Pin/unpin toggles are on each schema card in `ExtractionSchemasPage`; `ProjectDetailPage` reads the same key but only reads it (no toggle UI there). Promoted tabs are read-only with respect to paper selection.
 
 ---

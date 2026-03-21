@@ -6,17 +6,20 @@ import EmptyState from '../components/EmptyState';
 import ProjectFormDialog from '../components/ProjectFormDialog';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { ProjectImportDialog } from '../components/ProjectImportDialog';
-import { useProjects, useCreateProject, useDeleteProject } from '../hooks/useProjects';
+import { useProjects, useCreateProject, useUpdateProject, useDeleteProject } from '../hooks/useProjects';
+import type { ProjectOut } from '../types';
 
 export default function ProjectsPage() {
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [editProject, setEditProject] = useState<ProjectOut | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const navigate = useNavigate();
 
   const { data: projects, isLoading } = useProjects({ q: search || undefined });
   const createMut = useCreateProject();
+  const updateMut = useUpdateProject();
   const deleteMut = useDeleteProject();
 
   const handleSearch = useCallback((v: string) => setSearch(v), []);
@@ -61,12 +64,20 @@ export default function ProjectsPage() {
               >
                 <div className="flex items-start justify-between">
                   <h3 className="font-medium text-gray-900">{p.name}</h3>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setDeleteId(p.id); }}
-                    className="text-xs text-red-400 hover:text-red-600"
-                  >
-                    Delete
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEditProject(p); }}
+                      className="text-xs text-gray-500 hover:text-gray-700"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDeleteId(p.id); }}
+                      className="text-xs text-red-400 hover:text-red-600"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
                 {p.description && <p className="text-sm text-gray-500 mt-1 line-clamp-2">{p.description}</p>}
                 <div className="text-xs text-gray-400 mt-2">
@@ -83,6 +94,19 @@ export default function ProjectsPage() {
           onCancel={() => setShowCreate(false)}
           onSubmit={(data) => {
             createMut.mutate(data, { onSuccess: () => setShowCreate(false) });
+          }}
+        />
+      )}
+
+      {editProject && (
+        <ProjectFormDialog
+          initial={{ name: editProject.name, description: editProject.description ?? '', owner: editProject.owner ?? '' }}
+          onCancel={() => setEditProject(null)}
+          onSubmit={(data) => {
+            updateMut.mutate(
+              { projectId: editProject.id, data },
+              { onSuccess: () => setEditProject(null) },
+            );
           }}
         />
       )}
