@@ -76,7 +76,8 @@ def list_venues(
         .options(joinedload(Venue.fields).joinedload(VenueField.field))
     )
     if q:
-        stmt = stmt.where(Venue.name.ilike(f"%{q}%"))
+        alias_match = select(VenueAlias.venue_id).where(VenueAlias.alias.ilike(f"%{q}%"))
+        stmt = stmt.where(Venue.name.ilike(f"%{q}%") | Venue.id.in_(alias_match))
 
     # Determine sort expression
     col = sort_by if sort_by in _VENUE_SORT_COLUMNS else "name"

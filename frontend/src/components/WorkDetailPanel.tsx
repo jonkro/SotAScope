@@ -11,6 +11,7 @@ import { serveWorkPDFUrl, workPDFTextUrl, getDOIInfo, fetchGrobidStatus, enrichF
 import type { CitationWorkBrief, DOIResolutionResult, TopicListOut, WorkNote } from '../types';
 import DOIResolutionDialog from './DOIResolutionDialog';
 import ConfirmDialog from './ConfirmDialog';
+import VenuePickerDialog from './VenuePickerDialog';
 import { OnboardingHintSequence } from './OnboardingHint';
 
 /* ------------------------------------------------------------------ */
@@ -458,6 +459,7 @@ export default function WorkDetailPanel({
       qc.invalidateQueries({ queryKey: ['works', 'lock-status'] });
     },
   });
+  const [venuePicker, setVenuePicker] = useState(false);
   const [editSsId, setEditSsId] = useState(false);
   const [ssIdDraft, setSsIdDraft] = useState('');
   const [editDoi, setEditDoi] = useState(false);
@@ -539,21 +541,28 @@ export default function WorkDetailPanel({
               <span className="text-gray-800">{work.publication_year}</span>
             </>
           )}
-          {work.venue_name && (
-            <>
-              <span className="text-gray-500">Venue</span>
+          <>
+            <span className="text-gray-500">Venue</span>
+            <span className="flex items-center gap-1">
               {work.venue_id ? (
                 <button
                   onClick={() => navigate(`/venues?venue_id=${work.venue_id}`)}
                   className="text-blue-600 hover:underline text-left"
                 >
-                  {work.venue_name}
+                  {work.venue_display_name || work.venue_name}
                 </button>
               ) : (
-                <span className="text-gray-800">{work.venue_name}</span>
+                <span className="text-gray-400 italic">None</span>
               )}
-            </>
-          )}
+              <button
+                onClick={() => setVenuePicker(true)}
+                title="Edit venue"
+                className="text-gray-400 hover:text-gray-600 leading-none"
+              >
+                ✎
+              </button>
+            </span>
+          </>
           <>
             <span className="text-gray-500">DOI</span>
             {editDoi ? (
@@ -1652,6 +1661,19 @@ export default function WorkDetailPanel({
         )}
       </div>
     </div>
+
+    {venuePicker && work && (
+      <VenuePickerDialog
+        currentVenueId={work.venue_id}
+        onClose={() => setVenuePicker(false)}
+        onSelect={(venueId) => {
+          updateWork.mutate(
+            { workId, data: { venue_id: venueId } },
+            { onSettled: () => setVenuePicker(false) },
+          );
+        }}
+      />
+    )}
 
     {doiResolutionResults && (
       <DOIResolutionDialog
