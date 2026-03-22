@@ -24,6 +24,7 @@ from sotascope.models.library import (
 )
 from sotascope.services.enrichment import EnrichmentService
 from tests.fixtures.openalex_responses import (
+    SAMPLE_ARXIV_WORK_WITH_VENUE_RAW,
     SAMPLE_REFERENCED_WORK_RAW,
     SAMPLE_STUB_WORK_RAW,
     SAMPLE_WORK_RAW,
@@ -417,6 +418,20 @@ class TestImportByArxivId:
         assert work.semantic_scholar_id is None
         mock_client.get_work_by_arxiv_id_raw.assert_called_once_with("2301.12345")
 
+    def test_creates_venue_from_oa_for_arxiv_work(self, service, mock_client, db_session):
+        """arXiv import via OA creates a Venue from primary_location.source."""
+        mock_client.get_work_by_arxiv_id_raw.return_value = SAMPLE_ARXIV_WORK_WITH_VENUE_RAW
+
+        work = service.import_by_arxiv_id("1706.03762")
+
+        assert work is not None
+        assert work.doi is None
+        assert work.venue_id is not None
+        venue = db_session.get(Venue, work.venue_id)
+        assert venue.name == "Neural Information Processing Systems"
+        assert venue.openalex_id == "S4306402567"
+        assert venue.venue_type == "conference"
+
     def test_fallback_to_s2_when_oa_misses(self, service, mock_client, mock_ss_client, db_session):
         """OA returns None → S2 fallback called; work created with semantic_scholar_id."""
         mock_client.get_work_by_arxiv_id_raw.return_value = None
@@ -438,10 +453,19 @@ class TestImportByArxivId:
 
         mock_ss_client.get_paper.assert_not_called()
 
-    def test_dedup_returns_existing_without_api_call(self, service, mock_client, db_session):
-        """If arxiv_id already exists in DB, return it without any external call."""
-        # Seed the DB directly
-        existing = Work(arxiv_id="2301.12345", title="Already Here", publication_year=2020)
+    def test_dedup_returns_existing_without_api_call_when_venue_set(
+        self, service, mock_client, db_session
+    ):
+        """If arxiv_id already exists in DB and has a venue, return without API call."""
+        venue = Venue(name="Some Conference")
+        db_session.add(venue)
+        db_session.flush()
+        existing = Work(
+            arxiv_id="2301.12345",
+            title="Already Here",
+            publication_year=2020,
+            venue_id=venue.id,
+        )
         db_session.add(existing)
         db_session.commit()
 
@@ -449,6 +473,27 @@ class TestImportByArxivId:
 
         assert result.id == existing.id
         mock_client.get_work_by_arxiv_id_raw.assert_not_called()
+
+    def test_dedup_populates_venue_for_existing_work_without_venue(
+        self, service, mock_client, db_session
+    ):
+        """If arxiv_id exists but work has no venue, OA is used to populate venue_id."""
+        # Simulate a work previously imported from S2 (no venue data)
+        existing = Work(arxiv_id="1706.03762", title="Attention Is All You Need",
+                        publication_year=2017)
+        db_session.add(existing)
+        db_session.commit()
+        assert existing.venue_id is None
+
+        mock_client.get_work_by_arxiv_id_raw.return_value = SAMPLE_ARXIV_WORK_WITH_VENUE_RAW
+
+        result = service.import_by_arxiv_id("1706.03762")
+
+        assert result.id == existing.id
+        assert result.venue_id is not None
+        venue = db_session.get(Venue, result.venue_id)
+        assert venue.name == "Neural Information Processing Systems"
+        assert venue.venue_type == "conference"
 
     def test_returns_none_when_both_sources_fail(self, service, mock_client, mock_ss_client):
         """Both OA and S2 return nothing → return None."""

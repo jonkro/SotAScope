@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
     _seed_default_settings()
     _normalize_existing_venue_names()
     _backfill_citations_by_year()
+    _backfill_venue_from_oa_cache()
     yield
 
 
@@ -562,6 +563,126 @@ def _apply_counts_by_year(work, raw: dict) -> bool:
         work.citations_by_year = cby
         return True
     return False
+
+
+def _backfill_venue_from_oa_cache() -> None:
+    """One-time backfill: populate venue_id for works that have an OpenAlex ID but
+    no venue, using cached OpenAlex API responses.  Requires no new network calls.
+
+    Runs once; completion is recorded via a Setting row so subsequent startups
+    skip it immediately.
+    """
+    import json as _json
+    import logging as _logging
+    from sqlalchemy import select as _select
+
+    from sotascope.external.openalex import parse_work as _parse_work
+    from sotascope.models.cache import ApiCache
+    from sotascope.models.library import Work
+    from sotascope.models.settings import Setting
+    from sotascope.services.enrichment import EnrichmentService
+
+    _logger = _logging.getLogger(__name__)
+    _DONE_KEY = "backfill_venue_from_oa_cache_done"
+
+    db = SessionLocal()
+    try:
+        done = db.execute(
+            _select(Setting).where(Setting.key == _DONE_KEY)
+        ).scalar_one_or_none()
+        if done and done.value == "true":
+            return
+
+        # Works that need a venue
+        works_needing = db.scalars(
+            _select(Work).where(Work.venue_id.is_(None))
+        ).all()
+
+        if not works_needing:
+            db.add(Setting(key=_DONE_KEY, value="true"))
+            db.commit()
+            return
+
+        by_openalex: dict = {}
+        by_doi: dict = {}
+        by_arxiv: dict = {}
+        for w in works_needing:
+            if w.openalex_id:
+                by_openalex[w.openalex_id] = w
+            if w.doi:
+                by_doi[w.doi.lower()] = w
+            if w.arxiv_id:
+                by_arxiv[w.arxiv_id] = w
+
+        if not by_openalex and not by_doi and not by_arxiv:
+            db.add(Setting(key=_DONE_KEY, value="true"))
+            db.commit()
+            return
+
+        # EnrichmentService with no HTTP client — only _resolve_venue is needed,
+        # which uses only db (no network calls).
+        service = EnrichmentService(db=db, client=None)  # type: ignore[arg-type]
+        filled = 0
+
+        def _try_apply_venue(raw: dict) -> None:
+            nonlocal filled
+            if not isinstance(raw, dict):
+                return
+            oa_id = (raw.get("id") or "").replace("https://openalex.org/", "") or None
+            work = by_openalex.get(oa_id) if oa_id else None
+            if work is None:
+                doi = (raw.get("doi") or "").replace("https://doi.org/", "").lower()
+                work = by_doi.get(doi) if doi else None
+            if work is None:
+                return
+            if work.venue_id is not None:
+                return
+            ext_work = _parse_work(raw)
+            if not ext_work.venue:
+                return
+            venue = service._resolve_venue(ext_work)
+            if venue:
+                work.venue_id = venue.id
+                filled += 1
+
+        # Scan individual-work cache entries (work:doi:, work:arxiv:, work:openalex:)
+        for prefix in ("work:doi:%", "work:arxiv:%", "work:openalex:%"):
+            for cached_json in db.execute(
+                _select(ApiCache.response_json).where(
+                    ApiCache.source == "openalex",
+                    ApiCache.query_key.like(prefix),
+                )
+            ).scalars():
+                try:
+                    _try_apply_venue(_json.loads(cached_json))
+                except (ValueError, KeyError, TypeError):
+                    continue
+
+        # Scan citation list caches (backward_citations:, forward_citations:)
+        for cached_json in db.execute(
+            _select(ApiCache.response_json).where(
+                ApiCache.source == "openalex",
+                ApiCache.query_key.like("backward_citations:%")
+                | ApiCache.query_key.like("forward_citations:%"),
+            )
+        ).scalars():
+            try:
+                raw_list = _json.loads(cached_json)
+                if not isinstance(raw_list, list):
+                    continue
+                for raw in raw_list:
+                    _try_apply_venue(raw)
+            except (ValueError, KeyError, TypeError):
+                continue
+
+        if filled:
+            _logger.info("Backfilled venue_id for %d works from OA cache", filled)
+
+        db.commit()
+        db.add(Setting(key=_DONE_KEY, value="true"))
+        db.commit()
+    finally:
+        db.close()
 
 
 app = FastAPI(title="SotAScope", version="0.1.0", lifespan=lifespan)

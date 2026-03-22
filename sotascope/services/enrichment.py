@@ -259,11 +259,15 @@ class EnrichmentService:
         """
         arxiv_id = normalize_identifier(arxiv_id)
 
-        # 1. Dedup — avoid any API call if we already have this paper
+        # 1. Dedup — avoid any API call if we already have this paper AND it has
+        # a venue.  If the work exists but lacks a venue (e.g. it was originally
+        # imported from Semantic Scholar which has no venue data), fall through to
+        # the cache/API path so _upsert_work → _update_work can populate venue_id
+        # from the OpenAlex response.
         existing = self.db.execute(
             select(Work).where(Work.arxiv_id == arxiv_id)
         ).scalar_one_or_none()
-        if existing is not None:
+        if existing is not None and existing.venue_id is not None:
             return existing
 
         # 2. OA cache

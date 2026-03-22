@@ -152,6 +152,56 @@ SAMPLE_REFERENCED_WORK_RAW = {
     "referenced_works": [],
 }
 
+# An arXiv-only paper (no DOI) whose OA primary_location is a conference venue.
+# Mirrors the real-world case of ICLR / NeurIPS papers published via arXiv.
+SAMPLE_ARXIV_WORK_WITH_VENUE_RAW = {
+    "id": "https://openalex.org/W3100000001",
+    "doi": None,
+    "title": "Attention Is All You Need",
+    "display_name": "Attention Is All You Need",
+    "publication_year": 2017,
+    "cited_by_count": 50000,
+    "abstract_inverted_index": None,
+    "primary_location": {
+        "source": {
+            "id": "https://openalex.org/S4306402567",
+            "display_name": "Neural Information Processing Systems",
+            "type": "conference",
+        },
+        "is_primary": True,
+        "landing_page_url": "https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa",
+    },
+    "locations": [
+        {
+            "source": {
+                "id": "https://openalex.org/S4306402567",
+                "display_name": "Neural Information Processing Systems",
+                "type": "conference",
+            },
+            "is_primary": True,
+            "landing_page_url": "https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa",
+            "pdf_url": None,
+        },
+        {
+            "source": None,
+            "is_primary": False,
+            "landing_page_url": "https://arxiv.org/abs/1706.03762",
+            "pdf_url": "https://arxiv.org/pdf/1706.03762",
+        },
+    ],
+    "authorships": [
+        {
+            "author": {
+                "id": "https://openalex.org/A9999001",
+                "display_name": "Ashish Vaswani",
+            },
+            "author_position": "first",
+        },
+    ],
+    "referenced_works": [],
+    "counts_by_year": [],
+}
+
 # Batch response (GET /works?filter=openalex_id:W1|W2|...)
 SAMPLE_BATCH_RESPONSE = {
     "meta": {"count": 2, "per_page": 200, "page": 1, "next_cursor": None},

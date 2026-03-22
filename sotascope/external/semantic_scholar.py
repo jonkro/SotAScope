@@ -12,7 +12,7 @@ import time
 
 import httpx
 
-from sotascope.external.base import ExternalWork
+from sotascope.external.base import ExternalVenue, ExternalWork
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ _DOI_PREFIX = "https://doi.org/"
 _PAGE_SIZE = 500
 
 # Fields requested for individual paper lookups
-_PAPER_FIELDS = "paperId,corpusId,externalIds,title,year,citationCount,abstract"
+_PAPER_FIELDS = "paperId,corpusId,externalIds,title,year,citationCount,abstract,venue"
 # Fields requested for bulk citation/reference lists (skip abstract to reduce payload)
 _CITATION_FIELDS = "paperId,corpusId,externalIds,title,year,citationCount"
 
@@ -89,6 +89,12 @@ def _parse_paper(raw: dict) -> ExternalWork:
     doi = _normalize_doi(ext_ids.get("DOI"))
     arxiv_id = ext_ids.get("ArXiv") or None
 
+    # Venue: S2 provides a plain string name; no external_id or ISSN available.
+    venue = None
+    venue_name = (raw.get("venue") or "").strip()
+    if venue_name:
+        venue = ExternalVenue(name=venue_name)
+
     return ExternalWork(
         title=raw.get("title") or "(untitled)",
         doi=doi,
@@ -97,6 +103,7 @@ def _parse_paper(raw: dict) -> ExternalWork:
         abstract=raw.get("abstract"),
         publication_year=raw.get("year"),
         citation_count=raw.get("citationCount"),
+        venue=venue,
     )
 
 
