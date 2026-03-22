@@ -511,6 +511,12 @@ export function migratePDFStorage(newPath: string) {
   });
 }
 
+export function backfillVenues() {
+  return apiFetch<{ updated: number; message: string }>('/api/settings/backfill-venues', {
+    method: 'POST',
+  });
+}
+
 // ---- Enrichment ----
 
 export function getDOIInfo(doi: string) {
