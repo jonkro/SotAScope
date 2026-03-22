@@ -400,6 +400,19 @@ Authentication and per-user access control are explicitly deferred to a future p
 - **Import bibtex_key uniqueness**: if a BibTeX key from the imported archive already exists in the library (on a different work), the import clears `bibtex_key` on the new work rather than failing. This preserves import correctness at the cost of the key not being set.
 - **Import auto-enrichment not triggered on collision**: when `needs_project_decision=True` is returned, no auto-enrichment background tasks are scheduled. Enrichment is scheduled only after the user calls `resolve_import`. This prevents enrichment from running on a temp project that might be deleted.
 - **Two-phase import pattern**: `POST /api/projects/import` → `ImportResult`. If `needs_project_decision=True`, follow up with `POST /api/projects/import/{temp_id}/resolve`. The temp project (`"$name - incoming"`) is a fully functional staging project during the collision-resolution phase. If `action="merge"`, `execute_merge` is called and the temp project is deleted after merge. If the user abandons the flow without resolving, the temp project remains in the DB — treat it as orphaned and delete manually if needed.
+- **Publication year may differ between preprint and venue version**: Papers 
+  often appear on arXiv months or even a year before official publication 
+  (e.g. arXiv December 2020 → ICLR 2021). When a work is first imported via 
+  arXiv, the stored `publication_year` reflects the preprint date. When a real 
+  venue is later assigned (via enrichment or manually), the venue version may 
+  have a different year. Currently, automated enrichment paths (OpenAlex, 
+  Crossref) update the year silently when a venue version is found. This can 
+  shift papers on the citation timeline without warning. A future improvement 
+  would be to surface year discrepancies as a suggestion to the user rather 
+  than auto-correcting — e.g. a notice in the work detail panel: "Venue 
+  publication year (2021) differs from stored year (2020) — update?" Manual 
+  venue assignment already includes an optional year field that the user can 
+  adjust explicitly.
 
 ---
 
