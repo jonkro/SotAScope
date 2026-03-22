@@ -70,6 +70,8 @@ For arXiv ID import, the resolution chain is:
 2. If OpenAlex has no match: Semantic Scholar lookup (`GET /paper/ARXIV:{id}`)
 3. Store with `arxiv_id` as the primary key; DOI and openalex_id populated if the source provides them.
 
+**Venue assignment for arXiv-only papers**: Venue is populated from `primary_location.source` in the OpenAlex response (covers conference papers such as ICLR, ICML, NeurIPS that have no DOI and thus bypass Crossref enrichment). `import_by_arxiv_id` skips the early-return dedup path only when the existing work already has a `venue_id`; if the work exists but lacks a venue, execution falls through to `_upsert_work` so the venue can be populated. Semantic Scholar also provides a `venue` string field (added to `_PAPER_FIELDS`) used as a lower-priority fallback when OA has no source data.
+
 ### Search-by-title import
 `POST /api/enrich/search-import/candidates` accepts `{title, authors?, year?}`. The `year` field is passed as a **proper filter parameter** to each API — it is NOT concatenated into the free-text query string:
 - **Crossref**: `filter=from-pub-date:{year},until-pub-date:{year}` added to the `/works` request; `query.bibliographic` contains only title + authors.
@@ -236,6 +238,10 @@ sotascope/
 │   ├── chat.py           # /api/chat — session CRUD; PATCH /sessions/{id} (update context_id)
 │   ├── llm.py            # /api/llm — model listing, POST /chat (auto-saves turns to session)
 │   └── ...               # timeline, notes, settings, filesystem, grobid, projects, venues, fields
+│                         #   venues.py: GET /api/venues?q= searches both Venue.name AND VenueAlias.alias
+│                         #     (subquery match), so typing "ICML" finds "International Conference on
+│                         #     Machine Learning". Results sortable by name, venue_type, tier, work_count,
+│                         #     field_display (server-side, used by VenuePickerDialog for work_count desc)
 │                         #   projects.py: CRUD + topic lists + venue tiers + merge + export + import
 │                         #   POST /api/projects/import (multipart .zip upload) → ImportResult (201)
 │                         #   POST /api/projects/import/{temp_id}/resolve → ProjectDetail (200)
@@ -332,6 +338,9 @@ frontend/src/
     ├── ImportDialog.tsx        # 2-tab import (DOI / arXiv, Search by title); BibTeX tab removed from UI
     │                           #   auto-detects input type (10. prefix = DOI, else arXiv ID);
     │                           #   optional post-import topic list assignment via projectTopicLists prop
+    ├── VenuePickerDialog.tsx   # Search-as-you-type venue picker modal (200 ms debounce, results sorted by
+    │                           #   work_count desc, current venue highlighted, "Clear venue" red button).
+    │                           #   Used from WorkDetailPanel to manually assign/clear a work's venue.
     ├── ColumnProposalCard.tsx  # LLM column proposal states; UserCancelledError exported for silent cancel
     ├── PageHeader.tsx          # Shared page header; accepts title (string) OR leftContent (ReactNode)
     │                           #   for custom left side (e.g. breadcrumbs). Children render on the right.
@@ -358,6 +367,9 @@ tests/
 4. `_seed_default_settings()` — create `api_contact_email`, `pdf_storage_path`, `ssl_verify`, `s2_api_key`, `llm_provider`, `llm_api_key`, `llm_model_id`, `llm_base_url`, `llm_system_prompt_prefix`, `grobid_url` settings
 5. `_normalize_existing_venue_names()` — strip prefixes, merge duplicate venues
 6. `_backfill_citations_by_year()` — populate `citations_by_year` from cached OpenAlex responses
+7. `_backfill_venue_from_oa_cache()` — two-phase venue backfill for works where `venue_id IS NULL`:
+   - **Phase 1** (synchronous): scans all cached OpenAlex API responses (`work:doi:*`, `work:arxiv:*`, `work:openalex:*`, `backward_citations:*`, `forward_citations:*`), extracts `primary_location.source`, calls `service._resolve_venue()` to match/create venue rows. Done flag written after Phase 1 (`backfill_venue_from_oa_cache_v2_done`) so subsequent startups skip immediately.
+   - **Phase 2** (background daemon thread): for works that still have no venue after Phase 1 (stale cache with no source data), collects their OpenAlex IDs and fetches fresh metadata in batches of 50 via `get_works_by_ids_raw()`, updates the cache entries and assigns venues. Runs in a `threading.Thread(daemon=True)` so it does not block startup.
 
 ---
 
@@ -384,6 +396,7 @@ Authentication and per-user access control are explicitly deferred to a future p
 - TestClient + in-memory SQLite requires `StaticPool` + `check_same_thread=False`. Override `get_db` from `sotascope.api.deps` (not `sotascope.database`).
 - `Field.venues` relationship uses `passive_deletes=True` because the DB has `ON DELETE CASCADE` on `VenueField.field_id`. Without this, SQLAlchemy tries to set `field_id = NULL` on eagerly-loaded relationships before delete, which fails because `field_id` is NOT NULL.
 - The `citations_by_year` sliding window only works for works that have the data populated from OpenAlex. Works without it (e.g., imported from Crossref or BibTeX only) fall back to the all-time `citation_count` regardless of slider position. The startup backfill populates from cached responses; re-enriching a work will also populate it.
+- **Venue assignment for arXiv-only papers**: Conference papers imported via arXiv ID (e.g. ICLR, ICML, NeurIPS) never pass through Crossref enrichment, so their venue must come from OpenAlex `primary_location.source`. The `import_by_arxiv_id` dedup path now only returns early when `existing.venue_id is not None` — if the work exists but lacks a venue (e.g. previously imported via S2 before OA venue data was available), execution falls through to repopulate the venue. The startup `_backfill_venue_from_oa_cache()` handles existing rows in the database using the same logic. The done flag `backfill_venue_from_oa_cache_v2_done` is checked at startup so Phase 1 runs only once per instance; Phase 2 (fresh OA batch fetch for stale-cache rows) is a daemon thread and does not block startup.
 - `_update_work()` uses **keep-higher** logic for `citation_count`: `max(stored, incoming)` so that a higher value from one source (e.g. OpenAlex) is never overwritten by a lower S2 value. `citations_by_year` is still always overwritten (only populated by OpenAlex). After any forward-citation fetch, `_ensure_citation_count_floor()` additionally floors `citation_count` at the actual count of Citation rows in the DB.
 - **LLM calls must be async**: use FastAPI `BackgroundTasks` or streaming responses. A single extraction pass over many papers can take minutes. Do NOT call LLM APIs synchronously in the request handler. The two extraction execution endpoints (`POST /schemas/{id}/extract/{work_id}` and `POST /schemas/{id}/extract`) return 202 immediately and run `_extraction_bg` as a BackgroundTask. Progress is tracked in `extraction_jobs` and polled via `GET /api/extraction/jobs/{job_id}`. Each work is locked via `work_lock` before the task starts and released per-work as it completes.
 - **PDF vision is Anthropic-only**: sending the PDF binary directly to the model is only supported when `llm_provider = "anthropic"`. All other providers (including local OpenAI-compatible servers) must use extracted `.txt` text.
