@@ -123,24 +123,38 @@ class BackfillVenuesResponse(BaseModel):
 def backfill_venues(db: Session = Depends(get_db)):
     """Scan cached OpenAlex API responses and populate venue_id for works that lack it.
 
+    Also upgrades works whose current venue is a provisional repository (arXiv, bioRxiv,
+    etc.) if the cache contains a real venue (journal or conference) for them.
     Reads only already-cached OA data — no external API calls are made.
     Safe to call multiple times (idempotent).
     """
     import json as _json
 
+    from sqlalchemy import or_ as _or
     from sqlalchemy import select as _select
 
     from sotascope.external.openalex import parse_work as _parse_work
     from sotascope.models.cache import ApiCache
-    from sotascope.models.library import Work
+    from sotascope.models.library import Venue, Work
     from sotascope.services.enrichment import EnrichmentService
 
-    works_needing = db.scalars(_select(Work).where(Work.venue_id.is_(None))).all()
+    # Include works with no venue AND works whose current venue is a provisional
+    # repository (arXiv, bioRxiv, etc.) — they may have a real venue in cache.
+    works_needing = db.scalars(
+        _select(Work)
+        .outerjoin(Venue, Work.venue_id == Venue.id)
+        .where(
+            _or(
+                Work.venue_id.is_(None),
+                Venue.venue_type == 'repository',
+            )
+        )
+    ).all()
 
     if not works_needing:
         return BackfillVenuesResponse(
             updated=0,
-            message="All works already have venues — nothing to do.",
+            message="All works already have real venues — nothing to do.",
         )
 
     by_openalex: dict = {}
@@ -154,7 +168,7 @@ def backfill_venues(db: Session = Depends(get_db)):
     if not by_openalex and not by_doi:
         return BackfillVenuesResponse(
             updated=0,
-            message="All works already have venues — nothing to do.",
+            message="All works already have real venues — nothing to do.",
         )
 
     service = EnrichmentService(db=db, client=None)  # type: ignore[arg-type]
@@ -169,11 +183,16 @@ def backfill_venues(db: Session = Depends(get_db)):
         if work is None:
             doi = (raw.get("doi") or "").replace("https://doi.org/", "").lower()
             work = by_doi.get(doi) if doi else None
-        if work is None or work.venue_id is not None:
+        if work is None:
             return
+        # Skip if work already has a real (non-provisional) venue
+        if work.venue_id is not None:
+            current_venue = db.get(Venue, work.venue_id)
+            if current_venue and current_venue.venue_type != 'repository':
+                return
         ext_work = _parse_work(raw)
-        if not ext_work.venue:
-            return
+        if not ext_work.venue or ext_work.venue.venue_type == 'repository':
+            return  # New venue is also provisional — don't bother
         venue = service._resolve_venue(ext_work)
         if venue:
             work.venue_id = venue.id
@@ -217,7 +236,7 @@ def backfill_venues(db: Session = Depends(get_db)):
 
     return BackfillVenuesResponse(
         updated=0,
-        message="All works already have venues — nothing to do.",
+        message="All works already have real venues — nothing to do.",
     )
 
 

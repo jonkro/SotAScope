@@ -852,9 +852,15 @@ export default function WorkDetailPanel({
                     : loc.location_type;
                 return (
                   <li key={loc.id} className="text-xs">
-                    <a href={loc.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                      {linkText}{loc.is_primary ? ' (primary)' : ''}
-                    </a>
+                    {loc.url ? (
+                      <a href={loc.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                        {linkText}{loc.is_primary ? ' (primary)' : ''}
+                      </a>
+                    ) : (
+                      <span className="text-gray-400 italic">
+                        {linkText} (no URL yet)
+                      </span>
+                    )}
                   </li>
                 );
               })}
@@ -1665,10 +1671,15 @@ export default function WorkDetailPanel({
     {venuePicker && work && (
       <VenuePickerDialog
         currentVenueId={work.venue_id}
+        currentYear={work.publication_year}
         onClose={() => setVenuePicker(false)}
-        onSelect={(venueId) => {
+        onSelect={(venueId, year) => {
+          const data: Record<string, unknown> = { venue_id: venueId };
+          if (year !== undefined) {
+            data.publication_year = year;
+          }
           updateWork.mutate(
-            { workId, data: { venue_id: venueId } },
+            { workId, data },
             {
               onSuccess: () => {
                 if (projectId != null) {
