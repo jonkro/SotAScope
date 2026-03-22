@@ -24,7 +24,11 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "litexplorer.db"
+        new = self.data_dir / "sotascope.db"
+        old = self.data_dir / "litexplorer.db"
+        if new.exists() or not old.exists():
+            return new
+        return old
 
     @property
     def pdf_dir(self) -> Path:
