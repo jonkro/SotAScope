@@ -1,5 +1,7 @@
 # SotAScope
 
+This is an open-source single-person project that is currently in its BETA stage. Bug reports are welcome and will be handled in best effort fashion. 
+
 **Map the state of the art around your research project.**
 
 SotAScope is a local-first, open-source research literature dashboard. Start from a few seed papers, explore their citation graph across OpenAlex, Crossref, and Semantic Scholar, and build structured extraction tables with LLM assistance — or fill them manually. All data stays on your machine.
