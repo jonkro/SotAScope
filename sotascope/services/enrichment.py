@@ -584,16 +584,30 @@ class EnrichmentService:
         return results
 
     def _refresh_work_metadata(self, work: Work) -> None:
-        """Re-fetch and update a work's metadata from OpenAlex."""
+        """Re-fetch and update a work's metadata from OpenAlex.
+
+        If the work currently has a provisional (repository) venue, the
+        work:openalex cache is bypassed so a fresh OA call is made — the cached
+        entry may predate OA indexing the paper at a real venue.
+        """
         if not work.openalex_id:
             return
         cache_key = f"work:openalex:{work.openalex_id}"
-        cached = self._get_cache("openalex", cache_key)
-        if cached:
-            raw = json.loads(cached.response_json)
-            ext = parse_work(raw)
-            self._update_work(work, ext)
-            return
+
+        # Determine if the work's current venue is provisional before reading cache
+        current_is_provisional = False
+        if work.venue_id is not None:
+            current_venue = self.db.get(Venue, work.venue_id)
+            current_is_provisional = bool(current_venue and current_venue.venue_type == 'repository')
+
+        if not current_is_provisional:
+            cached = self._get_cache("openalex", cache_key)
+            if cached:
+                raw = json.loads(cached.response_json)
+                ext = parse_work(raw)
+                self._update_work(work, ext)
+                return
+
         raw = self.client.get_work_by_id_raw(work.openalex_id)
         if raw and isinstance(raw, dict):
             self._set_cache("openalex", cache_key, json.dumps(raw), "permanent")

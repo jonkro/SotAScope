@@ -466,11 +466,19 @@ def enrich_by_doi(body: EnrichDOIRequest, db: Session = Depends(get_db)):
 
     else:
         # ---- arXiv ID path (OpenAlex → Semantic Scholar fallback) ----
+        import httpx as _httpx
         client = _get_client(db)
         ss_client = _get_ss_client(db)
         try:
             svc = EnrichmentService(db=db, client=client)
             work = svc.import_by_arxiv_id(identifier, ss_client=ss_client)
+        except _httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Semantic Scholar rate limit reached — try again later or add an S2 API key in Settings.",
+                )
+            raise
         finally:
             client.close()
             ss_client.close()
