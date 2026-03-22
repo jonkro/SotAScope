@@ -1669,7 +1669,14 @@ export default function WorkDetailPanel({
         onSelect={(venueId) => {
           updateWork.mutate(
             { workId, data: { venue_id: venueId } },
-            { onSettled: () => setVenuePicker(false) },
+            {
+              onSuccess: () => {
+                if (projectId != null) {
+                  qc.invalidateQueries({ queryKey: ['projects', projectId, 'timeline'] });
+                }
+              },
+              onSettled: () => setVenuePicker(false),
+            },
           );
         }}
       />
