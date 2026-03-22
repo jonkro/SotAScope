@@ -567,15 +567,21 @@ def _apply_counts_by_year(work, raw: dict) -> bool:
 
 def _backfill_venue_from_oa_cache() -> None:
     """One-time backfill: populate venue_id for works that have an OpenAlex ID but
-    no venue, using cached OpenAlex API responses.  Requires no new network calls.
+    no venue.
 
-    Runs once; completion is recorded via a Setting row so subsequent startups
-    skip it immediately.
+    Phase 1 — cache scan: reads existing cached OA responses; no network calls.
+    Phase 2 — fresh fetch: for any works still missing venue after the cache scan,
+    calls the OA API directly (by OpenAlex ID) and updates the cache.  This handles
+    the common case where the original cached response was fetched before OA had
+    venue data for a paper (e.g. a preprint that was later published at ICLR).
+
+    Runs once per version; completion is recorded via a Setting row.
     """
     import json as _json
     import logging as _logging
     from sqlalchemy import select as _select
 
+    from sotascope.external.openalex import OpenAlexClient as _OAClient
     from sotascope.external.openalex import parse_work as _parse_work
     from sotascope.models.cache import ApiCache
     from sotascope.models.library import Work
@@ -583,7 +589,8 @@ def _backfill_venue_from_oa_cache() -> None:
     from sotascope.services.enrichment import EnrichmentService
 
     _logger = _logging.getLogger(__name__)
-    _DONE_KEY = "backfill_venue_from_oa_cache_done"
+    # v2: adds fresh-fetch fallback for works whose cached OA response had no venue
+    _DONE_KEY = "backfill_venue_from_oa_cache_v2_done"
 
     db = SessionLocal()
     try:
@@ -605,22 +612,18 @@ def _backfill_venue_from_oa_cache() -> None:
 
         by_openalex: dict = {}
         by_doi: dict = {}
-        by_arxiv: dict = {}
         for w in works_needing:
             if w.openalex_id:
                 by_openalex[w.openalex_id] = w
             if w.doi:
                 by_doi[w.doi.lower()] = w
-            if w.arxiv_id:
-                by_arxiv[w.arxiv_id] = w
 
-        if not by_openalex and not by_doi and not by_arxiv:
+        if not by_openalex and not by_doi:
             db.add(Setting(key=_DONE_KEY, value="true"))
             db.commit()
             return
 
-        # EnrichmentService with no HTTP client — only _resolve_venue is needed,
-        # which uses only db (no network calls).
+        # EnrichmentService with no HTTP client for Phase 1 (cache-only).
         service = EnrichmentService(db=db, client=None)  # type: ignore[arg-type]
         filled = 0
 
@@ -645,7 +648,7 @@ def _backfill_venue_from_oa_cache() -> None:
                 work.venue_id = venue.id
                 filled += 1
 
-        # Scan individual-work cache entries (work:doi:, work:arxiv:, work:openalex:)
+        # Phase 1: scan cached OA responses (individual-work and citation list caches)
         for prefix in ("work:doi:%", "work:arxiv:%", "work:openalex:%"):
             for cached_json in db.execute(
                 _select(ApiCache.response_json).where(
@@ -658,7 +661,6 @@ def _backfill_venue_from_oa_cache() -> None:
                 except (ValueError, KeyError, TypeError):
                     continue
 
-        # Scan citation list caches (backward_citations:, forward_citations:)
         for cached_json in db.execute(
             _select(ApiCache.response_json).where(
                 ApiCache.source == "openalex",
@@ -676,9 +678,68 @@ def _backfill_venue_from_oa_cache() -> None:
                 continue
 
         if filled:
-            _logger.info("Backfilled venue_id for %d works from OA cache", filled)
-
+            _logger.info("Backfilled venue_id for %d works from OA cache (phase 1)", filled)
         db.commit()
+
+        # Phase 2: fresh OA API fetch for works still missing venue that have
+        # an openalex_id.  The original cached response may have been stored
+        # before OA added venue data for the paper (common for conference preprints).
+        still_missing = [w for w in works_needing
+                         if w.venue_id is None and w.openalex_id]
+        if still_missing:
+            _logger.info(
+                "Fetching fresh OA data for %d works still missing venue", len(still_missing)
+            )
+            try:
+                from sotascope.api.settings import get_setting_value as _gsv
+                email = _gsv(db, "api_contact_email")
+                ssl_val = _gsv(db, "ssl_verify")
+                ssl_verify = (ssl_val or "true").lower() != "false"
+                oa_client = _OAClient(api_key=email, verify=ssl_verify)
+                # Attach real client to service for this phase
+                service.client = oa_client
+                fresh_filled = 0
+                for work in still_missing:
+                    try:
+                        cache_key = f"work:openalex:{work.openalex_id}"
+                        raw = oa_client.get_work_by_id_raw(work.openalex_id)
+                        if raw is None:
+                            continue
+                        # Update cache with fresh response
+                        existing_cache = db.execute(
+                            _select(ApiCache).where(
+                                ApiCache.source == "openalex",
+                                ApiCache.query_key == cache_key,
+                            )
+                        ).scalar_one_or_none()
+                        if existing_cache:
+                            existing_cache.response_json = _json.dumps(raw)
+                        else:
+                            db.add(ApiCache(
+                                source="openalex",
+                                query_key=cache_key,
+                                response_json=_json.dumps(raw),
+                                cache_type="permanent",
+                            ))
+                        _try_apply_venue(raw)
+                        if work.venue_id is not None:
+                            fresh_filled += 1
+                    except Exception as exc:
+                        _logger.warning(
+                            "Fresh OA fetch failed for work %s (openalex_id=%s): %s",
+                            work.id, work.openalex_id, exc,
+                        )
+                        continue
+                oa_client.close()
+                if fresh_filled:
+                    _logger.info(
+                        "Backfilled venue_id for %d more works via fresh OA fetch (phase 2)",
+                        fresh_filled,
+                    )
+                db.commit()
+            except Exception as exc:
+                _logger.warning("Phase 2 venue backfill skipped: %s", exc)
+
         db.add(Setting(key=_DONE_KEY, value="true"))
         db.commit()
     finally:
