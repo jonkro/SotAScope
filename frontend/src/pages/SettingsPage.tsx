@@ -3,11 +3,17 @@ import { useQueryClient, useQuery } from '@tanstack/react-query';
 import PageHeader from '../components/PageHeader';
 import FolderBrowserDialog from '../components/FolderBrowserDialog';
 import { useSettings, useUpdateSetting, useLLMModels } from '../hooks/useSettings';
-import { migratePDFStorage, fetchGrobidStatus, startGrobid } from '../api';
+import { migratePDFStorage, fetchGrobidStatus, startGrobid, backfillVenues } from '../api';
 import type { PDFMigrationResult } from '../types';
 
-// Keys managed by dedicated sub-sections — excluded from the generic loop.
-const LLM_KEYS = new Set(['llm_provider', 'llm_api_key', 'llm_model_id', 'llm_base_url']);
+// Keys managed by dedicated sub-sections — excluded from the generic save loop.
+const LLM_KEYS = new Set([
+  'llm_provider',
+  'llm_api_key',
+  'llm_model_id',
+  'llm_base_url',
+  'llm_system_prompt_prefix',
+]);
 const SECTION_KEYS = new Set([...LLM_KEYS, 'grobid_url']);
 
 // ---------------------------------------------------------------------------
@@ -31,6 +37,7 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [baseUrlDraft, setBaseUrlDraft] = useState('');
   const [modelIdDraft, setModelIdDraft] = useState('');
+  const [systemPromptDraft, setSystemPromptDraft] = useState('');
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -38,6 +45,7 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
       setApiKeyDraft(sm['llm_api_key'] ?? '');
       setBaseUrlDraft(sm['llm_base_url'] ?? '');
       setModelIdDraft(sm['llm_model_id'] ?? '');
+      setSystemPromptDraft(sm['llm_system_prompt_prefix'] ?? '');
       initialized.current = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -195,6 +203,8 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
     );
   }
 
+  const systemPromptDescription = settings.find((s) => s.key === 'llm_system_prompt_prefix')?.description;
+
   // ---- render ----
 
   return (
@@ -281,6 +291,24 @@ function LLMConfigSection({ saveSetting }: LLMConfigSectionProps) {
             {testStatus.message}
           </span>
         )}
+      </div>
+
+      {/* LLM System Prompt Prefix */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          LLM System Prompt Prefix
+        </label>
+        {systemPromptDescription && (
+          <p className="text-xs text-gray-500 mb-1">{systemPromptDescription}</p>
+        )}
+        <textarea
+          className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          rows={3}
+          value={systemPromptDraft}
+          onChange={(e) => setSystemPromptDraft(e.target.value)}
+          onBlur={() => saveSetting('llm_system_prompt_prefix', systemPromptDraft)}
+          placeholder="Not set"
+        />
       </div>
     </div>
   );
@@ -464,6 +492,10 @@ export default function SettingsPage() {
   const [browseOpen, setBrowseOpen] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [migrationResult, setMigrationResult] = useState<PDFMigrationResult | null>(null);
+  const [backfillStatus, setBackfillStatus] = useState<{ loading: boolean; message: string | null }>({
+    loading: false,
+    message: null,
+  });
 
   // Sync drafts when settings load (excludes keys managed by dedicated sub-sections).
   useEffect(() => {
@@ -516,13 +548,28 @@ export default function SettingsPage() {
     setTimeout(() => setSaved(false), 2000);
   };
 
-  // Passed down to LLMConfigSection for individual saves.
+  const handleBackfillVenues = async () => {
+    setBackfillStatus({ loading: true, message: null });
+    try {
+      const result = await backfillVenues();
+      setBackfillStatus({ loading: false, message: result.message });
+    } catch (err) {
+      setBackfillStatus({
+        loading: false,
+        message: err instanceof Error ? err.message : 'Backfill failed',
+      });
+    }
+  };
+
+  // Passed down to sub-sections for individual saves.
   const saveSetting = async (key: string, value: string) => {
     await updateSetting.mutateAsync({ key, value });
   };
 
-  // Generic settings to display in the main loop (dedicated sub-section keys excluded).
-  const genericSettings = (settings ?? []).filter((s) => !SECTION_KEYS.has(s.key));
+  const sm = Object.fromEntries((settings ?? []).map((s) => [s.key, s.value]));
+
+  const inputCls =
+    'w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
 
   if (isLoading) {
     return (
@@ -537,60 +584,128 @@ export default function SettingsPage() {
     <div className="flex-1">
       <PageHeader title="Settings" />
       <div className="p-6 max-w-xl space-y-6">
-        {genericSettings.map((s) => (
-          <div key={s.key}>
+
+        {/* ── Section 1: Local Storage ── */}
+        <div className="space-y-5">
+          <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
+            Local Storage
+          </h2>
+
+          {/* PDF Storage Path */}
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              {s.key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+              PDF Storage Path
             </label>
-            {s.description && (
-              <p className="text-xs text-gray-500 mb-1">{s.description}</p>
+            {settings?.find((s) => s.key === 'pdf_storage_path')?.description && (
+              <p className="text-xs text-gray-500 mb-1">
+                {settings.find((s) => s.key === 'pdf_storage_path')!.description}
+              </p>
             )}
-            {s.key === 'pdf_storage_path' ? (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  value={drafts[s.key] ?? ''}
-                  onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
-                  placeholder="Not set"
-                />
-                <button
-                  onClick={() => setBrowseOpen(true)}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50"
-                >
-                  Browse
-                </button>
-              </div>
-            ) : s.key === 'ssl_verify' ? (
-              <div>
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    checked={(drafts[s.key] ?? 'true') === 'false'}
-                    onChange={(e) =>
-                      setDrafts((d) => ({ ...d, ssl_verify: e.target.checked ? 'false' : 'true' }))
-                    }
-                  />
-                  <span className="text-sm text-gray-700">Disable SSL certificate verification</span>
-                </label>
-                <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                  Only enable this if you are behind a corporate proxy that intercepts HTTPS traffic.
-                  This exposes API calls to potential interception. The preferred fix is to install
-                  your corporate CA certificate into the system trust store.
-                </p>
-              </div>
-            ) : (
+            <div className="flex gap-2">
               <input
                 type="text"
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={drafts[s.key] ?? ''}
-                onChange={(e) => setDrafts((d) => ({ ...d, [s.key]: e.target.value }))}
+                className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={drafts['pdf_storage_path'] ?? ''}
+                onChange={(e) => setDrafts((d) => ({ ...d, pdf_storage_path: e.target.value }))}
                 placeholder="Not set"
               />
-            )}
+              <button
+                onClick={() => setBrowseOpen(true)}
+                className="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Browse
+              </button>
+            </div>
           </div>
-        ))}
+        </div>
+
+        {/* ── Section 2: External Data Sources ── */}
+        <div className="border-t border-gray-200 pt-6 space-y-5">
+          <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
+            External Data Sources
+          </h2>
+
+          {/* API Contact Email */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              API Contact Email
+            </label>
+            {settings?.find((s) => s.key === 'api_contact_email')?.description && (
+              <p className="text-xs text-gray-500 mb-1">
+                {settings.find((s) => s.key === 'api_contact_email')!.description}
+              </p>
+            )}
+            <input
+              type="text"
+              className={inputCls}
+              value={drafts['api_contact_email'] ?? ''}
+              onChange={(e) => setDrafts((d) => ({ ...d, api_contact_email: e.target.value }))}
+              placeholder="Not set"
+            />
+          </div>
+
+          {/* S2 API Key */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              S2 API Key
+            </label>
+            {settings?.find((s) => s.key === 's2_api_key')?.description && (
+              <p className="text-xs text-gray-500 mb-1">
+                {settings.find((s) => s.key === 's2_api_key')!.description}
+              </p>
+            )}
+            <input
+              type="text"
+              className={inputCls}
+              value={drafts['s2_api_key'] ?? ''}
+              onChange={(e) => setDrafts((d) => ({ ...d, s2_api_key: e.target.value }))}
+              placeholder="Not set"
+            />
+          </div>
+
+          {/* SSL Verify */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              SSL Verify
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                checked={(drafts['ssl_verify'] ?? sm['ssl_verify'] ?? 'true') === 'false'}
+                onChange={(e) =>
+                  setDrafts((d) => ({ ...d, ssl_verify: e.target.checked ? 'false' : 'true' }))
+                }
+              />
+              <span className="text-sm text-gray-700">Disable SSL certificate verification</span>
+            </label>
+            <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+              Only enable this if you are behind a corporate proxy that intercepts HTTPS traffic.
+              This exposes API calls to potential interception. The preferred fix is to install
+              your corporate CA certificate into the system trust store.
+            </p>
+          </div>
+
+          {/* Backfill Venues from OpenAlex Cache */}
+          <div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleBackfillVenues}
+                disabled={backfillStatus.loading}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {backfillStatus.loading ? 'Backfilling…' : 'Backfill Venues from OpenAlex Cache'}
+              </button>
+              {backfillStatus.message && (
+                <span className="text-sm text-gray-600">{backfillStatus.message}</span>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              Scans cached OpenAlex data to populate missing venue assignments. No external API
+              calls are made.
+            </p>
+          </div>
+        </div>
 
         {/* Migration result banner */}
         {migrationResult && (
@@ -619,6 +734,7 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* Save button covers Local Storage + External Data Sources */}
         <div className="flex items-center gap-3">
           <button
             onClick={handleSave}
@@ -630,11 +746,11 @@ export default function SettingsPage() {
           {saved && !migrating && <span className="text-sm text-green-600">Saved</span>}
         </div>
 
-        {/* LLM configuration — per-field save (no Save button) */}
-        <LLMConfigSection saveSetting={saveSetting} />
-
-        {/* GROBID configuration — per-field save (no Save button) */}
+        {/* ── Section 3: GROBID ── */}
         <GrobidConfigSection saveSetting={saveSetting} />
+
+        {/* ── Section 4: LLM Configuration ── */}
+        <LLMConfigSection saveSetting={saveSetting} />
       </div>
 
       {browseOpen && (

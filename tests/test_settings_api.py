@@ -1,5 +1,6 @@
 """Tests for the settings API and ssl_verify seeding."""
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,8 @@ from sqlalchemy.pool import StaticPool
 
 from sotascope.api.deps import get_db
 from sotascope.models.base import Base
+from sotascope.models.cache import ApiCache
+from sotascope.models.library import Work
 from sotascope.models.settings import Setting
 
 
@@ -241,3 +244,124 @@ def test_get_ssl_verify_defaults_true_when_empty(db_session):
     db_session.commit()
 
     assert _get_ssl_verify(db_session) is True
+
+
+# ---------------------------------------------------------------------------
+# Backfill venues endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_venues_sets_venue_id_from_cache(db_session, client):
+    """POST /api/settings/backfill-venues should set venue_id on a work that has
+    a cached OpenAlex response containing primary_location.source venue data."""
+    # Work with an OpenAlex ID but no venue assigned.
+    work = Work(
+        title="Test Paper",
+        openalex_id="W9999999999",
+        venue_id=None,
+    )
+    db_session.add(work)
+    db_session.flush()
+
+    # Cached OpenAlex response that includes primary_location.source.
+    oa_raw = {
+        "id": "https://openalex.org/W9999999999",
+        "doi": None,
+        "title": "Test Paper",
+        "primary_location": {
+            "source": {
+                "id": "https://openalex.org/S123456789",
+                "display_name": "Nature",
+                "type": "journal",
+            }
+        },
+        "authorships": [],
+        "locations": [],
+        "abstract_inverted_index": None,
+        "cited_by_count": 0,
+        "counts_by_year": [],
+        "publication_year": 2023,
+        "referenced_works": [],
+    }
+    cache_entry = ApiCache(
+        source="openalex",
+        query_key="work:openalex:W9999999999",
+        response_json=json.dumps(oa_raw),
+        cache_type="permanent",
+    )
+    db_session.add(cache_entry)
+    db_session.commit()
+
+    resp = client.post("/api/settings/backfill-venues")
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["updated"] == 1
+    assert "1 work" in data["message"]
+
+    db_session.refresh(work)
+    assert work.venue_id is not None
+
+
+def test_backfill_venues_nothing_to_do(db_session, client):
+    """POST /api/settings/backfill-venues returns a no-op message when all works
+    already have venues."""
+    from sotascope.models.library import Venue
+
+    venue = Venue(name="ICML")
+    db_session.add(venue)
+    db_session.flush()
+
+    work = Work(title="Already assigned", openalex_id="W1111111111", venue_id=venue.id)
+    db_session.add(work)
+    db_session.commit()
+
+    resp = client.post("/api/settings/backfill-venues")
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["updated"] == 0
+    assert "nothing to do" in data["message"].lower()
+
+
+def test_backfill_venues_idempotent(db_session, client):
+    """Calling the endpoint twice should not double-count updates."""
+    work = Work(title="Idempotent Test", openalex_id="W2222222222", venue_id=None)
+    db_session.add(work)
+    db_session.flush()
+
+    oa_raw = {
+        "id": "https://openalex.org/W2222222222",
+        "doi": None,
+        "title": "Idempotent Test",
+        "primary_location": {
+            "source": {
+                "id": "https://openalex.org/S987654321",
+                "display_name": "Science",
+                "type": "journal",
+            }
+        },
+        "authorships": [],
+        "locations": [],
+        "abstract_inverted_index": None,
+        "cited_by_count": 0,
+        "counts_by_year": [],
+        "publication_year": 2022,
+        "referenced_works": [],
+    }
+    db_session.add(ApiCache(
+        source="openalex",
+        query_key="work:openalex:W2222222222",
+        response_json=json.dumps(oa_raw),
+        cache_type="permanent",
+    ))
+    db_session.commit()
+
+    resp1 = client.post("/api/settings/backfill-venues")
+    assert resp1.status_code == 200
+    assert resp1.json()["updated"] == 1
+
+    # Second call — work already has a venue now, so nothing should be updated.
+    resp2 = client.post("/api/settings/backfill-venues")
+    assert resp2.status_code == 200
+    assert resp2.json()["updated"] == 0

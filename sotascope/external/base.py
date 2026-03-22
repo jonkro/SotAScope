@@ -45,6 +45,10 @@ class ExternalWork:
     citation_count: int | None = None
     citations_by_year: list[dict] | None = None  # [{"year": 2022, "cited_by_count": 45}, ...]
     venue: ExternalVenue | None = None
+    # Year from the venue-specific location (may differ from top-level publication_year
+    # when the paper was first on arXiv then officially published at a conference/journal).
+    # Used to update publication_year when upgrading from a provisional (repository) venue.
+    venue_publication_year: int | None = None
     authors: list[ExternalAuthor] = field(default_factory=list)
     locations: list[ExternalLocation] = field(default_factory=list)
     # OpenAlex IDs of referenced works (backward citations)

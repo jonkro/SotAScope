@@ -585,9 +585,11 @@ def _backfill_venue_from_oa_cache() -> None:
     import logging as _logging
     from sqlalchemy import select as _select
 
+    from sqlalchemy import or_ as _or
+
     from sotascope.external.openalex import parse_work as _parse_work
     from sotascope.models.cache import ApiCache
-    from sotascope.models.library import Work
+    from sotascope.models.library import Venue, Work
     from sotascope.models.settings import Setting
     from sotascope.services.enrichment import EnrichmentService
 
@@ -602,8 +604,17 @@ def _backfill_venue_from_oa_cache() -> None:
         if done and done.value == "true":
             return
 
+        # Include works with no venue AND works whose current venue is a provisional
+        # repository (arXiv, bioRxiv, etc.) — they may now have a real venue in cache.
         works_needing = db.scalars(
-            _select(Work).where(Work.venue_id.is_(None))
+            _select(Work)
+            .outerjoin(Venue, Work.venue_id == Venue.id)
+            .where(
+                _or(
+                    Work.venue_id.is_(None),
+                    Venue.venue_type == 'repository',
+                )
+            )
         ).all()
 
         if not works_needing:
@@ -638,11 +649,14 @@ def _backfill_venue_from_oa_cache() -> None:
                 work = by_doi.get(doi) if doi else None
             if work is None:
                 return
+            # Skip if work already has a real (non-provisional) venue
             if work.venue_id is not None:
-                return
+                current_venue = db.get(Venue, work.venue_id)
+                if current_venue and current_venue.venue_type != 'repository':
+                    return
             ext_work = _parse_work(raw)
-            if not ext_work.venue:
-                return
+            if not ext_work.venue or ext_work.venue.venue_type == 'repository':
+                return  # New venue is also provisional — don't bother
             venue = service._resolve_venue(ext_work)
             if venue:
                 work.venue_id = venue.id
@@ -686,10 +700,18 @@ def _backfill_venue_from_oa_cache() -> None:
         db.commit()
 
         # --- Phase 2: background thread, batched fresh OA fetch ---
-        # Collect only the OpenAlex IDs (plain strings — safe to pass across threads).
+        # Collect OpenAlex IDs for works still missing a real venue after Phase 1.
+        # Includes works with null venue AND works whose venue is still a provisional
+        # repository (cache had no non-repository source for them).
+        def _still_needs_upgrade(w: Work) -> bool:
+            if w.venue_id is None:
+                return True
+            v = db.get(Venue, w.venue_id)
+            return v is not None and v.venue_type == 'repository'
+
         still_missing_ids = [
             w.openalex_id for w in works_needing
-            if w.venue_id is None and w.openalex_id
+            if w.openalex_id and _still_needs_upgrade(w)
         ]
         if still_missing_ids:
             _logger.info(
@@ -720,10 +742,12 @@ def _venue_backfill_phase2(openalex_ids: list) -> None:
     import logging as _logging
     from sqlalchemy import select as _select
 
+    from sqlalchemy import or_ as _or
+
     from sotascope.external.openalex import OpenAlexClient as _OAClient
     from sotascope.external.openalex import parse_work as _parse_work
     from sotascope.models.cache import ApiCache
-    from sotascope.models.library import Work
+    from sotascope.models.library import Venue, Work
     from sotascope.services.enrichment import EnrichmentService
 
     _logger = _logging.getLogger(__name__)
@@ -754,15 +778,20 @@ def _venue_backfill_phase2(openalex_ids: list) -> None:
                 if not oa_id:
                     continue
                 work = db.execute(
-                    _select(Work).where(
+                    _select(Work)
+                    .outerjoin(Venue, Work.venue_id == Venue.id)
+                    .where(
                         Work.openalex_id == oa_id,
-                        Work.venue_id.is_(None),
+                        _or(
+                            Work.venue_id.is_(None),
+                            Venue.venue_type == 'repository',
+                        ),
                     )
                 ).scalar_one_or_none()
                 if work is None:
                     continue
                 ext_work = _parse_work(raw)
-                if not ext_work.venue:
+                if not ext_work.venue or ext_work.venue.venue_type == 'repository':
                     continue
                 venue = service._resolve_venue(ext_work)
                 if not venue:

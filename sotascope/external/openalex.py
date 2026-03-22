@@ -85,19 +85,43 @@ def parse_work(raw: dict) -> ExternalWork:
     abstract = _reconstruct_abstract(raw.get("abstract_inverted_index"))
 
     # Venue / source
+    # If the primary location is a repository (arXiv, bioRxiv, etc.), scan all
+    # locations for a real venue (journal or conference) and prefer that instead.
+    # This ensures ICLR/NeurIPS papers imported via arXiv get the real venue set.
     venue = None
+    venue_publication_year: int | None = None
     primary_location = raw.get("primary_location") or {}
     source = primary_location.get("source") or {}
-    if source.get("display_name"):
-        source_id = (source.get("id") or "").removeprefix("https://openalex.org/")
-        source_type = source.get("type")
+    primary_source_type = source.get("type")
+
+    best_source = source
+    best_source_type = primary_source_type
+    if primary_source_type == "repository" and source.get("display_name"):
+        # Scan all locations for a non-repository source
+        for loc in raw_locations:
+            loc_source = loc.get("source") or {}
+            lst = loc_source.get("type")
+            if lst in ("journal", "conference") and loc_source.get("display_name"):
+                best_source = loc_source
+                best_source_type = lst
+                # Extract publication year from this venue location
+                published_date = loc.get("published_date") or ""
+                if published_date and len(published_date) >= 4:
+                    try:
+                        venue_publication_year = int(published_date[:4])
+                    except ValueError:
+                        pass
+                break
+
+    if best_source.get("display_name"):
+        source_id = (best_source.get("id") or "").removeprefix("https://openalex.org/")
         venue_type = None
-        if source_type == "journal":
+        if best_source_type == "journal":
             venue_type = "journal"
-        elif source_type in ("conference", "repository"):
-            venue_type = source_type
+        elif best_source_type in ("conference", "repository"):
+            venue_type = best_source_type
         venue = ExternalVenue(
-            name=source["display_name"],
+            name=best_source["display_name"],
             external_id=source_id or None,
             venue_type=venue_type,
         )
@@ -149,6 +173,7 @@ def parse_work(raw: dict) -> ExternalWork:
         citation_count=raw.get("cited_by_count"),
         citations_by_year=citations_by_year,
         venue=venue,
+        venue_publication_year=venue_publication_year,
         authors=authors,
         locations=locations,
         referenced_work_ids=referenced_work_ids,

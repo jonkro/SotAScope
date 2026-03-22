@@ -4,15 +4,18 @@ import { fetchVenues } from '../api';
 
 export default function VenuePickerDialog({
   currentVenueId,
+  currentYear,
   onSelect,
   onClose,
 }: {
   currentVenueId: number | null;
-  onSelect: (venueId: number | null) => void;
+  currentYear?: number | null;
+  onSelect: (venueId: number | null, year?: number) => void;
   onClose: () => void;
 }) {
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
+  const [yearInput, setYearInput] = useState(currentYear?.toString() ?? '');
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(search), 200);
@@ -23,6 +26,12 @@ export default function VenuePickerDialog({
     queryKey: ['venues', 'picker', debounced],
     queryFn: () => fetchVenues({ q: debounced || undefined, limit: 20, sort_by: 'work_count', sort_dir: 'desc' }),
   });
+
+  function handleSelect(venueId: number | null) {
+    const parsed = yearInput ? parseInt(yearInput, 10) : NaN;
+    const year = !isNaN(parsed) && parsed !== currentYear ? parsed : undefined;
+    onSelect(venueId, year);
+  }
 
   return (
     <div
@@ -60,7 +69,7 @@ export default function VenuePickerDialog({
               className={`w-full text-left px-2 py-1.5 text-xs rounded hover:bg-blue-50 ${
                 v.id === currentVenueId ? 'bg-blue-50 font-medium' : ''
               }`}
-              onClick={() => onSelect(v.id)}
+              onClick={() => handleSelect(v.id)}
             >
               {v.name}
               {v.work_count > 0 && (
@@ -71,6 +80,19 @@ export default function VenuePickerDialog({
           {!isLoading && venues?.length === 0 && (
             <p className="text-xs text-gray-400 px-2 py-2">No venues found</p>
           )}
+        </div>
+        <div className="mt-2 flex items-center gap-2 pt-2 border-t border-gray-100">
+          <label className="text-xs text-gray-500 shrink-0">Publication year:</label>
+          <input
+            type="number"
+            value={yearInput}
+            onChange={(e) => setYearInput(e.target.value)}
+            placeholder={currentYear?.toString() ?? 'e.g. 2024'}
+            className="w-24 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            min={1900}
+            max={2100}
+          />
+          <span className="text-xs text-gray-400">(optional)</span>
         </div>
         <div className="mt-3 flex justify-end">
           <button

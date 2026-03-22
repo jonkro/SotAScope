@@ -268,7 +268,11 @@ class EnrichmentService:
             select(Work).where(Work.arxiv_id == arxiv_id)
         ).scalar_one_or_none()
         if existing is not None and existing.venue_id is not None:
-            return existing
+            existing_venue = self.db.get(Venue, existing.venue_id)
+            if existing_venue is None or existing_venue.venue_type != 'repository':
+                return existing
+            # existing venue is provisional (repository type); fall through so
+            # _upsert_work → _update_work can upgrade it to a real venue.
 
         # 2. OA cache
         oa_cache_key = f"work:arxiv:{arxiv_id}"
@@ -400,19 +404,37 @@ class EnrichmentService:
 
         ext_work = parse_crossref_work(cr_raw)
 
-        # Update venue with ISSN/publisher if the venue has them
-        if ext_work.venue and work.venue_id:
-            venue = self.db.get(Venue, work.venue_id)
-            if venue:
-                if venue.issn is None and ext_work.venue.issn:
-                    venue.issn = ext_work.venue.issn
-                if venue.publisher is None and ext_work.venue.publisher:
-                    venue.publisher = ext_work.venue.publisher
-        elif ext_work.venue and not work.venue_id:
-            # Work has no venue yet — resolve one from Crossref data
-            venue = self._resolve_venue(ext_work)
-            if venue:
-                work.venue_id = venue.id
+        # Update venue: enrich ISSN/publisher on real venue, or assign/upgrade from Crossref.
+        if ext_work.venue:
+            current_is_provisional = False
+            if work.venue_id is not None:
+                current_venue = self.db.get(Venue, work.venue_id)
+                current_is_provisional = bool(
+                    current_venue and current_venue.venue_type == 'repository'
+                )
+
+            if work.venue_id is not None and not current_is_provisional:
+                # Work already has a real venue — just enrich ISSN/publisher
+                venue = self.db.get(Venue, work.venue_id)
+                if venue:
+                    if venue.issn is None and ext_work.venue.issn:
+                        venue.issn = ext_work.venue.issn
+                    if venue.publisher is None and ext_work.venue.publisher:
+                        venue.publisher = ext_work.venue.publisher
+            else:
+                # No venue or provisional (repository) venue → assign real venue from Crossref
+                venue = self._resolve_venue(ext_work)
+                if venue:
+                    work.venue_id = venue.id
+                    # Crossref publication_year is authoritative for the official publication.
+                    # Update if it differs (e.g. arXiv 2020 → officially published 2021).
+                    if (ext_work.publication_year
+                            and ext_work.publication_year != work.publication_year):
+                        logger.info(
+                            "Updating publication_year for work %d from Crossref: %s → %s",
+                            work.id, work.publication_year, ext_work.publication_year,
+                        )
+                        work.publication_year = ext_work.publication_year
 
         self.db.commit()
         return work
@@ -562,16 +584,30 @@ class EnrichmentService:
         return results
 
     def _refresh_work_metadata(self, work: Work) -> None:
-        """Re-fetch and update a work's metadata from OpenAlex."""
+        """Re-fetch and update a work's metadata from OpenAlex.
+
+        If the work currently has a provisional (repository) venue, the
+        work:openalex cache is bypassed so a fresh OA call is made — the cached
+        entry may predate OA indexing the paper at a real venue.
+        """
         if not work.openalex_id:
             return
         cache_key = f"work:openalex:{work.openalex_id}"
-        cached = self._get_cache("openalex", cache_key)
-        if cached:
-            raw = json.loads(cached.response_json)
-            ext = parse_work(raw)
-            self._update_work(work, ext)
-            return
+
+        # Determine if the work's current venue is provisional before reading cache
+        current_is_provisional = False
+        if work.venue_id is not None:
+            current_venue = self.db.get(Venue, work.venue_id)
+            current_is_provisional = bool(current_venue and current_venue.venue_type == 'repository')
+
+        if not current_is_provisional:
+            cached = self._get_cache("openalex", cache_key)
+            if cached:
+                raw = json.loads(cached.response_json)
+                ext = parse_work(raw)
+                self._update_work(work, ext)
+                return
+
         raw = self.client.get_work_by_id_raw(work.openalex_id)
         if raw and isinstance(raw, dict):
             self._set_cache("openalex", cache_key, json.dumps(raw), "permanent")
@@ -723,11 +759,27 @@ class EnrichmentService:
         if ext.citations_by_year is not None:
             work.citations_by_year = ext.citations_by_year
 
-        # Venue: fill if missing
-        if work.venue_id is None and ext.venue:
-            venue = self._resolve_venue(ext)
-            if venue:
-                work.venue_id = venue.id
+        # Venue: fill if missing OR upgrade from provisional (repository) venue to real venue.
+        if ext.venue:
+            should_update_venue = work.venue_id is None
+            if not should_update_venue and work.venue_id is not None:
+                current_venue = self.db.get(Venue, work.venue_id)
+                if (current_venue and current_venue.venue_type == 'repository'
+                        and ext.venue.venue_type != 'repository'):
+                    should_update_venue = True
+            if should_update_venue:
+                venue = self._resolve_venue(ext)
+                if venue:
+                    work.venue_id = venue.id
+                    # When upgrading from a provisional venue, also update publication_year
+                    # if the venue-specific location provides a more accurate year.
+                    if ext.venue_publication_year and ext.venue_publication_year != work.publication_year:
+                        logger.info(
+                            "Updating publication_year for work %d: %s → %s "
+                            "(from venue-specific location)",
+                            work.id, work.publication_year, ext.venue_publication_year,
+                        )
+                        work.publication_year = ext.venue_publication_year
 
         self.db.commit()
         return work

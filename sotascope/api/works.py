@@ -51,6 +51,30 @@ from sotascope.schemas.notes import WorkNoteCreate, WorkNoteOut, WorkNoteUpdate
 
 router = APIRouter(prefix="/api/works", tags=["works"])
 
+# Domains considered preprint servers for location reclassification on manual venue assignment.
+_PREPRINT_URL_PATTERNS = (
+    "arxiv.org", "biorxiv.org", "medrxiv.org", "ssrn.com", "preprints.org",
+)
+
+
+def _is_preprint_url(url: str) -> bool:
+    url_lower = url.lower()
+    return any(p in url_lower for p in _PREPRINT_URL_PATTERNS)
+
+
+def _apply_manual_venue_location_change(db: Session, work: Work) -> None:
+    """On manual venue assignment: reclassify any 'venue' locations with preprint-server
+    URLs to 'preprint', then add a stub 'venue' location for the newly assigned venue.
+
+    This ensures preprint location data (arXiv URL, etc.) is preserved rather than lost
+    when a user assigns the official conference/journal venue to a paper.
+    """
+    for loc in work.locations:
+        if loc.location_type == 'venue' and _is_preprint_url(loc.url or ''):
+            loc.location_type = 'preprint'
+    # Add a stub venue location; URL can be filled in by the user later.
+    db.add(WorkLocation(work_id=work.id, location_type='venue', url='', is_primary=False))
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -403,7 +427,16 @@ def get_work(work_id: int, db: Session = Depends(get_db)):
 @router.patch("/{work_id}", response_model=WorkDetail)
 def update_work(work_id: int, body: WorkUpdate, db: Session = Depends(get_db)):
     work = _get_work(db, work_id)
-    for key, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+
+    # Bug 2: when venue changes to a real venue, manage locations accordingly —
+    # reclassify preprint-server 'venue' locations as 'preprint' and add a stub
+    # 'venue' location for the newly assigned venue.
+    new_venue_id = updates.get('venue_id')
+    if new_venue_id is not None and new_venue_id != work.venue_id:
+        _apply_manual_venue_location_change(db, work)
+
+    for key, value in updates.items():
         setattr(work, key, value)
     db.commit()
     db.refresh(work)

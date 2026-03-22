@@ -114,6 +114,132 @@ def migrate_pdf_storage(body: PDFMigrateRequest, db: Session = Depends(get_db)):
     )
 
 
+class BackfillVenuesResponse(BaseModel):
+    updated: int
+    message: str
+
+
+@router.post("/backfill-venues", response_model=BackfillVenuesResponse)
+def backfill_venues(db: Session = Depends(get_db)):
+    """Scan cached OpenAlex API responses and populate venue_id for works that lack it.
+
+    Also upgrades works whose current venue is a provisional repository (arXiv, bioRxiv,
+    etc.) if the cache contains a real venue (journal or conference) for them.
+    Reads only already-cached OA data — no external API calls are made.
+    Safe to call multiple times (idempotent).
+    """
+    import json as _json
+
+    from sqlalchemy import or_ as _or
+    from sqlalchemy import select as _select
+
+    from sotascope.external.openalex import parse_work as _parse_work
+    from sotascope.models.cache import ApiCache
+    from sotascope.models.library import Venue, Work
+    from sotascope.services.enrichment import EnrichmentService
+
+    # Include works with no venue AND works whose current venue is a provisional
+    # repository (arXiv, bioRxiv, etc.) — they may have a real venue in cache.
+    works_needing = db.scalars(
+        _select(Work)
+        .outerjoin(Venue, Work.venue_id == Venue.id)
+        .where(
+            _or(
+                Work.venue_id.is_(None),
+                Venue.venue_type == 'repository',
+            )
+        )
+    ).all()
+
+    if not works_needing:
+        return BackfillVenuesResponse(
+            updated=0,
+            message="All works already have real venues — nothing to do.",
+        )
+
+    by_openalex: dict = {}
+    by_doi: dict = {}
+    for w in works_needing:
+        if w.openalex_id:
+            by_openalex[w.openalex_id] = w
+        if w.doi:
+            by_doi[w.doi.lower()] = w
+
+    if not by_openalex and not by_doi:
+        return BackfillVenuesResponse(
+            updated=0,
+            message="All works already have real venues — nothing to do.",
+        )
+
+    service = EnrichmentService(db=db, client=None)  # type: ignore[arg-type]
+    filled = 0
+
+    def _try_apply_venue(raw: dict) -> None:
+        nonlocal filled
+        if not isinstance(raw, dict):
+            return
+        oa_id = (raw.get("id") or "").replace("https://openalex.org/", "") or None
+        work = by_openalex.get(oa_id) if oa_id else None
+        if work is None:
+            doi = (raw.get("doi") or "").replace("https://doi.org/", "").lower()
+            work = by_doi.get(doi) if doi else None
+        if work is None:
+            return
+        # Skip if work already has a real (non-provisional) venue
+        if work.venue_id is not None:
+            current_venue = db.get(Venue, work.venue_id)
+            if current_venue and current_venue.venue_type != 'repository':
+                return
+        ext_work = _parse_work(raw)
+        if not ext_work.venue or ext_work.venue.venue_type == 'repository':
+            return  # New venue is also provisional — don't bother
+        venue = service._resolve_venue(ext_work)
+        if venue:
+            work.venue_id = venue.id
+            filled += 1
+
+    for prefix in ("work:doi:%", "work:arxiv:%", "work:openalex:%"):
+        for cached_json in db.execute(
+            _select(ApiCache.response_json).where(
+                ApiCache.source == "openalex",
+                ApiCache.query_key.like(prefix),
+            )
+        ).scalars():
+            try:
+                _try_apply_venue(_json.loads(cached_json))
+            except (ValueError, KeyError, TypeError):
+                continue
+
+    for cached_json in db.execute(
+        _select(ApiCache.response_json).where(
+            ApiCache.source == "openalex",
+            ApiCache.query_key.like("backward_citations:%")
+            | ApiCache.query_key.like("forward_citations:%"),
+        )
+    ).scalars():
+        try:
+            raw_list = _json.loads(cached_json)
+            if not isinstance(raw_list, list):
+                continue
+            for raw in raw_list:
+                _try_apply_venue(raw)
+        except (ValueError, KeyError, TypeError):
+            continue
+
+    if filled:
+        db.commit()
+        noun = "work" if filled == 1 else "works"
+        return BackfillVenuesResponse(
+            updated=filled,
+            message=f"Updated {filled} {noun} with venue data.",
+        )
+
+    return BackfillVenuesResponse(
+        updated=0,
+        message="All works already have real venues — nothing to do.",
+    )
+
+
 @router.patch("/{key}", response_model=SettingOut)
 def update_setting(key: str, body: SettingUpdate, db: Session = Depends(get_db)):
     """Update a setting's value."""
