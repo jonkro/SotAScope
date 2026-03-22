@@ -12,7 +12,18 @@ Key capabilities:
 - Project export/import, BibTeX export, CSV/LaTeX extraction export
 - Works with Anthropic, OpenAI, or local models via Ollama — no vendor lock-in
 
-[Screenshot or GIF here — add before launch]
+Among other things, you can:
+- Import seed papers ![by arXiv ID or DOI](docs/images/screenshot_import_works_doi.png)
+- Import seed papers by ![name (via CrossRef)](docs/images/screenshot_name.png)
+- Organize your seed papers by ![topic](docs/images/screenshot_topic_lists.png)
+- Manage your ![venues](docs/images/screenshot_manage_venues.png)
+- Visualize the most important papers citing or cited by your seed papers in the ![timeline view](docs/images/screenshot_find_best_related_papers.png)
+- Focus on a ![single paper](docs/images/screenshot_find_relation_selected.png) and find its citation relations
+- Set up SotAScope for ![best](docs/images/screenshot_settings1.png) ![performance](docs/images/screenshot_settings2.png)
+- Add and manage ![PDFs](docs/images/screenshot_pdf.png) of papers 
+- Create a literature table ![schema](docs/images/screenshot_extract_schema_cols.png) with the help of AI - or you do it yourself
+- Fill a ![literature table](docs/images/screenshot_create_automated_table.png) with the help of AI - or you do it yourself
+- Pin the literature table ![next to the timeline view](docs/images/screenshot_pin_table.png)
 
 ---
 
