@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from sotascope.database import SessionLocal, init_db
 
@@ -894,12 +896,11 @@ app.include_router(grobid_router)
 
 # Serve built frontend (only when frontend/dist exists)
 if _frontend_dist.is_dir():
-    app.mount("/assets", StaticFiles(directory=_frontend_dist / "assets"), name="static")
+    @app.exception_handler(StarletteHTTPException)
+    async def _spa_not_found(request, exc):
+        """Serve index.html for 404s on non-API paths (SPA client-side routing)."""
+        if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+            return FileResponse(_frontend_dist / "index.html")
+        return await http_exception_handler(request, exc)
 
-    @app.get("/{path:path}")
-    async def _spa_fallback(path: str):
-        """Serve index.html for all non-API routes (SPA client-side routing)."""
-        file = _frontend_dist / path
-        if file.is_file():
-            return FileResponse(file)
-        return FileResponse(_frontend_dist / "index.html")
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")
