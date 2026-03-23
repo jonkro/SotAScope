@@ -18,3 +18,4 @@ frontend/node_modules/
 *.sqlite3
 .sotascope/
 .mailmap
+.DS_Store
